@@ -157,7 +157,12 @@ impl Config {
             (String::new(), String::new())
         };
         let ingest_queue_url = required(&mut problems, "OPENBOOK_INGEST_QUEUE_URL");
-        let vector_bucket = required(&mut problems, "OPENBOOK_VECTOR_BUCKET");
+        // Only the worker reads and writes vectors. The API does not need the bucket.
+        let vector_bucket = if service == Service::Ingest {
+            required(&mut problems, "OPENBOOK_VECTOR_BUCKET")
+        } else {
+            get("OPENBOOK_VECTOR_BUCKET").unwrap_or_default()
+        };
 
         let stage = match stage_raw.as_str() {
             "local" => Stage::Local,
@@ -469,7 +474,6 @@ mod tests {
             "OPENBOOK_COGNITO_USER_POOL_ID",
             "OPENBOOK_COGNITO_CLIENT_ID",
             "OPENBOOK_INGEST_QUEUE_URL",
-            "OPENBOOK_VECTOR_BUCKET",
             "OPENBOOK_MODELS",
             "OPENBOOK_DEFAULT_CHAT_MODEL",
             "OPENBOOK_FAST_MODEL",
@@ -624,6 +628,15 @@ mod tests {
         );
         v.remove("AWS_LAMBDA_RUNTIME_API");
         assert!(Config::from_vars(&v).is_ok());
+    }
+
+    #[test]
+    fn only_the_worker_needs_the_vector_bucket() {
+        let mut v = base();
+        v.remove("OPENBOOK_VECTOR_BUCKET");
+        assert!(Config::from_vars(&v).is_ok(), "the API does not need it");
+        let err = Config::from_vars_for(&v, Service::Ingest).unwrap_err();
+        assert!(err.to_string().contains("OPENBOOK_VECTOR_BUCKET"), "{err}");
     }
 
     #[test]

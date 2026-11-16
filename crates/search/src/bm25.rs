@@ -40,19 +40,22 @@ fn s3_err(error: &dyn std::error::Error) -> Bm25Error {
     Bm25Error::Transient(DisplayErrorContext(error).to_string())
 }
 
-/// The S3 key of one version.
-pub fn blob_key(course_id: &str, version: u64) -> String {
-    format!("courses/{course_id}/bm25/v{version}.tar.zst")
+/// The S3 key of one blob: `courses/<courseId>/bm25/v<version>-<ULID>.tar.zst`.
+/// The ULID is new for every upload, so a writer that loses a race can never overwrite the
+/// blob of the winner. The course item holds the key of the current blob (`bm25Key`).
+pub fn blob_key(course_id: &str, version: u64, unique: &str) -> String {
+    format!("courses/{course_id}/bm25/v{version}-{unique}.tar.zst")
 }
 
-/// The version in a blob key, or `None` when the key is not a blob.
+/// The version in a blob key (`v<version>-<ULID>.tar.zst`, or the older `v<version>.tar.zst`),
+/// or `None` when the key is not a blob.
 pub fn version_of_key(key: &str) -> Option<u64> {
-    key.rsplit('/')
+    let name = key
+        .rsplit('/')
         .next()?
         .strip_prefix('v')?
-        .strip_suffix(".tar.zst")?
-        .parse()
-        .ok()
+        .strip_suffix(".tar.zst")?;
+    name.split('-').next()?.parse().ok()
 }
 
 /// One chunk in the index. `chunk_id` equals the vector key.
@@ -300,7 +303,7 @@ impl Bm25Store {
     ///
     /// It downloads the current version into `work_dir`, changes it, uploads the next version,
     /// moves `bm25Version` forward with a conditional update on the old value, and deletes blobs
-    /// older than the previous version. Returns the new version.
+    /// that are neither the new nor the previous blob. Returns the new version and the new blob key.
     /// `work_dir` should be empty or missing: it is removed first.
     pub async fn update(
         &self,
@@ -308,7 +311,7 @@ impl Bm25Store {
         work_dir: &Path,
         remove_documents: &[String],
         add: Vec<Bm25Chunk>,
-    ) -> Result<u64, Bm25Error> {
+    ) -> Result<(u64, String), Bm25Error> {
         let course = self
             .store
             .get_course(course_id)
@@ -320,9 +323,15 @@ impl Bm25Store {
         let _ = std::fs::remove_dir_all(work_dir);
         std::fs::create_dir_all(&dir).map_err(index_err)?;
 
-        let existing = match old {
-            Some(version) => Some(self.download(&blob_key(course_id, version)).await?),
-            None => None,
+        let old_key = course.bm25_key.clone();
+        let existing = match (&old_key, old) {
+            (Some(key), _) => Some(self.download(key).await?),
+            // An index from before `bm25Key` existed.
+            (None, Some(version)) => Some(
+                self.download(&format!("courses/{course_id}/bm25/v{version}.tar.zst"))
+                    .await?,
+            ),
+            (None, None) => None,
         };
         let remove = remove_documents.to_vec();
         let work = dir.clone();
@@ -347,33 +356,48 @@ impl Bm25Store {
         .map_err(index_err)??;
 
         let new = old.unwrap_or(0) + 1;
+        let new_key = blob_key(course_id, new, &openbook_core::ids::new_id());
         self.s3
             .put_object()
             .bucket(&self.bucket)
-            .key(blob_key(course_id, new))
+            .key(&new_key)
             .body(blob.into())
             .send()
             .await
             .map_err(|e| s3_err(&e))?;
         let moved = self
             .store
-            .set_bm25_version(course_id, old, new)
+            .set_bm25_version(course_id, old, new, &new_key)
             .await
             .map_err(|e| Bm25Error::Transient(e.to_string()))?;
         let _ = std::fs::remove_dir_all(work_dir);
         if !moved {
             // Another writer moved the version first (it cannot happen with one writer per course).
+            // Its blob has another key, so nothing was overwritten. Remove the blob of this attempt.
+            let _ = self
+                .s3
+                .delete_object()
+                .bucket(&self.bucket)
+                .key(&new_key)
+                .send()
+                .await;
             return Err(Bm25Error::Transient(
                 "the BM25 version changed during the update".into(),
             ));
         }
-        self.delete_old_blobs(course_id, old).await;
-        Ok(new)
+        self.delete_other_blobs(course_id, &new_key, old_key.as_deref())
+            .await;
+        Ok((new, new_key))
     }
 
-    /// Deletes blobs older than the previous version. Best effort.
-    async fn delete_old_blobs(&self, course_id: &str, previous: Option<u64>) {
-        let Some(previous) = previous else { return };
+    /// Deletes every blob except the new one and the previous one (this also removes blobs that
+    /// a losing writer left behind). Best effort.
+    async fn delete_other_blobs(
+        &self,
+        course_id: &str,
+        keep_new: &str,
+        keep_previous: Option<&str>,
+    ) {
         let prefix = format!("courses/{course_id}/bm25/");
         let listed = match self
             .s3
@@ -391,7 +415,7 @@ impl Bm25Store {
         };
         for object in listed.contents() {
             let Some(key) = object.key() else { continue };
-            if !version_of_key(key).is_some_and(|v| v < previous) {
+            if key == keep_new || Some(key) == keep_previous || version_of_key(key).is_none() {
                 continue;
             }
             if let Err(error) = self
@@ -420,18 +444,24 @@ impl Bm25Cache {
         Self { s3, bucket, root }
     }
 
-    /// The reader for `version` of the course index. It downloads and unpacks on a cache miss, and
-    /// removes the older cached versions of the course.
-    pub async fn open(&self, course_id: &str, version: u64) -> Result<Bm25Reader, Bm25Error> {
+    /// The reader for the blob `key` (the course item's `bm25Key`). It downloads and unpacks on a
+    /// cache miss, and removes the other cached blobs of the course.
+    pub async fn open(&self, course_id: &str, key: &str) -> Result<Bm25Reader, Bm25Error> {
+        let name = key
+            .rsplit('/')
+            .next()
+            .and_then(|n| n.strip_suffix(".tar.zst"))
+            .ok_or_else(|| Bm25Error::Index(format!("{key} is not a BM25 blob")))?
+            .to_owned();
         let course_dir = self.root.join(course_id);
-        let dir = course_dir.join(format!("v{version}"));
+        let dir = course_dir.join(&name);
         let marker = dir.join(".complete");
         if !marker.exists() {
             let out = self
                 .s3
                 .get_object()
                 .bucket(&self.bucket)
-                .key(blob_key(course_id, version))
+                .key(key)
                 .send()
                 .await
                 .map_err(|e| s3_err(&e))?;
@@ -442,7 +472,7 @@ impl Bm25Cache {
                 .map_err(|e| s3_err(&e))?
                 .into_bytes()
                 .to_vec();
-            let staging = course_dir.join(format!("v{version}.tmp"));
+            let staging = course_dir.join(format!("{name}.tmp"));
             let _ = std::fs::remove_dir_all(&staging);
             let final_dir = dir.clone();
             tokio::task::spawn_blocking(move || -> Result<(), Bm25Error> {
@@ -457,7 +487,7 @@ impl Bm25Cache {
         if let Ok(entries) = std::fs::read_dir(&course_dir) {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().into_owned();
-                if name != format!("v{version}") {
+                if entry.file_name().to_string_lossy() != name {
                     let _ = std::fs::remove_dir_all(entry.path());
                 }
             }
@@ -500,7 +530,15 @@ mod tests {
 
     #[test]
     fn keys_and_versions_round_trip() {
-        assert_eq!(blob_key("C1", 3), "courses/C1/bm25/v3.tar.zst");
+        assert_eq!(
+            blob_key("C1", 3, "01ARZ3NDEKTSV4RRFFQ69G5FAV"),
+            "courses/C1/bm25/v3-01ARZ3NDEKTSV4RRFFQ69G5FAV.tar.zst"
+        );
+        assert_eq!(
+            version_of_key("courses/C1/bm25/v12-01ARZ3NDEKTSV4RRFFQ69G5FAV.tar.zst"),
+            Some(12)
+        );
+        // The older key form still counts as a blob.
         assert_eq!(version_of_key("courses/C1/bm25/v12.tar.zst"), Some(12));
         assert_eq!(version_of_key("courses/C1/bm25/readme.txt"), None);
         assert_eq!(version_of_key("courses/C1/bm25/vx.tar.zst"), None);

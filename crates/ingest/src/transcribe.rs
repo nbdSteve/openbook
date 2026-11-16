@@ -12,7 +12,9 @@ use aws_sdk_bedrockruntime::types::{
 use aws_smithy_types::error::display::DisplayErrorContext;
 
 /// The longest side of a rendered page, in pixels.
-pub const MAX_RENDER_SIDE: u32 = 2000;
+pub const MAX_RENDER_SIDE: u32 = 1568;
+/// A rendered page must be smaller than this. Bedrock accepts at most 3.75 MB per image.
+pub const MAX_IMAGE_BYTES: usize = 3_500_000;
 /// A page of dense math can need more output than a chat answer.
 const MIN_TRANSCRIBE_TOKENS: i32 = 4096;
 
@@ -36,11 +38,11 @@ pub enum TranscribeError {
 
 #[async_trait]
 pub trait Transcriber: Send + Sync {
-    /// `page_number` is 1-based. `png` is the rendered page. `text_layer` is what the PDF text layer holds.
+    /// `page_number` is 1-based. `image` is the rendered page (JPEG). `text_layer` is what the PDF text layer holds.
     async fn transcribe(
         &self,
         page_number: u32,
-        png: &[u8],
+        image: &[u8],
         text_layer: &str,
     ) -> Result<String, TranscribeError>;
 }
@@ -61,7 +63,7 @@ impl Transcriber for FakeTranscriber {
     async fn transcribe(
         &self,
         page_number: u32,
-        _png: &[u8],
+        _image: &[u8],
         text_layer: &str,
     ) -> Result<String, TranscribeError> {
         Ok(Self::markdown(page_number, text_layer))
@@ -108,12 +110,12 @@ impl Transcriber for BedrockTranscriber {
     async fn transcribe(
         &self,
         _page_number: u32,
-        png: &[u8],
+        image: &[u8],
         _text_layer: &str,
     ) -> Result<String, TranscribeError> {
         let image = ImageBlock::builder()
-            .format(ImageFormat::Png)
-            .source(ImageSource::Bytes(Blob::new(png.to_vec())))
+            .format(ImageFormat::Jpeg)
+            .source(ImageSource::Bytes(Blob::new(image.to_vec())))
             .build()
             .map_err(|e| TranscribeError::Permanent(e.to_string()))?;
         let message = Message::builder()

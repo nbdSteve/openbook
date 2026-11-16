@@ -5,11 +5,10 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use chrono::Utc;
 use openbook_core::domain::{Role, TutoringStyle};
-use openbook_core::files::course_prefix;
 use openbook_core::ids;
+use openbook_core::queue::IngestMessage;
 use openbook_core::quota::usage_date;
 use openbook_core::store::{CoursePatch, StoreError};
-use openbook_search::vectors::index_name;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -61,6 +60,7 @@ pub async fn list(
         .get_courses(&ids)
         .await?
         .into_iter()
+        .filter(|c| !c.deleting)
         .map(|c| (c.id.clone(), c))
         .collect();
     let courses: Vec<_> = memberships
@@ -154,13 +154,16 @@ pub async fn update(
 }
 
 /// `DELETE /api/courses/{courseId}` (owner)
+///
+/// The API marks the course `deleting` (members get `404` at once), deletes the invite and the
+/// memberships, and sends `delete_course`. The worker deletes the vector index, the files, the
+/// documents, and the course item, so a delete cannot race an ingestion in the same course.
+/// The owner can repeat the request when it failed halfway.
 pub async fn delete(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
     ApiPath(course_id): ApiPath<String>,
 ) -> Result<StatusCode, ApiError> {
-    // The owner is whoever the course item names. A repeated run of a half-finished delete still
-    // passes, because the owner membership is deleted last.
     let course_id = validate::ulid_path(&course_id, "Course")?;
     let course = state
         .store
@@ -168,24 +171,25 @@ pub async fn delete(
         .await?
         .ok_or_else(|| ApiError::not_found("Course"))?;
     if course.owner_id != user.user_id {
-        // Members who are not the owner get 403. Everyone else gets 404.
+        // Members who are not the owner get 403. Everyone else, and everyone once the delete started, gets 404.
         state.require_member(&user, &course_id).await?;
         return Err(ApiError::Forbidden(
             "Only the course owner can do this".into(),
         ));
     }
-    // Order: the invite first (it stops working at once), then the objects, then the records.
+    state.store.mark_course_deleting(&course.id).await?;
+    // The invite stops working at once, and the course leaves every list.
     state.store.delete_invite(&course).await?;
-    state
-        .files
-        .delete_prefix(&course_prefix(&course.id))
-        .await?;
-    state
-        .vectors
-        .delete_index(&index_name(&course.id))
+    state.store.delete_memberships(&course.id).await?;
+    if let Err(error) = state
+        .queue
+        .send(&IngestMessage::delete_course(&course.id))
         .await
-        .map_err(ApiError::internal)?;
-    state.store.delete_course_data(&course).await?;
+    {
+        // The course stays `deleting`. The owner can send the request again.
+        tracing::error!(%error, "could not send the delete_course message");
+        return Err(ApiError::Unavailable);
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -217,13 +221,21 @@ pub async fn join(
     }
     let unknown = || ApiError::not_found("Invite code");
     let found = async {
+        // The block returns `Result<_, StoreError>` so that `?` has one error type.
         let Some(code) = ids::normalize_invite_code(&body.invite_code) else {
             return Ok(None);
         };
         let Some(course_id) = state.store.find_invite(&code).await? else {
             return Ok(None);
         };
-        state.store.get_course(&course_id).await
+        // A course that the worker is deleting cannot be joined.
+        Ok::<_, StoreError>(
+            state
+                .store
+                .get_course(&course_id)
+                .await?
+                .filter(|c| !c.deleting),
+        )
     }
     .await?;
     let Some(course) = found else {

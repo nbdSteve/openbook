@@ -14,7 +14,6 @@ use openbook_core::files::Files;
 use openbook_core::model::ModelRegistry;
 use openbook_core::queue::IngestQueue;
 use openbook_core::store::Store;
-use openbook_search::vectors::VectorStore;
 use tracing_subscriber::EnvFilter;
 
 fn init_tracing(in_lambda: bool) {
@@ -58,7 +57,6 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error + Send + Sy
         config.presign_endpoint.as_deref(),
     );
     let queue = IngestQueue::new(&sdk, config.ingest_queue_url.clone());
-    let vectors = VectorStore::new(&sdk, config.vector_bucket.clone());
     let verifier = TokenVerifier::from_config(&config)?;
     let bedrock = config
         .catalog
@@ -86,7 +84,6 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error + Send + Sy
         verifier: Arc::new(verifier),
         models,
         queue,
-        vectors,
         chat_timeouts: Default::default(),
     });
 

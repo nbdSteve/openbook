@@ -59,6 +59,7 @@ pub async fn create(
         chunk_count: None,
         transcribed_pages: None,
         warnings: None,
+        planned_chunk_count: None,
         created_at: now.clone(),
         updated_at: now,
     };
@@ -158,6 +159,18 @@ pub async fn delete(
     let (course, _) = state.require_owner(&user, &course_id).await?;
     let document = load_document(&state, &course.id, &document_id).await?;
     if document.status == DocumentStatus::Deleting {
+        // A delete that has not finished for a long time lost its message (or the worker). Send it again.
+        // The worker's delete is idempotent.
+        if delete_is_stale(&document.updated_at, chrono::Utc::now()) {
+            let message = IngestMessage::new(Action::Delete, &course.id, &document.id);
+            if let Err(error) = state.queue.send(&message).await {
+                tracing::error!(%error, "could not send the delete message again");
+                return Err(ApiError::Unavailable);
+            }
+            if let Err(error) = state.store.touch_deleting(&course.id, &document.id).await {
+                tracing::error!(%error, "could not record the repeated delete message");
+            }
+        }
         return Ok((StatusCode::ACCEPTED, Json(json!({ "document": document }))));
     }
     let Some(previous) = state.store.mark_deleting(&course.id, &document.id).await? else {
@@ -179,4 +192,35 @@ pub async fn delete(
     }
     let document = load_document(&state, &course.id, &document.id).await?;
     Ok((StatusCode::ACCEPTED, Json(json!({ "document": document }))))
+}
+
+/// A `deleting` document is stale after this long, and a repeated `DELETE` sends the message again.
+pub const DELETE_RESEND_AFTER: chrono::Duration = chrono::Duration::minutes(20);
+
+/// True when the document has been `deleting` for longer than `DELETE_RESEND_AFTER`.
+/// `updated_at` is when it was set to `deleting`, or when the message was last sent again.
+pub fn delete_is_stale(updated_at: &str, now: chrono::DateTime<chrono::Utc>) -> bool {
+    chrono::DateTime::parse_from_rfc3339(updated_at)
+        .map(|at| now - at.with_timezone(&chrono::Utc) > DELETE_RESEND_AFTER)
+        .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_delete_is_stale_after_twenty_minutes() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-11-16T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        assert!(!delete_is_stale("2026-11-16T11:59:00.000Z", now));
+        assert!(!delete_is_stale("2026-11-16T11:40:30.000Z", now));
+        assert!(delete_is_stale("2026-11-16T11:39:00.000Z", now));
+        assert!(delete_is_stale("2026-11-15T12:00:00.000Z", now));
+        assert!(
+            !delete_is_stale("not a time", now),
+            "an unreadable time never causes a resend"
+        );
+    }
 }

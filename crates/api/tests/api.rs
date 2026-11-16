@@ -1406,19 +1406,24 @@ async fn deleting_a_course_removes_everything_that_belongs_to_it() {
     let reply = app.delete(&format!("/api/courses/{id}"), &owner).await;
     assert_eq!(reply.status, StatusCode::NO_CONTENT, "{}", reply.text);
 
-    // Only the question items stay. They expire by TTL and nothing can reach them.
-    assert_eq!(app.items_under(&format!("COURSE#{id}")).await, 31);
+    // The worker deletes the data. Until then the items and the files stay, and the course item says `deleting`.
+    assert_eq!(
+        app.queued_messages().await,
+        vec![json!({"action": "delete_course", "courseId": id})]
+    );
+    assert!(app.items_under(&format!("COURSE#{id}")).await >= 5);
+    assert!(
+        !app.objects_under(&format!("courses/{id}/"))
+            .await
+            .is_empty()
+    );
+    // The invite and the memberships are gone at once.
+    assert_eq!(app.items_under(&format!("INVITE#{code}")).await, 0);
     assert!(
         app.get_item_sk_prefixes(&format!("COURSE#{id}"))
             .await
             .iter()
-            .all(|sk| sk.starts_with("Q#"))
-    );
-    assert_eq!(app.items_under(&format!("INVITE#{code}")).await, 0);
-    assert!(
-        app.objects_under(&format!("courses/{id}/"))
-            .await
-            .is_empty()
+            .all(|sk| !sk.starts_with("MEMBER#"))
     );
     for user in [&owner, &student] {
         assert_eq!(

@@ -104,6 +104,10 @@ pub struct CourseRecord {
     pub invite_code: String,
     /// Version of the course BM25 index. `None` until the first document is indexed.
     pub bm25_version: Option<u64>,
+    /// The S3 key of the BM25 blob of `bm25_version`.
+    pub bm25_key: Option<String>,
+    /// The owner deleted the course. The worker is removing it.
+    pub deleting: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -174,6 +178,9 @@ pub struct Document {
     pub transcribed_pages: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warnings: Option<Vec<String>>,
+    /// The number of chunks the worker planned to write. Set before the first vector is written.
+    #[serde(skip)]
+    pub planned_chunk_count: Option<u32>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -243,6 +250,8 @@ mod tests {
             owner_id: "u".into(),
             invite_code: "ABCD2345".into(),
             bm25_version: None,
+            bm25_key: None,
+            deleting: false,
             created_at: "t".into(),
             updated_at: "t".into(),
         };
@@ -272,6 +281,7 @@ mod tests {
             chunk_count: None,
             transcribed_pages: None,
             warnings: None,
+            planned_chunk_count: None,
             created_at: "t".into(),
             updated_at: "t".into(),
         };

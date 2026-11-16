@@ -11,7 +11,7 @@ use chrono::Utc;
 use futures::StreamExt;
 use openbook_core::config::Config;
 use openbook_core::domain::{CourseRecord, Document, DocumentStatus};
-use openbook_core::files::{Files, document_prefix, source_key};
+use openbook_core::files::{Files, course_prefix, document_prefix, source_key};
 use openbook_core::queue::{Action, IngestMessage};
 use openbook_core::quota::{
     Reservation, release_transcribed_page, reserve_transcribed_page, usage_date,
@@ -32,6 +32,8 @@ pub const MAX_RECEIVES: u32 = 3;
 pub const PAGE_CONCURRENCY: usize = 8;
 /// S3 object metadata key that marks a transcribed page, so a resumed run counts it.
 const TRANSCRIBED_METADATA: &str = "transcribed";
+/// S3 object metadata key with the fallback reason of a page (`cap` or `failed`).
+const FALLBACK_METADATA: &str = "fallback";
 
 pub const MSG_UNREADABLE: &str =
     "This PDF could not be opened. It may be damaged. Try another copy of the file.";
@@ -72,6 +74,8 @@ pub enum Outcome {
     Failed(String),
     /// The message was stale, a duplicate, or for something that no longer exists.
     Ignored(&'static str),
+    /// The course was deleted (a `delete_course` message).
+    CourseDeleted,
     /// The document was deleted (a `delete` message).
     Deleted,
 }
@@ -100,6 +104,7 @@ pub async fn handle_message(
     match message.action {
         Action::Ingest => handle_ingest(deps, message, receive_count, budget).await,
         Action::Delete => handle_delete(deps, message).await,
+        Action::DeleteCourse => handle_delete_course(deps, message).await,
     }
 }
 
@@ -127,6 +132,9 @@ async fn handle_ingest(
     else {
         return Ok(Outcome::Ignored("the document no longer exists"));
     };
+    if course.deleting {
+        return Ok(Outcome::Ignored("the course is being deleted"));
+    }
     // A message for a document that is not `queued` is a duplicate or stale. After a crash, the
     // document is still `processing` and the next receive carries on (the FIFO group has one worker).
     let retry = receive_count > 1;
@@ -134,6 +142,18 @@ async fn handle_ingest(
         || (retry && document.status == DocumentStatus::Processing);
     if !acceptable {
         return Ok(Outcome::Ignored("the document is not queued"));
+    }
+    if receive_count > MAX_RECEIVES {
+        // Earlier attempts did not finish (the worker may have crashed on this PDF). Do not open it again.
+        tracing::error!(
+            receive_count,
+            "too many receives; failing the document without opening it"
+        );
+        deps.store
+            .fail_document(course_id, document_id, MSG_GENERIC)
+            .await
+            .map_err(|e| retry_err(&e))?;
+        return Ok(Outcome::Failed(MSG_GENERIC.into()));
     }
     if !deps
         .store
@@ -228,6 +248,33 @@ struct PageResult {
     number: u32,
     markdown: String,
     transcribed: bool,
+    /// Why the page uses its text layer although it needed transcription.
+    fallback: Option<Fallback>,
+}
+
+/// The reason that a page that needs transcription uses its text layer. It is kept in the S3
+/// metadata of the page file, so a resumed run reports the same warnings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Fallback {
+    CapReached,
+    Failed,
+}
+
+impl Fallback {
+    fn as_metadata(self) -> &'static str {
+        match self {
+            Fallback::CapReached => "cap",
+            Fallback::Failed => "failed",
+        }
+    }
+
+    fn from_metadata(value: &str) -> Option<Self> {
+        match value {
+            "cap" => Some(Fallback::CapReached),
+            "failed" => Some(Fallback::Failed),
+            _ => None,
+        }
+    }
 }
 
 fn page_key(course_id: &str, document_id: &str, number: u32) -> String {
@@ -283,6 +330,10 @@ async fn read_existing_page(
     let transcribed = out
         .metadata()
         .is_some_and(|m| m.get(TRANSCRIBED_METADATA).is_some_and(|v| v == "1"));
+    let fallback = out
+        .metadata()
+        .and_then(|m| m.get(FALLBACK_METADATA))
+        .and_then(|v| Fallback::from_metadata(v));
     let bytes = out
         .body
         .collect()
@@ -293,13 +344,8 @@ async fn read_existing_page(
         number,
         markdown: String::from_utf8_lossy(&bytes).into_owned(),
         transcribed,
+        fallback,
     })
-}
-
-#[derive(Default)]
-struct PageStats {
-    capped: u32,
-    failed: u32,
 }
 
 async fn process_page(
@@ -308,11 +354,18 @@ async fn process_page(
     document_id: &str,
     owner_id: &str,
     page: PageData,
-) -> Result<(PageResult, PageStats), IngestError> {
-    let mut stats = PageStats::default();
+) -> Result<PageResult, IngestError> {
     let mut markdown = page.text.clone();
     let mut transcribed = false;
-    if let Some(png) = &page.png {
+    let mut fallback = None;
+    if page.needs_transcription && page.image.is_none() {
+        tracing::warn!(
+            page = page.number,
+            "the page could not be rendered; using the text layer"
+        );
+        fallback = Some(Fallback::Failed);
+    }
+    if let Some(image) = &page.image {
         let limits = &deps.config.limits;
         let date = usage_date(Utc::now());
         let reserved = reserve_transcribed_page(
@@ -327,7 +380,7 @@ async fn process_page(
         if reserved == Reservation::Reserved {
             match deps
                 .transcriber
-                .transcribe(page.number, png, &page.text)
+                .transcribe(page.number, image, &page.text)
                 .await
             {
                 Ok(text) => {
@@ -341,7 +394,7 @@ async fn process_page(
                 Err(TranscribeError::Permanent(error)) => {
                     tracing::warn!(page = page.number, %error, "transcription failed; using the text layer");
                     release_transcribed_page(&deps.store, owner_id, &date).await;
-                    stats.failed += 1;
+                    fallback = Some(Fallback::Failed);
                 }
             }
         } else {
@@ -350,7 +403,7 @@ async fn process_page(
                 ?reserved,
                 "transcription cap reached; using the text layer"
             );
-            stats.capped += 1;
+            fallback = Some(Fallback::CapReached);
         }
     }
     let mut request = deps
@@ -363,15 +416,16 @@ async fn process_page(
     if transcribed {
         request = request.metadata(TRANSCRIBED_METADATA, "1");
     }
+    if let Some(reason) = fallback {
+        request = request.metadata(FALLBACK_METADATA, reason.as_metadata());
+    }
     request.send().await.map_err(|e| transient(&e))?;
-    Ok((
-        PageResult {
-            number: page.number,
-            markdown,
-            transcribed,
-        },
-        stats,
-    ))
+    Ok(PageResult {
+        number: page.number,
+        markdown,
+        transcribed,
+        fallback,
+    })
 }
 
 fn pdf_error(error: PdfError, limit: u32) -> IngestError {
@@ -444,16 +498,12 @@ async fn run_ingest(
         tokio::task::spawn_blocking(move || pdf::extract_pages(&lib_dir, &pdf_path, &skip, &tx))
     };
     let mut results: BTreeMap<u32, PageResult> = BTreeMap::new();
-    let mut capped = 0u32;
-    let mut failed_pages = 0u32;
     {
         let mut stream = ReceiverStream::new(rx)
             .map(|page| process_page(deps, course_id, document_id, &course.owner_id, page))
             .buffer_unordered(PAGE_CONCURRENCY);
         while let Some(item) = stream.next().await {
-            let (page, stats) = item?;
-            capped += stats.capped;
-            failed_pages += stats.failed;
+            let page = item?;
             results.insert(page.number, page);
         }
     }
@@ -536,6 +586,16 @@ async fn run_ingest(
             text: chunk.text.clone(),
         })
         .collect();
+    // Write the plan first: a delete can then remove every key that this run may have written,
+    // even when the document ends `failed`.
+    deps.store
+        .set_planned_chunks(
+            course_id,
+            document_id,
+            u32::try_from(records.len()).unwrap_or(u32::MAX),
+        )
+        .await
+        .map_err(|e| transient(&e))?;
     deps.vectors
         .put(&index, &records)
         .await
@@ -563,6 +623,14 @@ async fn run_ingest(
         .map_err(|e| transient(&e))?;
 
     let mut warnings = Vec::new();
+    let count_of = |reason: Fallback| {
+        results
+            .values()
+            .filter(|p| p.fallback == Some(reason))
+            .count()
+    };
+    let capped = count_of(Fallback::CapReached);
+    let failed_pages = count_of(Fallback::Failed);
     if capped > 0 {
         warnings.push(format!("{WARNING_CAP} ({capped} pages)"));
     }
@@ -596,14 +664,19 @@ async fn handle_delete(deps: &Deps, message: &IngestMessage) -> Result<Outcome, 
     else {
         return Ok(Outcome::Ignored("the document no longer exists"));
     };
+    if course.deleting {
+        return Ok(Outcome::Ignored("the course is being deleted"));
+    }
     if document.status != DocumentStatus::Deleting {
         return Ok(Outcome::Ignored("the document is not being deleted"));
     }
 
     // Vectors by key: `<documentId>:0` to `<documentId>:<chunkCount - 1>`.
-    let keys: Vec<String> = (0..document.chunk_count.unwrap_or(0))
-        .map(|i| vector_key(document_id, i))
-        .collect();
+    let planned = document
+        .chunk_count
+        .unwrap_or(0)
+        .max(document.planned_chunk_count.unwrap_or(0));
+    let keys: Vec<String> = (0..planned).map(|i| vector_key(document_id, i)).collect();
     deps.vectors
         .delete_keys(&index_name(course_id), &keys)
         .await
@@ -632,4 +705,36 @@ async fn handle_delete(deps: &Deps, message: &IngestMessage) -> Result<Outcome, 
         .await
         .map_err(|e| retry_err(&e))?;
     Ok(Outcome::Deleted)
+}
+
+/// Deletes a whole course: the vector index, every file, the documents, and the course item.
+/// The API marked the course `deleting` and removed the invite and the memberships before it sent this.
+async fn handle_delete_course(deps: &Deps, message: &IngestMessage) -> Result<Outcome, Retry> {
+    let course_id = &message.course_id;
+    let retry_err = |e: &dyn std::error::Error| Retry(e.to_string());
+    let Some(course) = deps
+        .store
+        .get_course(course_id)
+        .await
+        .map_err(|e| retry_err(&e))?
+    else {
+        return Ok(Outcome::Ignored("the course no longer exists"));
+    };
+    if !course.deleting {
+        return Ok(Outcome::Ignored("the course is not being deleted"));
+    }
+    deps.vectors
+        .delete_index(&index_name(course_id))
+        .await
+        .map_err(|e| retry_err(&e))?;
+    deps.files
+        .delete_prefix(&course_prefix(course_id))
+        .await
+        .map_err(|e| retry_err(&e))?;
+    // The documents and the course item go last, so a failed run can be repeated.
+    deps.store
+        .delete_course_data(&course)
+        .await
+        .map_err(|e| retry_err(&e))?;
+    Ok(Outcome::CourseDeleted)
 }

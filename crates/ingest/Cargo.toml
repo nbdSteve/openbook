@@ -18,7 +18,7 @@ aws-sdk-sqs.workspace = true
 aws-smithy-types.workspace = true
 chrono.workspace = true
 futures.workspace = true
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 lambda_runtime = "1"
 pdfium-render = "0.9"
 serde.workspace = true
@@ -30,6 +30,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 axum.workspace = true
 http-body-util.workspace = true
 tower = { workspace = true, features = ["util"] }

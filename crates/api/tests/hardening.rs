@@ -608,6 +608,15 @@ async fn deleting_a_course_frees_the_owner_slot_and_a_document_frees_its_slot() 
             .status,
         StatusCode::NO_CONTENT
     );
+    // The slot comes back when the worker finishes the delete. Here the test plays the worker.
+    assert_eq!(
+        app.post("/api/courses", &owner, json!({"name": "Second"}))
+            .await
+            .status,
+        StatusCode::CONFLICT
+    );
+    let record = app.state.store.get_course(&id).await.unwrap().unwrap();
+    app.state.store.delete_course_data(&record).await.unwrap();
     assert_eq!(
         app.post("/api/courses", &owner, json!({"name": "Second"}))
             .await
@@ -618,7 +627,54 @@ async fn deleting_a_course_frees_the_owner_slot_and_a_document_frees_its_slot() 
 
 #[tokio::test]
 #[ignore = "needs AWS Emulator; run make test-integration"]
-async fn a_half_finished_course_delete_can_run_again() {
+async fn a_delete_that_stays_deleting_for_twenty_minutes_sends_the_message_again() {
+    let app = start().await;
+    let owner = app.user("teacher").await;
+    let course = app.course(&owner, "Stuck").await;
+    let id = text(&course, "id");
+    let reply = app
+        .post(
+            &format!("/api/courses/{id}/documents"),
+            &owner,
+            json!({"filename": "a.pdf", "sizeBytes": 3, "contentType": "application/pdf"}),
+        )
+        .await;
+    let doc_id = text(&reply.json()["document"], "id");
+    let path = format!("/api/courses/{id}/documents/{doc_id}");
+    assert_eq!(app.delete(&path, &owner).await.status, StatusCode::ACCEPTED);
+    assert_eq!(app.queued_messages().await.len(), 1);
+    // A repeat right away sends nothing.
+    assert_eq!(app.delete(&path, &owner).await.status, StatusCode::ACCEPTED);
+    assert!(app.queued_messages().await.is_empty());
+
+    // The record says that the delete started 30 minutes ago.
+    let long_ago =
+        openbook_core::domain::timestamp(chrono::Utc::now() - chrono::Duration::minutes(30));
+    app.dynamodb
+        .update_item()
+        .table_name(&app.table)
+        .key("pk", AttributeValue::S(format!("COURSE#{id}")))
+        .key("sk", AttributeValue::S(format!("DOC#{doc_id}")))
+        .update_expression("SET updatedAt = :at")
+        .expression_attribute_values(":at", AttributeValue::S(long_ago))
+        .send()
+        .await
+        .unwrap();
+    let reply = app.delete(&path, &owner).await;
+    assert_eq!(reply.status, StatusCode::ACCEPTED);
+    assert_eq!(reply.json()["document"]["status"], "deleting");
+    assert_eq!(
+        app.queued_messages().await,
+        vec![json!({"action": "delete", "courseId": id, "documentId": doc_id})]
+    );
+    // The message time moved, so the next repeat sends nothing again.
+    assert_eq!(app.delete(&path, &owner).await.status, StatusCode::ACCEPTED);
+    assert!(app.queued_messages().await.is_empty());
+}
+
+#[tokio::test]
+#[ignore = "needs AWS Emulator; run make test-integration"]
+async fn a_course_delete_hides_the_course_at_once_and_the_owner_can_repeat_a_failed_one() {
     let app = start().await;
     let owner = app.user("teacher").await;
     let student = app.user("student").await;
@@ -626,56 +682,77 @@ async fn a_half_finished_course_delete_can_run_again() {
     let course = app.course_with_student(&owner, &student).await;
     let id = text(&course, "id");
     let code = text(&course, "inviteCode");
-    ask(
-        &app,
-        &student,
-        &id,
-        json!({"message": "a question that stays until its TTL"}),
-    )
-    .await;
+    ask(&app, &student, &id, json!({"message": "a question"})).await;
 
-    // Recreate the state after a failed run: the invite, the student, and the owner membership are gone.
-    for (pk, sk) in [
-        (format!("INVITE#{code}"), "INVITE".to_owned()),
-        (format!("COURSE#{id}"), format!("MEMBER#{}", student.id)),
-        (format!("COURSE#{id}"), format!("MEMBER#{}", owner.id)),
-    ] {
-        app.dynamodb
-            .delete_item()
-            .table_name(&app.table)
-            .key("pk", AttributeValue::S(pk))
-            .key("sk", AttributeValue::S(sk))
-            .send()
-            .await
-            .unwrap();
+    // The queue is broken, so the delete cannot finish.
+    let broken = app.router_with_queue("https://127.0.0.1:9/queue-that-is-gone.fifo");
+    let path = format!("/api/courses/{id}");
+    let reply = support::send_to(&broken, Method::DELETE, &path, Some(&owner.token), None).await;
+    assert_eq!(
+        reply.status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "{}",
+        reply.text
+    );
+    assert_eq!(reply.error_code(), "unavailable");
+
+    // Even so, the course is gone for everyone, and the invite is dead.
+    for user in [&owner, &student] {
+        assert_eq!(app.get(&path, user).await.status, StatusCode::NOT_FOUND);
+        assert_eq!(
+            app.get("/api/courses", user).await.json()["courses"],
+            json!([])
+        );
+        assert_eq!(
+            app.chat(user, &id, json!({"message": "hi"})).await.status,
+            StatusCode::NOT_FOUND
+        );
     }
-    // The invite is dead already.
     assert_eq!(
         app.post("/api/join", &late, json!({"inviteCode": code}))
             .await
             .status,
         StatusCode::NOT_FOUND
     );
-    // A user who is not the owner is refused, whatever the state.
+    assert_eq!(app.delete(&path, &late).await.status, StatusCode::NOT_FOUND);
     assert_eq!(
-        app.delete(&format!("/api/courses/{id}"), &late)
-            .await
-            .status,
+        app.delete(&path, &student).await.status,
         StatusCode::NOT_FOUND
     );
+    assert!(app.queued_messages().await.is_empty());
+    // The items wait for the worker.
+    let meta = item(&app, &format!("COURSE#{id}"), "META")
+        .await
+        .expect("the course item");
+    assert_eq!(
+        meta.get("status"),
+        Some(&AttributeValue::S("deleting".into()))
+    );
 
-    // The owner has no membership item, and the delete still works because the course names the owner.
-    let reply = app.delete(&format!("/api/courses/{id}"), &owner).await;
+    // The owner repeats the request, and this time the message is sent. A third call sends it again.
+    let reply = app.delete(&path, &owner).await;
     assert_eq!(reply.status, StatusCode::NO_CONTENT, "{}", reply.text);
-    assert!(item(&app, &format!("COURSE#{id}"), "META").await.is_none());
-    // A repeat finds nothing.
     assert_eq!(
-        app.delete(&format!("/api/courses/{id}"), &owner)
-            .await
-            .status,
-        StatusCode::NOT_FOUND
+        app.queued_messages().await,
+        vec![json!({"action": "delete_course", "courseId": id})]
     );
+    assert_eq!(
+        app.delete(&path, &owner).await.status,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(app.queued_messages().await.len(), 1);
 
+    // The owner slot comes back when the worker finishes. Here the test plays the worker.
+    let record = app
+        .state
+        .store
+        .get_course(&id)
+        .await
+        .unwrap()
+        .expect("still stored");
+    assert!(record.deleting);
+    app.state.store.delete_course_data(&record).await.unwrap();
+    assert!(item(&app, &format!("COURSE#{id}"), "META").await.is_none());
     // Only the questions stay, and every one has a TTL.
     let left = app
         .dynamodb
@@ -692,6 +769,10 @@ async fn a_half_finished_course_delete_can_run_again() {
         assert!(matches!(item.get("sk"), Some(AttributeValue::S(sk)) if sk.starts_with("Q#")));
         assert!(item.contains_key("ttl"));
     }
+    assert_eq!(
+        app.delete(&path, &owner).await.status,
+        StatusCode::NOT_FOUND
+    );
 }
 
 #[tokio::test]

@@ -11,6 +11,8 @@ use crate::ids;
 pub enum Action {
     Ingest,
     Delete,
+    /// Deletes a whole course: the vector index, the files, the documents, and the course item.
+    DeleteCourse,
 }
 
 impl Action {
@@ -18,6 +20,7 @@ impl Action {
         match self {
             Action::Ingest => "ingest",
             Action::Delete => "delete",
+            Action::DeleteCourse => "delete_course",
         }
     }
 }
@@ -28,6 +31,8 @@ impl Action {
 pub struct IngestMessage {
     pub action: Action,
     pub course_id: String,
+    /// Empty for `delete_course`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub document_id: String,
 }
 
@@ -40,14 +45,20 @@ impl IngestMessage {
         }
     }
 
-    /// `<documentId>:<action>:<ULID>`. The ULID makes every send unique, so a retry is not dropped.
+    /// A message that deletes a whole course.
+    pub fn delete_course(course_id: &str) -> Self {
+        Self::new(Action::DeleteCourse, course_id, "")
+    }
+
+    /// `<documentId>:<action>:<ULID>` (the course ID stands in for a course delete). The ULID makes
+    /// every send unique, so a retry is not dropped.
     pub fn deduplication_id(&self) -> String {
-        format!(
-            "{}:{}:{}",
-            self.document_id,
-            self.action.as_str(),
-            ids::new_id()
-        )
+        let subject = if self.document_id.is_empty() {
+            &self.course_id
+        } else {
+            &self.document_id
+        };
+        format!("{subject}:{}:{}", self.action.as_str(), ids::new_id())
     }
 
     /// One writer per course: the group is the course ID.
@@ -127,5 +138,23 @@ mod tests {
         assert!(first.starts_with("DOC:delete:"));
         assert_eq!(first.len(), "DOC:delete:".len() + 26);
         assert_ne!(first, message.deduplication_id());
+    }
+
+    #[test]
+    fn a_course_delete_has_no_document_id() {
+        let message = IngestMessage::delete_course("COURSE");
+        assert_eq!(
+            serde_json::to_value(&message).unwrap(),
+            serde_json::json!({"action": "delete_course", "courseId": "COURSE"})
+        );
+        let back: IngestMessage =
+            serde_json::from_str(r#"{"action":"delete_course","courseId":"C"}"#).unwrap();
+        assert_eq!(back, IngestMessage::delete_course("C"));
+        assert!(
+            message
+                .deduplication_id()
+                .starts_with("COURSE:delete_course:")
+        );
+        assert_eq!(message.group_id(), "COURSE");
     }
 }
