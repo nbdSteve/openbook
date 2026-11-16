@@ -16,7 +16,7 @@ The default CDK deploy path assumes bootstrap roles, and the bootstrap execution
 
 Two controls close the privilege escalation that remains. The execution role can create roles, and a role that has any policy could run code with it through the bucket-deployment Lambda.
 
-1. The permissions boundary. The execution role may create a role, or change its policies, only when the role carries `OpenbookProdPermissionsBoundary`. It can never remove the boundary (`iam:DeleteRolePermissionsBoundary` is never allowed, and an explicit Deny backs that up). The boundary allows only what the stack's own roles need: the application table, the stack buckets, read of the Openbook assets, Bedrock invocation, CloudFront invalidation, and Lambda logs. It allows no IAM, STS, CloudFormation, Lambda, or Cognito action, so a role under it cannot make another role or reach beyond the application. The CDK app adds the boundary to every role of the prod stack (`PermissionsBoundaryAspect` in `../lib/openbook-stack.ts`), and a test checks every `AWS::IAM::Role` of the synthesized prod template.
+1. The permissions boundary. The execution role may create a role, or change its policies, only when the role carries `OpenbookProdPermissionsBoundary`. It can never remove the boundary (`iam:DeleteRolePermissionsBoundary` is never allowed, and an explicit Deny backs that up). The boundary allows only what the stack's own roles need: the application table, the stack buckets, read of the Openbook assets, the ingest queue (send and consume), the stage's S3 Vectors indexes, Bedrock invocation of the catalog models and the embedding model, CloudFront invalidation, and Lambda logs. It allows no IAM, STS, CloudFormation, Lambda, or Cognito action, so a role under it cannot make another role or reach beyond the application. The CDK app adds the boundary to every role of the prod stack (`PermissionsBoundaryAspect` in `../lib/openbook-stack.ts`), and a test checks every `AWS::IAM::Role` of the synthesized prod template.
 2. The split deploy workflow. The job that has the OIDC token (`.github/workflows/deploy.yml`) runs no build, no test, and no install script. A job without the token builds and synthesizes. See `../README.md`.
 
 ## Placeholders
@@ -58,11 +58,21 @@ Use admin credentials for the target account in your own terminal. Use the same 
 6. Create the deploy role: `aws iam create-role --role-name <deploy-role> --assume-role-policy-document file://iam/rendered/github-deploy-role-trust.json`, then `aws iam put-role-policy --role-name <deploy-role> --policy-name OpenbookProdDeploy --policy-document file://iam/rendered/github-deploy-role-policy.json`.
 7. Set the three secrets on the GitHub `production` environment (see `../README.md`).
 
+### Update an existing setup (phase 2 added queues, a worker, and a vector bucket)
+
+Apply the boundary first, then the execution role. Both are new versions of documents that exist. Nothing else changes: the deploy role and both trust policies are the same.
+
+1. Render with the same values as the first time.
+2. `aws iam create-policy-version --policy-arn arn:aws:iam::<account>:policy/OpenbookProdPermissionsBoundary --policy-document file://iam/rendered/permissions-boundary-policy.json --set-as-default`. A managed policy keeps five versions. If it has five, delete the oldest non-default one first with `aws iam delete-policy-version`.
+3. `aws iam put-role-policy --role-name <execution-role> --policy-name OpenbookProdExecution --policy-document file://iam/rendered/cloudformation-execution-role-policy.json`.
+4. Compare the rendered documents with what is applied (`aws iam get-policy-version`, `aws iam get-role-policy`) before you merge the stack change.
+
 To change a document later, edit the template, run the tests, update the snapshots, render, and apply. A boundary change uses `aws iam create-policy-version --policy-arn <arn> --policy-document file://... --set-as-default`. The execution role cannot do that, and that is the point: only you, out of band, can widen the boundary.
 
 ## Limits
 
 - The execution role action list comes from the committed stack, not from a deployment. The first prod deploy may find a missing action. That fails as a denied CloudFormation call and a rollback, not as a half-deployed stack. Add the action to the template, snapshot, and apply it again.
+- The event source mapping actions (create, update, delete, get) cannot be limited by name, because a mapping ID is a random UUID. They carry the condition `lambda:FunctionArn` = `Openbook-prod-*` instead, so the execution role can touch only the mappings of the stack's functions. If CloudFormation is denied on a mapping, check that the condition key is supported for the action in question. The vector bucket and queue grants are name-scoped (`openbook-prod-*` and `Openbook-prod-ingest*`). `s3vectors:ListVectorBuckets` is not granted, because CloudFormation does not need it to create, update, or delete a bucket.
 - `iam:UpdateAssumeRolePolicy` is not conditioned on the boundary, because AWS does not support that condition for it. A role can still only do what its boundary allows.
 - If an Openbook change needs a new kind of permission for a stack role (a new AWS service, say) or a new model in the catalog, render the boundary again and apply the new policy version first.
 - Residual risk: the execution role can `CreateRole` with any trust policy (for example one that trusts another account). AWS has no condition key for the content of a trust document, so IAM cannot prevent it. The boundary caps what such a role could do to the application table, the stack buckets, the Openbook assets, the catalog's Bedrock models, CloudFront invalidation, and logs, and it allows no IAM action. A role that trusts a stranger still cannot do more than that. Only a change to the stack (a merge to `main` that passes the checks) can create such a role.

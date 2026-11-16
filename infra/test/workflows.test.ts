@@ -411,3 +411,29 @@ describe('the verify, unpack, and validate step', () => {
     expect(result.output).toContain('cloud assembly refused');
   });
 });
+
+describe('the phase 2 packaging', () => {
+  test('make build-lambdas builds both binaries for arm64 and puts libpdfium.so next to the worker', () => {
+    expect(read('Makefile')).toMatch(/build-lambdas:.*\n\tscripts\/build-lambdas\.sh/);
+    const script = read('scripts/build-lambdas.sh');
+    expect(script).toContain('cargo lambda build --release --arm64 -p openbook-api -p openbook-ingest');
+    expect(script).toContain('pdfium_fetch linux-arm64');
+    expect(script).toContain('target/lambda/openbook-ingest/libpdfium.so');
+  });
+
+  test('the deploy build job uses make build-lambdas, and the checks build the same way', () => {
+    const buildRuns = (deploy.wf.jobs.build as Job).steps.map((s) => s.run ?? '');
+    expect(buildRuns).toContain('make build-lambdas');
+    expect(checks.wf.jobs.lambda.steps.map((s) => s.run)).toContain('make build-lambdas');
+    const lambdaRun = checks.wf.jobs.lambda.steps.map((s) => s.run ?? '').join('\n');
+    expect(lambdaRun).toContain('target/lambda/openbook-ingest/libpdfium.so');
+  });
+
+  test('the Rust test jobs fetch pdfium for linux-x64 and export its path', () => {
+    for (const job of ['rust', 'rust-integration']) {
+      const runs = checks.wf.jobs[job].steps.map((s) => s.run ?? '').join('\n');
+      expect(runs, job).toContain('OPENBOOK_PDFIUM_PATH=$(scripts/fetch-pdfium.sh linux-x64)');
+      expect(runs, job).toContain('>> "$GITHUB_ENV"');
+    }
+  });
+});
