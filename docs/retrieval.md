@@ -36,6 +36,12 @@ Locally, the same handler runs as a poller: `openbook-ingest --poll` long-polls 
 12. Set `ready` with `pageCount`, `chunkCount`, `transcribedPages`, and `warnings`. A permanent error sets `failed` with an owner-safe message and acknowledges the message. A transient error (throttling, timeouts) fails the invocation so SQS retries. When `ApproximateReceiveCount` is above 3, the worker sets `failed` with "Processing failed. Delete the document and upload it again." before it opens the PDF and acknowledges the message; this also covers a PDF that crashed the worker on every earlier attempt.
 13. Before the first `PutVectors`, the worker writes `plannedChunkCount` to the document item, so a later delete can remove every key it may have written, even for a document that ends `failed`. Page fallback reasons (cap reached, transcription failed) are stored in each page file's S3 metadata, so a resumed run reports the same warnings.
 
+### PDF compatibility corpus
+
+`crates/ingest/tests/fixtures/pdf-compat/` holds small PDFs of many versions and producers: pdflatex (Type 1 and math), XeLaTeX (Greek and Chinese, embedded fonts), macOS Quartz, Ghostscript at 1.3, 1.4, 1.7, and PDF/A-2b, qpdf object streams, linearized, PDF 2.0, an incremental update, owner-only and user-password encryption, a scan, a multi-page file, a damaged but repairable file, and an unopenable file.
+`scripts/make-pdf-fixtures.sh` regenerates them from sources in the script, and its `README.md` lists each file and its expected outcome.
+`crates/ingest/tests/pdf_compat.rs` (run by `make test-integration`) ingests each one and checks the status, the page count, the stored text, and the transcribed pages, from one table.
+
 ### Steps for `delete`
 
 The API sets the status to `deleting`. The worker deletes the vectors by key (`<documentId>:0` to the larger of `chunkCount` and `plannedChunkCount`, minus 1), removes the document from the BM25 index, deletes the document's S3 prefix, and deletes the record and gives back the course document slot in one transaction. A `DELETE` on a document that has been `deleting` for more than 20 minutes sends the `delete` message again (the worker's delete is idempotent).
