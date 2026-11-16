@@ -252,5 +252,5 @@ open(sys.argv[2], "wb").write(data[: len(data) // 3])
 EOF
 
 echo "Fixtures in $out:"
-ls -l "$out" | awk 'NR>1 {print $5, $9}'
+for f in "$out"/*.pdf; do printf '%s %s\n' "$(wc -c < "$f" | tr -d ' ')" "$(basename "$f")"; done
 du -sk "$out" | awk '{print "total", $1, "KB"}'
