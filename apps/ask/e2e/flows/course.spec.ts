@@ -216,9 +216,9 @@ test('an answer from the uploaded PDF shows citations and sources, also after a 
     }
     // Opening a source shows its passage as plain text.
     await entry.click();
-    await expect(student.getByRole('tooltip')).toContainText(/Pythagorean|Photosynthesis/);
+    await expect(student.getByRole('dialog', { name: /Source 1/ })).toContainText(/Pythagorean|Photosynthesis/);
     await student.keyboard.press('Escape');
-    await expect(student.getByRole('tooltip')).toHaveCount(0);
+    await expect(student.getByRole('dialog')).toHaveCount(0);
   };
   await checkSources();
   await student.reload();

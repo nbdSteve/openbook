@@ -104,7 +104,7 @@ const SCREENS: Screen[] = [
     },
     act: async (page) => {
       await page.getByRole('button', { name: /Source 1/ }).first().click();
-      await expect(page.getByRole('tooltip')).toBeVisible();
+      await expect(page.getByRole('dialog')).toBeVisible();
     },
   },
   {
@@ -118,7 +118,22 @@ const SCREENS: Screen[] = [
     act: async (page) => {
       // Open the entry with the long snippet. Hovering its badge highlights both.
       await page.locator('[data-variant="entry"][data-source-n="1"]').click();
-      await expect(page.getByRole('tooltip')).toContainText('thylakoid membrane holds');
+      const dialog = page.getByRole('dialog', { name: /Source 1/ });
+      await expect(dialog).toContainText('thylakoid membrane holds');
+      // The 2400-character passage scrolls inside the popover, so the end can be read.
+      const scrolls = await dialog.evaluate((el) => el.scrollHeight > el.clientHeight);
+      expect(scrolls).toBe(true);
+      const atEnd = () => dialog.evaluate((el) => el.scrollTop + el.clientHeight >= el.scrollHeight - 1);
+      expect(await atEnd()).toBe(false);
+      await dialog.evaluate((el) => el.scrollTo(0, el.scrollHeight));
+      expect(await atEnd()).toBe(true);
+      await expect(dialog).toContainText('END-OF-PASSAGE');
+      // Escape closes it and the focus returns to the entry.
+      await page.keyboard.press('Escape');
+      await expect(page.getByRole('dialog')).toHaveCount(0);
+      await expect(page.locator('[data-variant="entry"][data-source-n="1"]')).toBeFocused();
+      await page.locator('[data-variant="entry"][data-source-n="1"]').click();
+      await expect(dialog).toBeVisible();
       await expect(page.locator('[data-variant="badge"][data-source-n="1"]').first()).toHaveClass(/ring-2/);
     },
   },
@@ -132,8 +147,8 @@ const SCREENS: Screen[] = [
     act: async (page) => {
       // Markup in a snippet is shown as text, never rendered.
       await page.locator('[data-variant="entry"][data-source-n="3"]').click();
-      await expect(page.getByRole('tooltip')).toContainText('<b>markup</b> & an ampersand');
-      await expect(page.getByRole('tooltip').locator('b')).toHaveCount(0);
+      await expect(page.getByRole('dialog')).toContainText('<b>markup</b> & an ampersand');
+      await expect(page.getByRole('dialog').locator('b')).toHaveCount(0);
     },
   },
   {

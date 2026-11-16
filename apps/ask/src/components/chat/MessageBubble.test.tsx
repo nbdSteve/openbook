@@ -9,7 +9,7 @@ const sources: Source[] = [
   { n: 2, documentId: 'D2', documentName: 'Geometry.pdf', snippet: 'Second passage' },
 ];
 
-function renderAnswer(content: string, state?: 'streaming') {
+function renderAnswer(content: string, state?: 'streaming' | 'failed') {
   return render(
     <ModelsContext.Provider value={{ models: [], find: () => undefined, defaultModel: undefined }}>
       <MessageBubble message={{ id: 'A', role: 'assistant', content, createdAt: '', sources, state }} />
@@ -29,7 +29,7 @@ describe('answer sources', () => {
   it('shows the snippet as plain text, never as HTML', () => {
     const { container } = renderAnswer('Claim [1].');
     fireEvent.click(container.querySelector('[data-variant="entry"][data-source-n="1"]')!);
-    const tooltip = screen.getByRole('tooltip');
+    const tooltip = screen.getByRole('dialog', { name: /Source 1/ });
     expect(tooltip).toHaveTextContent('First <b>passage</b> & more');
     expect(tooltip.querySelector('b')).toBeNull();
   });
@@ -57,5 +57,23 @@ describe('answer sources', () => {
       </ModelsContext.Provider>,
     );
     expect(screen.queryByTestId('sources')).toBeNull();
+  });
+
+  it('hides the sources list when the answer failed', () => {
+    renderAnswer('Partial answer [1]', 'failed');
+    expect(screen.queryByTestId('sources')).toBeNull();
+  });
+
+  it('pins the popover on click, scrolls inside it, and closes it with Escape', () => {
+    const { container } = renderAnswer('Claim [1].');
+    const entry = container.querySelector('[data-variant="entry"][data-source-n="1"]') as HTMLElement;
+    fireEvent.click(entry);
+    const dialog = screen.getByRole('dialog', { name: /Source 1/ });
+    expect(dialog).toHaveClass('overflow-y-auto');
+    expect(dialog).toHaveAttribute('tabindex', '0');
+    expect(dialog).toHaveFocus();
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(entry).toHaveFocus();
   });
 });

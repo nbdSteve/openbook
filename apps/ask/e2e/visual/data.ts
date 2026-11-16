@@ -90,8 +90,8 @@ export const MESSAGES: Message[] = [
   },
 ];
 
-const LONG_SNIPPET =
-  'The thylakoid membrane holds the photosystems and the electron transport chain. When light reaches photosystem II, chlorophyll gives up electrons, and water is split to replace them. The electrons pass along the chain and drive a proton pump, so protons build up inside the thylakoid space. The protons flow back through ATP synthase, and the enzyme makes ATP from ADP and phosphate. ' .repeat(3).trim();
+// About 2400 characters, the longest passage the API sends. The end marker proves that the whole text can be reached.
+const LONG_SNIPPET = `${'The thylakoid membrane holds the photosystems and the electron transport chain. When light reaches photosystem II, chlorophyll gives up electrons, and water is split to replace them. The electrons pass along the chain and drive a proton pump, so protons build up inside the thylakoid space. The protons flow back through ATP synthase, and the enzyme makes ATP from ADP and phosphate. '.repeat(7)}END-OF-PASSAGE`;
 
 /** One answer with four sources: long document names, a page-less source, and a very long snippet. */
 export const MESSAGES_MANY_SOURCES: Message[] = [

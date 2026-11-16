@@ -65,7 +65,7 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
               </div>
             )}
 
-            {!isUser && message.sources && message.sources.length > 0 && (
+            {!isUser && message.sources && message.sources.length > 0 && message.state !== 'failed' && (
               <SourcesList sources={message.sources} />
             )}
 

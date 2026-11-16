@@ -1,9 +1,9 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { cn } from '@/lib/cn';
+import type { Source } from '@/services/api/types';
 import { sourceLabel } from './citations';
 import { useSourceHighlight } from './SourceHighlight';
-import type { Source } from '@/services/api/types';
 
 interface Position {
   left: number;
@@ -13,7 +13,9 @@ interface Position {
   maxHeight: number;
 }
 
-const POPOVER_WIDTH = 340;
+const POPOVER_WIDTH = 360;
+/** The popover body scrolls past this height (in pixels), also when there is more room. */
+const POPOVER_MAX_HEIGHT = 320;
 
 interface SourceButtonProps {
   source: Source;
@@ -22,22 +24,31 @@ interface SourceButtonProps {
 }
 
 /**
- * A button that shows the source passage on hover, focus, or tap (a click pins it open; Escape
- * closes it). The passage is shown as plain text, never as HTML or Markdown. The popover is fixed
- * and clamped to the viewport, so it never causes horizontal overflow. A badge and its list entry
- * share `active`, so hovering or focusing one highlights the other.
+ * A button that shows the source passage on hover or focus. A click, tap, or Enter pins the
+ * popover open and moves focus into it, so a long passage can be scrolled with a pointer, a
+ * finger, or the keyboard. Escape closes it and returns focus to the button. The passage is plain
+ * text, never HTML or Markdown. The popover is fixed and clamped to the viewport. A badge and its
+ * list entry share the highlight (through context), so hovering or focusing one lights the other.
  */
 export function SourceButton({ source, variant }: SourceButtonProps) {
   const { active, onActive } = useSourceHighlight();
   const [position, setPosition] = useState<Position | null>(null);
-  // A click or tap pins the popover open. Touch browsers send mouseenter before click.
   const pinned = useRef(false);
+  const [isPinned, setIsPinned] = useState(false);
+  const hideTimer = useRef<number | undefined>(undefined);
   const button = useRef<HTMLButtonElement>(null);
+  const popover = useRef<HTMLDivElement>(null);
   const popoverId = useId();
   const open = position !== null;
   const highlighted = active === source.n;
 
+  const setPinned = (value: boolean) => {
+    pinned.current = value;
+    setIsPinned(value);
+  };
+
   const show = () => {
+    window.clearTimeout(hideTimer.current);
     onActive(source.n);
     const rect = button.current?.getBoundingClientRect();
     if (!rect) return;
@@ -48,28 +59,42 @@ export function SourceButton({ source, variant }: SourceButtonProps) {
     const roomBelow = window.innerHeight - rect.bottom - 16;
     setPosition(
       roomAbove > roomBelow
-        ? { left, width, bottom: window.innerHeight - rect.top + 8, maxHeight: roomAbove }
-        : { left, width, top: rect.bottom + 8, maxHeight: roomBelow },
+        ? { left, width, bottom: window.innerHeight - rect.top + 8, maxHeight: Math.min(roomAbove, POPOVER_MAX_HEIGHT) }
+        : { left, width, top: rect.bottom + 8, maxHeight: Math.min(roomBelow, POPOVER_MAX_HEIGHT) },
     );
   };
   const hide = () => {
-    pinned.current = false;
+    window.clearTimeout(hideTimer.current);
+    setPinned(false);
     onActive(null);
     setPosition(null);
+  };
+  // Leaving the button hides a hover popover after a short wait, so the pointer can cross the gap
+  // into the popover (to scroll a long passage) without closing it.
+  const hideSoon = () => {
+    window.clearTimeout(hideTimer.current);
+    hideTimer.current = window.setTimeout(() => {
+      if (!pinned.current) hide();
+    }, 150);
   };
 
   useEffect(() => {
     if (!open) return;
     const close = () => {
-      pinned.current = false;
+      setPinned(false);
       onActive(null);
       setPosition(null);
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') close();
+      if (e.key !== 'Escape') return;
+      const focusInside = popover.current?.contains(document.activeElement);
+      close();
+      if (focusInside) button.current?.focus();
     };
     // Follow the button when the page scrolls or the layout shifts. Close if it leaves the screen.
-    const follow = () => {
+    const follow = (event: Event) => {
+      // Scrolling inside the popover is not a page scroll.
+      if (event.target instanceof Node && popover.current?.contains(event.target)) return;
       const rect = button.current?.getBoundingClientRect();
       if (!rect || rect.bottom < 0 || rect.top > window.innerHeight) close();
       else show();
@@ -86,14 +111,23 @@ export function SourceButton({ source, variant }: SourceButtonProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
+  // A pinned popover takes focus, so the keyboard can scroll it.
+  useEffect(() => {
+    if (isPinned && open) popover.current?.focus();
+  }, [isPinned, open]);
+
+  useEffect(() => () => window.clearTimeout(hideTimer.current), []);
+
   const content: ReactNode =
     variant === 'badge' ? (
       source.n
     ) : (
       <>
         <span className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-md bg-teal-subtle px-1 text-[11px] font-bold text-teal">{source.n}</span>
-        <span className="min-w-0 truncate">{source.documentName}</span>
-        {source.page !== undefined && <span className="shrink-0">, p. {source.page}</span>}
+        <span className="flex min-w-0">
+          <span className="truncate">{source.documentName}</span>
+          {source.page !== undefined && <span className="shrink-0">, p. {source.page}</span>}
+        </span>
       </>
     );
 
@@ -106,19 +140,24 @@ export function SourceButton({ source, variant }: SourceButtonProps) {
         data-variant={variant}
         onMouseEnter={show}
         onMouseLeave={() => {
+          if (!pinned.current) hideSoon();
+        }}
+        onFocus={() => {
+          if (!pinned.current) show();
+        }}
+        onBlur={() => {
+          // Focus moving into a pinned popover is not a blur to act on.
           if (!pinned.current) hide();
         }}
-        onFocus={show}
-        onBlur={hide}
         onClick={() => {
           if (pinned.current) hide();
           else {
             show();
-            pinned.current = true;
+            setPinned(true);
           }
         }}
         aria-expanded={open}
-        aria-describedby={open ? popoverId : undefined}
+        aria-controls={open ? popoverId : undefined}
         // The list entry's visible text (number and document) is its name. The badge says more than its number.
         aria-label={variant === 'badge' ? `Source ${source.n}: ${sourceLabel(source)}` : undefined}
         className={cn(
@@ -132,18 +171,34 @@ export function SourceButton({ source, variant }: SourceButtonProps) {
       </button>
       {open &&
         createPortal(
+          // Hover: a tooltip. Pinned (click, tap, Enter): a labelled region that holds focus. Either way the body
+          // scrolls and can take focus, so a long passage is reachable without a mouse.
           <div
+            ref={popover}
             id={popoverId}
-            role="tooltip"
+            role={isPinned ? 'dialog' : 'tooltip'}
+            aria-label={isPinned ? `Source ${source.n}: ${sourceLabel(source)}` : undefined}
+            tabIndex={0}
+            onMouseEnter={() => window.clearTimeout(hideTimer.current)}
+            onMouseLeave={() => {
+              if (!pinned.current) hideSoon();
+            }}
+            onBlur={(event) => {
+              // Focus left both the popover and its button: close.
+              const next = event.relatedTarget as Node | null;
+              if (isPinned && !popover.current?.contains(next) && next !== button.current) hide();
+            }}
             style={{ position: 'fixed', left: position.left, width: position.width, top: position.top, bottom: position.bottom, maxHeight: position.maxHeight }}
-            className="z-[70] overflow-hidden rounded-xl border border-border bg-surface p-3 text-left shadow-lg"
+            className="z-[70] overflow-y-auto overscroll-contain rounded-xl border border-border bg-surface p-3 text-left shadow-lg"
           >
             <p className="mb-1.5 break-words text-xs font-semibold text-teal">
               {source.documentName}
               {source.page !== undefined && <span className="font-normal text-text-muted"> · Page {source.page}</span>}
             </p>
             {/* Plain text: React escapes it, and `whitespace-pre-wrap` keeps the line breaks. */}
-            <p className="line-clamp-[16] whitespace-pre-wrap break-words text-xs leading-relaxed text-text-secondary">{source.snippet}</p>
+            <p data-testid="snippet" className="whitespace-pre-wrap break-words text-xs leading-relaxed text-text-secondary">
+              {source.snippet}
+            </p>
           </div>,
           document.body,
         )}
@@ -155,9 +210,7 @@ export function SourceButton({ source, variant }: SourceButtonProps) {
 export function SourcesList({ sources }: { sources: Source[] }) {
   return (
     <div className="mt-3 border-t border-border-subtle pt-2.5" data-testid="sources">
-      <p className="mb-1.5 text-xs font-medium text-text-muted">
-        Sources
-      </p>
+      <p className="mb-1.5 text-xs font-medium text-text-muted">Sources</p>
       <ul className="flex flex-wrap gap-1.5" aria-label="Sources for this answer">
         {sources.map((source) => (
           <li key={source.n} className="min-w-0 max-w-full">
