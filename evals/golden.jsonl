@@ -1,0 +1,95 @@
+{"id": "lookup-01", "question": "What is the product rule of exponents?", "relevantPages": [1], "kind": "lookup"}
+{"id": "lookup-02", "question": "What does the quotient rule of exponents say about dividing exponential expressions with the same base?", "relevantPages": [2], "kind": "lookup"}
+{"id": "lookup-03", "question": "How do you use the power rule of exponents when an exponential expression is raised to a power?", "relevantPages": [3], "kind": "lookup"}
+{"id": "lookup-04", "question": "What is the zero exponent rule of exponents?", "relevantPages": [4], "kind": "lookup"}
+{"id": "lookup-05", "question": "What is the negative rule of exponents?", "relevantPages": [5], "kind": "lookup"}
+{"id": "lookup-06", "question": "What is the power of a product rule of exponents?", "relevantPages": [6], "kind": "lookup"}
+{"id": "lookup-07", "question": "What does the zero-product property say?", "relevantPages": [9, 10], "kind": "lookup"}
+{"id": "lookup-08", "question": "How do you factor a quadratic equation when the leading coefficient is 1?", "relevantPages": [10], "kind": "lookup"}
+{"id": "lookup-09", "question": "How do you solve a quadratic equation by grouping when the leading coefficient is not 1?", "relevantPages": [11, 12], "kind": "lookup"}
+{"id": "lookup-10", "question": "What is the square root property?", "relevantPages": [13], "kind": "lookup"}
+{"id": "lookup-11", "question": "What are the steps for solving a quadratic equation by completing the square?", "relevantPages": [14], "kind": "lookup"}
+{"id": "lookup-12", "question": "What is the quadratic formula and when does it work?", "relevantPages": [15], "kind": "lookup"}
+{"id": "lookup-13", "question": "What does the discriminant tell us about the solutions of a quadratic equation?", "relevantPages": [16, 17], "kind": "lookup"}
+{"id": "lookup-14", "question": "What is a relation, and what are its domain and range?", "relevantPages": [19], "kind": "lookup"}
+{"id": "lookup-15", "question": "What is the vertex of a parabola and what is the axis of symmetry?", "relevantPages": [27], "kind": "lookup"}
+{"id": "lookup-16", "question": "What is the general form of a quadratic function?", "relevantPages": [28, 30], "kind": "lookup"}
+{"id": "lookup-17", "question": "What is the vertex form of a quadratic function?", "relevantPages": [29, 30], "kind": "lookup"}
+{"id": "lookup-18", "question": "What is the general form of an exponential function, and what do a and b mean?", "relevantPages": [40, 41], "kind": "lookup"}
+{"id": "paraphrase-01", "question": "When I multiply two powers that share a base, what happens to the small numbers up top?", "relevantPages": [1], "kind": "paraphrase"}
+{"id": "paraphrase-02", "question": "If I divide powers that have the same base, do I add or subtract the little exponents?", "relevantPages": [2], "kind": "paraphrase"}
+{"id": "paraphrase-03", "question": "What happens to the exponents when I take a power of a power?", "relevantPages": [3], "kind": "paraphrase"}
+{"id": "paraphrase-04", "question": "Why does any nonzero number raised to the power of nothing come out as one?", "relevantPages": [4], "kind": "paraphrase"}
+{"id": "paraphrase-05", "question": "How do I rewrite a number with a minus sign in its exponent so the exponent is positive?", "relevantPages": [5], "kind": "paraphrase"}
+{"id": "paraphrase-06", "question": "Why can I give the exponent to each factor when a whole product is raised to a power?", "relevantPages": [6], "kind": "paraphrase"}
+{"id": "paraphrase-07", "question": "How can I tell if a set of pairs is a function when one input might give two answers?", "relevantPages": [19, 20], "kind": "paraphrase"}
+{"id": "paraphrase-08", "question": "Why is the coffee shop price a function of the item but the item is not a function of the price?", "relevantPages": [20], "kind": "paraphrase"}
+{"id": "paraphrase-09", "question": "What do the brackets next to the letter f mean, are they a multiplication?", "relevantPages": [21], "kind": "paraphrase"}
+{"id": "paraphrase-10", "question": "How can I check from a table of numbers whether it describes a function?", "relevantPages": [23], "kind": "paraphrase"}
+{"id": "paraphrase-11", "question": "What is the difference between putting a number in and finding which input gives a certain output?", "relevantPages": [24], "kind": "paraphrase"}
+{"id": "paraphrase-12", "question": "How do I know which way a U-shaped curve opens just from its formula?", "relevantPages": [28], "kind": "paraphrase"}
+{"id": "paraphrase-13", "question": "How do I find the point where a parabola turns around from its formula?", "relevantPages": [31, 32], "kind": "paraphrase"}
+{"id": "paraphrase-14", "question": "How do I find the biggest area I can fence in with a fixed length of wire?", "relevantPages": [34], "kind": "paraphrase"}
+{"id": "paraphrase-15", "question": "What price should the newspaper charge to bring in the most money?", "relevantPages": [35], "kind": "paraphrase"}
+{"id": "paraphrase-16", "question": "Where does a parabola cross the axes and how do I find those points?", "relevantPages": [36], "kind": "paraphrase"}
+{"id": "paraphrase-17", "question": "What does it mean when a quantity grows by the same percentage in each period?", "relevantPages": [39, 40], "kind": "paraphrase"}
+{"id": "paraphrase-18", "question": "Why can the base of an exponential function not be negative?", "relevantPages": [41], "kind": "paraphrase"}
+{"id": "paraphrase-19", "question": "Which method solves every quadratic equation, even one that I cannot factor?", "relevantPages": [15], "kind": "paraphrase"}
+{"id": "notation-01", "question": "How do I solve x^2 - 5x - 6 = 0?", "relevantPages": [10, 11], "kind": "notation"}
+{"id": "notation-02", "question": "Solve x^2 + 8x + 15 = 0", "relevantPages": [11], "kind": "notation"}
+{"id": "notation-03", "question": "Solve x^2 - 9 = 0", "relevantPages": [11], "kind": "notation"}
+{"id": "notation-04", "question": "How do I solve 4x^2 + 15x + 9 = 0?", "relevantPages": [11, 12], "kind": "notation"}
+{"id": "notation-05", "question": "x^2 = 8, what are the solutions?", "relevantPages": [13], "kind": "notation"}
+{"id": "notation-06", "question": "Solve 4x^2 + 1 = 7", "relevantPages": [13], "kind": "notation"}
+{"id": "notation-07", "question": "Solve x^2 - 3x - 5 = 0 by completing the square", "relevantPages": [14], "kind": "notation"}
+{"id": "notation-08", "question": "Use the quadratic formula on x^2 + 5x + 1 = 0", "relevantPages": [16], "kind": "notation"}
+{"id": "notation-09", "question": "What does b^2 - 4ac < 0 mean for the solutions?", "relevantPages": [16, 17], "kind": "notation"}
+{"id": "notation-10", "question": "a^2 + b^2 = c^2 for a right triangle", "relevantPages": [17], "kind": "notation"}
+{"id": "notation-11", "question": "What is a^m / a^n when m > n?", "relevantPages": [2], "kind": "notation"}
+{"id": "notation-12", "question": "(a^m)^n = ?", "relevantPages": [3], "kind": "notation"}
+{"id": "notation-13", "question": "What is a^0 and what is 0^0?", "relevantPages": [4], "kind": "notation"}
+{"id": "notation-14", "question": "Evaluate f(x) = x^2 + 3x - 4 at x = a + h", "relevantPages": [24], "kind": "notation"}
+{"id": "notation-15", "question": "h(p) = p^2 + 2p, solve h(p) = 3", "relevantPages": [25], "kind": "notation"}
+{"id": "notation-16", "question": "In f(x) = a(x - h)^2 + k, what are h and k?", "relevantPages": [29, 30], "kind": "notation"}
+{"id": "notation-17", "question": "Why is the axis of symmetry x = -b/(2a)?", "relevantPages": [28], "kind": "notation"}
+{"id": "notation-18", "question": "f(x) = 3x^2 + 5x - 2: find the intercepts", "relevantPages": [36, 37], "kind": "notation"}
+{"id": "notation-19", "question": "Find the x-intercepts of f(x) = 2x^2 + 4x - 4", "relevantPages": [37], "kind": "notation"}
+{"id": "notation-20", "question": "What is f(3) when f(x) = 30(2)^x?", "relevantPages": [42], "kind": "notation"}
+{"id": "notation-21", "question": "P(t) = 1.25(1.012)^t, what is P(18)?", "relevantPages": [43], "kind": "notation"}
+{"id": "followup-01", "question": "And what about dividing instead?", "context": "What is the product rule of exponents?", "relevantPages": [2], "kind": "followup"}
+{"id": "followup-02", "question": "Is there an exception to it?", "context": "What is the zero exponent rule?", "relevantPages": [4], "kind": "followup"}
+{"id": "followup-03", "question": "What if the number in front of x squared is not 1?", "context": "How do I solve a quadratic equation by factoring?", "relevantPages": [11, 12], "kind": "followup"}
+{"id": "followup-04", "question": "Can you show me an example?", "context": "What is the square root property?", "relevantPages": [13], "kind": "followup"}
+{"id": "followup-05", "question": "How does that lead to the quadratic formula?", "context": "What is completing the square?", "relevantPages": [15], "kind": "followup"}
+{"id": "followup-06", "question": "What does the part under the square root tell me?", "context": "What is the quadratic formula?", "relevantPages": [16, 17], "kind": "followup"}
+{"id": "followup-07", "question": "Can you give me an example that is not a function?", "context": "What is a function?", "relevantPages": [19, 20], "kind": "followup"}
+{"id": "followup-08", "question": "What if the same input shows up twice?", "context": "How do I know if a table is a function?", "relevantPages": [23], "kind": "followup"}
+{"id": "followup-09", "question": "Is f(x) the same as f times x?", "context": "What is function notation?", "relevantPages": [21], "kind": "followup"}
+{"id": "followup-10", "question": "What if the input is a letter and not a number?", "context": "How do I evaluate a function?", "relevantPages": [24], "kind": "followup"}
+{"id": "followup-11", "question": "Where is its highest or lowest point?", "context": "What is a parabola?", "relevantPages": [27], "kind": "followup"}
+{"id": "followup-12", "question": "What does a negative a do to the graph?", "context": "What is the vertex form of a quadratic?", "relevantPages": [29], "kind": "followup"}
+{"id": "followup-13", "question": "Now write it in the other form.", "context": "How do I find the vertex of f(x) = 2x^2 - 6x + 7?", "relevantPages": [32], "kind": "followup"}
+{"id": "followup-14", "question": "And the range?", "context": "What is the domain of a quadratic function?", "relevantPages": [32, 33], "kind": "followup"}
+{"id": "followup-15", "question": "And what if it cannot be factored?", "context": "How do I find the intercepts of a parabola?", "relevantPages": [37], "kind": "followup"}
+{"id": "followup-16", "question": "What is the difference between growth and decay?", "context": "What is an exponential function?", "relevantPages": [40], "kind": "followup"}
+{"id": "followup-17", "question": "What about a base equal to 1?", "context": "Why must the base of an exponential function be positive?", "relevantPages": [41], "kind": "followup"}
+{"id": "followup-18", "question": "Does the same hold when a product is raised to a power?", "context": "How do negative exponents work?", "relevantPages": [5, 6], "kind": "followup"}
+{"id": "not-covered-01", "question": "What is the definition of a logarithm?", "relevantPages": [], "kind": "not_covered"}
+{"id": "not-covered-02", "question": "How do I solve log base 2 of x equals 5?", "relevantPages": [], "kind": "not_covered"}
+{"id": "not-covered-03", "question": "How do I find the derivative of x squared?", "relevantPages": [], "kind": "not_covered"}
+{"id": "not-covered-04", "question": "How do I add fractions that have different denominators?", "relevantPages": [], "kind": "not_covered"}
+{"id": "not-covered-05", "question": "What is the formula for compound interest?", "relevantPages": [], "kind": "not_covered"}
+{"id": "not-covered-06", "question": "How do I solve a system of two linear equations?", "relevantPages": [], "kind": "not_covered"}
+{"id": "not-covered-07", "question": "What is the sine of 30 degrees?", "relevantPages": [], "kind": "not_covered"}
+{"id": "not-covered-08", "question": "How do I divide one polynomial by another with long division?", "relevantPages": [], "kind": "not_covered"}
+{"id": "not-covered-09", "question": "What is the equation of an ellipse?", "relevantPages": [], "kind": "not_covered"}
+{"id": "not-covered-10", "question": "How do I find the inverse of a function?", "relevantPages": [], "kind": "not_covered"}
+{"id": "not-covered-11", "question": "How do I find the standard deviation of a data set?", "relevantPages": [], "kind": "not_covered"}
+{"id": "not-covered-12", "question": "What is the binomial theorem?", "relevantPages": [], "kind": "not_covered"}
+{"id": "not-covered-13", "question": "How do I solve an absolute value inequality?", "relevantPages": [], "kind": "not_covered"}
+{"id": "not-covered-14", "question": "How do I find the determinant of a 2 by 2 matrix?", "relevantPages": [], "kind": "not_covered"}
+{"id": "not-covered-15", "question": "What are the asymptotes of a rational function?", "relevantPages": [], "kind": "not_covered"}
+{"id": "not-covered-16", "question": "How do I find the sum of an arithmetic sequence?", "relevantPages": [], "kind": "not_covered"}
+{"id": "not-covered-17", "question": "How do I convert a number to scientific notation?", "relevantPages": [], "kind": "not_covered"}
+{"id": "not-covered-18", "question": "How do I factor a sum of cubes?", "relevantPages": [], "kind": "not_covered"}
+{"id": "not-covered-19", "question": "What is the law of cosines?", "relevantPages": [], "kind": "not_covered"}
