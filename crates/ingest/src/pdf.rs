@@ -53,7 +53,7 @@ pub fn library_dir(configured: Option<&Path>) -> PathBuf {
 }
 
 /// pdfium starts once per process.
-fn pdfium(dir: &Path) -> Result<&'static Pdfium, PdfError> {
+pub fn pdfium(dir: &Path) -> Result<&'static Pdfium, PdfError> {
     let loaded = PDFIUM.get_or_init(|| {
         let library = Pdfium::pdfium_platform_library_name_at_path(dir);
         Pdfium::bind_to_library(&library)

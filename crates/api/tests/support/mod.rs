@@ -456,6 +456,11 @@ impl TestApp {
         build_router(build_state(&vars, &self.sdk, Duration::ZERO, None))
     }
 
+    /// The environment that the test config was built from.
+    pub fn vars(&self) -> &HashMap<String, String> {
+        &self.vars
+    }
+
     /// A router over the same resources with another ingest queue URL.
     pub fn router_with_queue(&self, queue_url: &str) -> Router {
         let mut vars = self.vars.clone();
