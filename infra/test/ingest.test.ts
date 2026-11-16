@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { Match } from 'aws-cdk-lib/assertions';
 import { describe, expect, test } from 'vitest';
+import { exampleValues, readTemplate, renderIamDocument } from '../scripts/render-iam';
 import { asArray, cdkJsonContext, fixtures, synth, type Json } from './helpers';
 
 type Synth = ReturnType<typeof synth>;
@@ -26,6 +27,9 @@ function roleStatements(s: Synth, rolePrefix: string): Json[] {
 }
 
 const text = (value: unknown): string => JSON.stringify(value);
+
+/** The course index ARN pattern. AWS authorizes every index action, CreateIndex included, on it. */
+const indexARN = 'arn:aws:s3vectors:ap-southeast-2:111111111111:bucket/openbook-prod-vectors/index/c-*';
 
 /** An ARN value with the partition and the account filled in (the stack account is fake). */
 function flat(value: unknown): string {
@@ -152,8 +156,13 @@ describe('the IAM statements of the two functions', () => {
 
   test('the API deletes and queries course indexes, and nothing else in S3 Vectors', () => {
     const indexes = bySid(api, 'CourseVectorIndexes');
-    expect(actionsOf(indexes)).toEqual(['s3vectors:DeleteIndex', 's3vectors:GetIndex', 's3vectors:QueryVectors']);
-    expect(flat(indexes.Resource)).toBe('arn:aws:s3vectors:ap-southeast-2:111111111111:bucket/openbook-prod-vectors/index/*');
+    expect(actionsOf(indexes)).toEqual([
+      's3vectors:DeleteIndex',
+      's3vectors:GetIndex',
+      's3vectors:GetVectors',
+      's3vectors:QueryVectors',
+    ]);
+    expect(flat(indexes.Resource)).toBe(indexARN);
     expect(api.flatMap(actionsOf).filter((a) => a.startsWith('s3vectors:')).sort()).toEqual(actionsOf(indexes));
   });
 
@@ -171,18 +180,16 @@ describe('the IAM statements of the two functions', () => {
   });
 
   test('the worker creates indexes in the stage bucket, and reads and writes only its indexes', () => {
-    const create = bySid(ingest, 'CourseVectorIndexCreate');
-    expect(actionsOf(create)).toEqual(['s3vectors:CreateIndex']);
-    expect(flat(create.Resource)).toBe('arn:aws:s3vectors:ap-southeast-2:111111111111:bucket/openbook-prod-vectors');
     const indexes = bySid(ingest, 'CourseVectorIndexes');
     expect(actionsOf(indexes)).toEqual([
+      's3vectors:CreateIndex',
       's3vectors:DeleteVectors',
       's3vectors:GetIndex',
       's3vectors:GetVectors',
       's3vectors:PutVectors',
       's3vectors:QueryVectors',
     ]);
-    expect(flat(indexes.Resource)).toBe('arn:aws:s3vectors:ap-southeast-2:111111111111:bucket/openbook-prod-vectors/index/*');
+    expect(flat(indexes.Resource)).toBe(indexARN);
     // It can delete vectors, but not an index: only the API deletes an index (with the course).
     expect(ingest.flatMap(actionsOf)).not.toContain('s3vectors:DeleteIndex');
   });
@@ -323,5 +330,51 @@ describe('the limits of phase 2', () => {
     expect(env.OPENBOOK_LIMIT_DAILY_TRANSCRIBED_PAGES_GLOBAL).toBe('1000');
     expect(env.OPENBOOK_LIMIT_DAILY_TRANSCRIBED_PAGES_PER_USER).toBe('50');
     expect(env.OPENBOOK_LIMIT_PAGES_PER_DOCUMENT).toBe('100');
+  });
+});
+
+describe('S3 Vectors resource types (Service Authorization Reference)', () => {
+  type Statement = { Sid: string; Action: string | string[]; Resource: unknown };
+  const bucketLevel = new Set(['s3vectors:CreateVectorBucket', 's3vectors:GetVectorBucket', 's3vectors:DeleteVectorBucket', 's3vectors:ListIndexes']);
+  const indexLevel = new Set([
+    's3vectors:CreateIndex',
+    's3vectors:GetIndex',
+    's3vectors:DeleteIndex',
+    's3vectors:QueryVectors',
+    's3vectors:PutVectors',
+    's3vectors:GetVectors',
+    's3vectors:DeleteVectors',
+  ]);
+
+  test('every index action, CreateIndex included, targets the course index ARN pattern and never the bucket ARN', () => {
+    const roles = [
+      ...roleStatements(prod, 'ApiFunctionServiceRoleDefaultPolicy'),
+      ...roleStatements(prod, 'IngestFunctionServiceRoleDefaultPolicy'),
+    ] as Statement[];
+    const seen = new Set<string>();
+    for (const st of roles) {
+      for (const action of asArray(st.Action).filter((a) => a.startsWith('s3vectors:'))) {
+        seen.add(action);
+        expect(indexLevel.has(action), `${action} is an index action`).toBe(true);
+        expect(flat(st.Resource), `${st.Sid} ${action}`).toBe(indexARN);
+      }
+    }
+    expect(seen.has('s3vectors:CreateIndex')).toBe(true);
+  });
+
+  test('the boundary and the execution role follow the same resource types', () => {
+    const values = { ...exampleValues(), ACCOUNT_ID: '111111111111' };
+    const rendered = (name: string): { Statement: Statement[] } =>
+      JSON.parse(renderIamDocument(readTemplate(name), values)) as { Statement: Statement[] };
+    const boundary = rendered('permissions-boundary-policy');
+    const vectors = boundary.Statement.filter((st) => asArray(st.Action).some((a) => a.startsWith('s3vectors:')));
+    expect(vectors).toHaveLength(1);
+    expect([...asArray(vectors[0].Action)].sort()).toEqual([...indexLevel].sort());
+    expect(vectors[0].Resource).toBe(indexARN);
+    const exec = rendered('cloudformation-execution-role-policy');
+    const bucket = exec.Statement.find((st) => st.Sid === 'VectorBucket') as Statement;
+    const bucketActions = asArray(bucket.Action).filter((a) => !/agResource|ListTagsForResource/.test(a));
+    for (const action of bucketActions) expect(bucketLevel.has(action), action).toBe(true);
+    expect(bucket.Resource).toBe('arn:aws:s3vectors:ap-southeast-2:111111111111:bucket/openbook-prod-*');
   });
 });

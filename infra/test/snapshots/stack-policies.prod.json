@@ -94,10 +94,11 @@
       "Action": [
         "s3vectors:DeleteIndex",
         "s3vectors:GetIndex",
+        "s3vectors:GetVectors",
         "s3vectors:QueryVectors"
       ],
       "Resource": [
-        "arn:aws:s3vectors:ap-southeast-2:111111111111:bucket/openbook-prod-vectors/index/*"
+        "arn:aws:s3vectors:ap-southeast-2:111111111111:bucket/openbook-prod-vectors/index/c-*"
       ]
     }
   },
@@ -167,18 +168,7 @@
     "statement": {
       "Effect": "Allow",
       "Action": [
-        "s3vectors:CreateIndex"
-      ],
-      "Resource": [
-        "arn:aws:s3vectors:ap-southeast-2:111111111111:bucket/openbook-prod-vectors"
-      ]
-    }
-  },
-  {
-    "policy": "IngestFunctionServiceRoleDefaultPolicy",
-    "statement": {
-      "Effect": "Allow",
-      "Action": [
+        "s3vectors:CreateIndex",
         "s3vectors:DeleteVectors",
         "s3vectors:GetIndex",
         "s3vectors:GetVectors",
@@ -186,7 +176,7 @@
         "s3vectors:QueryVectors"
       ],
       "Resource": [
-        "arn:aws:s3vectors:ap-southeast-2:111111111111:bucket/openbook-prod-vectors/index/*"
+        "arn:aws:s3vectors:ap-southeast-2:111111111111:bucket/openbook-prod-vectors/index/c-*"
       ]
     }
   },

@@ -153,6 +153,8 @@ export class OpenbookStack extends cdk.Stack {
     // One S3 Vectors bucket per stage, with a fixed name like the docs bucket. The worker
     // creates one index per course in it (`c-<courseId in lower case>`).
     const vectorBucketName = `openbook-${config.stage}-vectors`;
+    // The worker names a course index `c-<course ID in lower case>` (docs/retrieval.md).
+    const courseIndexPattern = 'c-*';
     const vectorBucketArn = `arn:${this.partition}:s3vectors:${this.region}:${this.account}:bucket/${vectorBucketName}`;
     const vectorBucket = new s3vectors.CfnVectorBucket(this, 'VectorBucket', {
       vectorBucketName,
@@ -250,7 +252,10 @@ export class OpenbookStack extends cdk.Stack {
     // Phase 3 embeds the question with the same model that the worker uses for the chunks.
     apiFunction.addToRolePolicy(embeddingStatement());
     // The API sends `ingest` and `delete` messages, deletes a course's index with the course,
-    // and (phase 3) queries the indexes.
+    // and (phase 3) queries the indexes. Every index action is authorized on the INDEX ARN
+    // (`bucket/<name>/index/<index>`), never on the bucket ARN. The course indexes are named
+    // `c-<course ID in lower case>`. A query that filters or returns metadata also needs
+    // `GetVectors` (Service Authorization Reference for S3 Vectors).
     apiFunction.addToRolePolicy(
       new iam.PolicyStatement({
         sid: 'SendIngestMessages',
@@ -261,8 +266,8 @@ export class OpenbookStack extends cdk.Stack {
     apiFunction.addToRolePolicy(
       new iam.PolicyStatement({
         sid: 'CourseVectorIndexes',
-        actions: ['s3vectors:DeleteIndex', 's3vectors:GetIndex', 's3vectors:QueryVectors'],
-        resources: [`${vectorBucketArn}/index/*`],
+        actions: ['s3vectors:DeleteIndex', 's3vectors:GetIndex', 's3vectors:GetVectors', 's3vectors:QueryVectors'],
+        resources: [`${vectorBucketArn}/index/${courseIndexPattern}`],
       }),
     );
 
@@ -303,24 +308,19 @@ export class OpenbookStack extends cdk.Stack {
     );
     ingestFunction.addToRolePolicy(tableStatement());
     for (const statement of docsObjectsStatements()) ingestFunction.addToRolePolicy(statement);
-    ingestFunction.addToRolePolicy(
-      new iam.PolicyStatement({
-        sid: 'CourseVectorIndexCreate',
-        actions: ['s3vectors:CreateIndex'],
-        resources: [vectorBucketArn],
-      }),
-    );
+    // CreateIndex is authorized on the index ARN too: AWS checks the index that is created.
     ingestFunction.addToRolePolicy(
       new iam.PolicyStatement({
         sid: 'CourseVectorIndexes',
         actions: [
+          's3vectors:CreateIndex',
           's3vectors:DeleteVectors',
           's3vectors:GetIndex',
           's3vectors:GetVectors',
           's3vectors:PutVectors',
           's3vectors:QueryVectors',
         ],
-        resources: [`${vectorBucketArn}/index/*`],
+        resources: [`${vectorBucketArn}/index/${courseIndexPattern}`],
       }),
     );
     // Page transcription uses the transcribe model, and chunk embedding uses the embedding model.
