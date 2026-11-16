@@ -3,7 +3,7 @@ import { useResource } from '@/lib/useResource';
 import { getMe } from '@/services/api/routes';
 import { describeApiError } from '@/services/api/errors';
 import { Button } from '@/components/ui/Button';
-import { FullPageSpinner } from '@/components/ui/Spinner';
+import { ShellSkeleton } from '@/components/layout/ShellSkeleton';
 import { MeContext } from './MeContext';
 
 /** Loads `GET /api/me` once for the signed-in area. The first call also creates the profile. */
@@ -11,7 +11,7 @@ export function MeProvider({ children }: { children: ReactNode }) {
   const { data, error, loading, reload } = useResource('me', getMe);
   const value = useMemo(() => (data ? { me: data, refresh: reload } : null), [data, reload]);
 
-  if (loading) return <FullPageSpinner label="Loading your account" />;
+  if (loading) return <ShellSkeleton label="Loading your account" />;
   if (!value) {
     return (
       <div className="flex min-h-dvh flex-col items-center justify-center gap-4 bg-bg-primary p-6 text-center">

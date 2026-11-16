@@ -53,7 +53,7 @@ export function JoinPage() {
           <p className="mt-3 text-sm text-text-secondary">
             You were invited with the code{' '}
             <span className="font-mono font-semibold tracking-widest text-text-primary">{normalizeInviteCode(inviteCode)}</span>.
-            The course owner will see your email address{user ? ` (${user.email})` : ''} in the member list.
+            The course owner can see your email address{user ? ` (${user.email})` : ''} and the questions you ask in this course.
           </p>
           {error && (
             <Alert tone="error" className="mt-4 text-left">

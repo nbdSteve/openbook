@@ -89,4 +89,34 @@ describe('useChatController', () => {
     });
     expect(result.current.messages[1]).toMatchObject({ content: 'partial', state: 'failed' });
   });
+
+  it('sends the model the picker shows, also after an answer failed', async () => {
+    routes.openChat
+      .mockResolvedValueOnce(
+        sse(
+          'event: meta\ndata: {"conversationId":"C9","userMessageId":"U","assistantMessageId":"A","title":"t","model":"claude-haiku"}\n\n',
+          'event: error\ndata: {"code":"model_unavailable","message":"busy"}\n\n',
+        ),
+      )
+      .mockResolvedValueOnce(sse('event: done\ndata: {"usage":{"inputTokens":1,"outputTokens":1},"stopReason":"end_turn"}\n\n'));
+    const { result } = setup(undefined);
+    act(() => result.current.setModel('claude-haiku'));
+    await act(async () => {
+      await result.current.send('first');
+    });
+    expect(result.current.messages[1].state).toBe('failed');
+    // The picker shows the model of the failed answer. The next send must name it.
+    expect(result.current.model).toBe('claude-haiku');
+    await act(async () => {
+      await result.current.send('second');
+    });
+    expect(routes.openChat).toHaveBeenNthCalledWith(1, 'K', expect.objectContaining({ model: 'claude-haiku' }), expect.anything());
+    expect(routes.openChat).toHaveBeenNthCalledWith(2, 'K', expect.objectContaining({ model: 'claude-haiku' }), expect.anything());
+
+    act(() => result.current.setModel('claude-sonnet'));
+    await act(async () => {
+      await result.current.send('third');
+    });
+    expect(routes.openChat).toHaveBeenNthCalledWith(3, 'K', expect.objectContaining({ model: 'claude-sonnet' }), expect.anything());
+  });
 });

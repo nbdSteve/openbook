@@ -31,7 +31,11 @@ const SCREENS: Screen[] = [
   { name: 'forgot', url: '/forgot', signedIn: false, ready: heading('Reset your password'), fullPage: true },
   { name: 'not-found', url: '/nowhere', signedIn: false, ready: heading('Page not found'), fullPage: true },
   { name: 'home', url: '/app', signedIn: true, ready: heading('Your courses'), fullPage: true },
-  { name: 'join', url: '/join/K7MQ-4XW2', signedIn: true, ready: heading('Join this course?'), fullPage: true },
+  { name: 'join', url: '/join/K7MQ-4XW2', signedIn: true, ready: async (page) => {
+      await heading('Join this course?')(page);
+      await expect(page.getByText('and the questions you ask in this course')).toBeVisible();
+    },
+    fullPage: true },
   { name: 'home-empty', url: '/app', signedIn: true, ready: heading('You have no courses yet', 2), fullPage: true, mock: { courses: [] } },
   {
     name: 'home-create-dialog',
@@ -47,7 +51,11 @@ const SCREENS: Screen[] = [
     name: 'chat-empty',
     url: `/app/c/${COURSE_ID}`,
     signedIn: true,
-    ready: heading('What would you like to learn?', 2),
+    // Owners do not see the student note.
+    ready: async (page) => {
+      await heading('What would you like to learn?', 2)(page);
+      await expect(page.getByTestId('composer-note')).toHaveCount(0);
+    },
   },
   {
     name: 'chat-conversation',
@@ -103,7 +111,11 @@ const SCREENS: Screen[] = [
     name: 'chat-student',
     url: `/app/c/${STUDENT_COURSE_ID}`,
     signedIn: true,
-    ready: heading('What would you like to learn?', 2),
+    // Students are told that their teacher can see their questions.
+    ready: async (page) => {
+      await heading('What would you like to learn?', 2)(page);
+      await expect(page.getByTestId('composer-note')).toHaveText('Your teacher can see the questions you ask in this course.');
+    },
   },
   {
     name: 'chat-sidebar-open',

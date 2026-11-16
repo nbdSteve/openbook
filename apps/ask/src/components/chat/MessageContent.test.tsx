@@ -31,4 +31,12 @@ describe('MessageContent safety', () => {
     expect(getAllByRole('button')).toHaveLength(1);
     expect(queryAllByRole('link')).toHaveLength(0);
   });
+
+  it('keeps an inline formula together with the punctuation next to it', () => {
+    const { container } = render(<MessageContent content={'It is called the discriminant ($\\Delta$).'} />);
+    const wrapper = container.querySelector('span[style*="nowrap"]');
+    expect(wrapper).not.toBeNull();
+    expect(wrapper?.textContent).toMatch(/^\(.*\)\.$/s);
+    expect(wrapper?.querySelector('.katex')).not.toBeNull();
+  });
 });

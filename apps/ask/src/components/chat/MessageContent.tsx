@@ -6,6 +6,7 @@ import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
 import type { Source } from '@/services/api/types';
 import { citationNumber, linkCitations, normalizeMath } from './citations';
+import { rehypeKeepMathTogether } from './rehypeKeepMathTogether';
 import { SourceBadge } from './SourceBadge';
 
 const CodeBlock = lazy(() => import('./CodeBlock'));
@@ -100,7 +101,7 @@ export function MessageContent({ content, sources, className = '' }: MessageCont
     <div className={`message-content min-w-0 text-[0.95rem] ${className}`}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMath]}
-        rehypePlugins={[rehypeKatex]}
+        rehypePlugins={[rehypeKatex, rehypeKeepMathTogether]}
         components={components}
         disallowedElements={DISALLOWED}
       >

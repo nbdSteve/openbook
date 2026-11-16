@@ -127,6 +127,7 @@ export function ChatPage() {
             onModelChange={chat.setModel}
             onSend={send}
             onStop={chat.stop}
+            note={course.role === 'student' ? 'Your teacher can see the questions you ask in this course.' : undefined}
             disabledReason={
               chat.status === 'loading'
                 ? 'Loading the conversation'
