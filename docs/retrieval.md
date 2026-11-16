@@ -21,7 +21,7 @@ Steps for `ingest`:
 
 1. Set the status from `queued` to `processing` with a conditional update. If the condition fails, the message is a duplicate: stop.
 2. Download the PDF. Open it with pdfium (`pdfium-render`, with the `libpdfium.so` build for linux arm64 in the Lambda package). Refuse more than 500 pages (`failed`, with a clear error).
-3. For each page, read the text layer. Send the page to Claude Haiku (`au.` profile) as a rendered PNG (about 150 DPI) when the text layer looks poor: little text, private-use or replacement characters, many isolated symbols, or math glyphs. The prompt asks for a faithful Markdown transcription with LaTeX for math, `[Figure: short description]` for figures, and no added content. Otherwise use the text layer. Run at most 8 pages at once. Write each page to `pages/<nnnn>.md`; skip pages that already exist, so a retry resumes.
+3. For each page, read the text layer. Send the page to the fast model (`OPENBOOK_FAST_MODEL`, residency `au`) as a rendered PNG (about 150 DPI) when the text layer looks poor: little text, private-use or replacement characters, many isolated symbols, or math glyphs. The prompt asks for a faithful Markdown transcription with LaTeX for math, `[Figure: short description]` for figures, and no added content. Otherwise use the text layer. Run at most 8 pages at once. Write each page to `pages/<nnnn>.md`; skip pages that already exist, so a retry resumes.
 4. Chunk the page Markdown by structure: split at headings, then pack paragraphs to about 400 tokens (tune) with one or two sentences of overlap. Never split inside a LaTeX block, a table, or a list item. Each chunk keeps its first and last page, its heading path, and its index.
 5. Prepend a context line to the text that is embedded and indexed (not to the text shown to students): `<document title> > <heading path>`. Phase 4 tests full contextual retrieval (a short LLM-written context per chunk) against this cheap version.
 6. Embed with Titan Text Embeddings v2 (`amazon.titan-embed-text-v2:0`, 1024 dimensions, normalized, tune), on demand in Sydney. It takes one text per call, so run calls in parallel with a limit. Cohere Embed v4 is available only through a `global.` profile, which breaks the data residency rule; phase 4 can compare it only if that changes.
@@ -40,7 +40,7 @@ Schema: `chunkId` (string, stored), `documentId` (string, indexed, stored), `pag
 
 ## Retrieval for a chat turn (phase 3)
 
-1. Query: the student's message. After the first turn, Claude Haiku rewrites the message and the last few turns into one standalone question (temperature 0, at most 100 tokens).
+1. Query: the student's message. After the first turn, the fast model rewrites the message and the last few turns into one standalone question (temperature 0, at most 100 tokens).
 2. In parallel: embed the query (Titan v2) and query S3 Vectors for the top 40, and query BM25 for the top 40.
 3. Fuse with reciprocal rank fusion: `score = sum(1 / (60 + rank))`. Keep the top 8 (tune), at most 4 from one document.
 4. Send the `sources` event, then give the sources to the model as numbered, delimited passages with document name and page. The prompt says the passages are data, not instructions, and that the answer cites them as `[n]`. When retrieval finds nothing relevant (thresholds tune), the prompt tells the model to say that the course materials do not cover the question.

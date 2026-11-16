@@ -8,11 +8,11 @@ Think of it as an open-book exam for the model: it answers from the course mater
 ## Hard rules
 
 1. **Pay per use only.** No component may have a baseline monthly cost. Do not add OpenSearch, NAT gateways, RDS or Aurora, ElastiCache, always-on containers, WAF web ACLs, Secrets Manager secrets, or customer-managed KMS keys. An idle stack must cost cents.
-2. **The server owns the prompt.** Clients send a course ID, a conversation ID, and the student's message. The server picks the model, the system prompt, the token limits, and the sources.
+2. **The server owns the prompt.** Clients send a course ID, a conversation ID, and the student's message. The server picks the system prompt, the token limits, and the sources. The model comes from the deployment's model catalog: a course owner can pick any catalog entry for the course, and nobody can use a model outside the catalog.
 3. **Tenancy is the course.** Every read and write of course data checks membership first. A non-member gets `404`, never `403`.
-4. **Data stays in Australia.** Use the `ap-southeast-2` Region, Bedrock `au.` inference profiles, and models that run on demand in Sydney. Do not use `global.` or other Regions' profiles.
+4. **Data stays in Australia by default.** Use the `ap-southeast-2` Region. The default chat and fast models must have residency `au` (an `au.` inference profile, or a model that runs on demand in Sydney). A catalog may also offer `global.` models (for example the frontier GPT models, which Bedrock offers only through global profiles); they are marked `global`, and the web app tells the course owner that such a model may process data outside Australia. No other profile prefixes (`us.`, `apac.`, and so on).
 5. **Same code locally and in Lambda.** The API is one axum router. Lambda runs it through `lambda_http`; locally it runs on a TCP listener. Local runs use AWS Emulator for AWS services.
-6. **Fail closed.** If the API runs in Lambda with local-only settings (stage `local`, the fake model provider, `AWS_ENDPOINT_URL`, `OPENBOOK_COGNITO_JWKS_URL`, `OPENBOOK_CA_BUNDLE`, `OPENBOOK_PRESIGN_ENDPOINT`, or `OPENBOOK_BEDROCK_PROFILE`), it must refuse to start.
+6. **Fail closed.** If the API runs in Lambda with local-only settings (stage `local`, a catalog entry with provider `fake`, `AWS_ENDPOINT_URL`, `OPENBOOK_COGNITO_JWKS_URL`, `OPENBOOK_CA_BUNDLE`, `OPENBOOK_PRESIGN_ENDPOINT`, or `OPENBOOK_BEDROCK_PROFILE`), it must refuse to start.
 
 ## Components
 
@@ -40,8 +40,7 @@ openbook-ingest (phase 2) ◄─ SQS FIFO (one message group per course, so each
 | Auth | Cognito user pool (Lite plan), ID token in `x-auth-token` | Free up to 10,000 monthly active users; OAC owns the `Authorization` header |
 | Data | DynamoDB on-demand, single table | Pay per request, no capacity planning |
 | Files | S3 with presigned PUT | The browser uploads directly; the API never streams file bytes |
-| Chat model | Bedrock `au.anthropic.claude-sonnet-4-6` | Best Australian-resident Claude model this account can use (the 5.x models need account access first) |
-| Fast model | Bedrock `au.anthropic.claude-haiku-4-5-20251001-v1:0` | Query rewrite and page transcription (phase 2 and 3) |
+| Models | A model catalog in configuration, all on Bedrock (Converse API) | One provider for Claude and GPT models; no API keys. See "Model catalog" |
 | Embeddings | Bedrock `amazon.titan-embed-text-v2:0`, 1024 dimensions (phase 2) | On-demand in Sydney. Cohere Embed v4 exists only as a `global.` profile, which breaks the data residency rule |
 | Dense retrieval | S3 Vectors, one index per course (phase 3) | Query cost grows with index size, so small per-course indexes keep queries cheap and isolate tenants |
 | Lexical retrieval | Tantivy BM25, one index per course in S3 (phase 3) | Native Rust, no server; Bedrock Knowledge Bases do only semantic search on S3 Vectors |
@@ -56,12 +55,12 @@ Every item has a `type` attribute. Other attributes are camelCase.
 | Item | `pk` | `sk` | `gsi1pk` | `gsi1sk` | Main attributes |
 |---|---|---|---|---|---|
 | Profile | `USER#<userId>` | `PROFILE` | | | `email`, `createdAt` |
-| Course | `COURSE#<courseId>` | `META` | | | `name`, `description`, `tutoringStyle`, `ownerId`, `inviteCode`, `createdAt`, `updatedAt` |
+| Course | `COURSE#<courseId>` | `META` | | | `name`, `description`, `tutoringStyle`, `model`, `ownerId`, `inviteCode`, `createdAt`, `updatedAt` |
 | Membership | `COURSE#<courseId>` | `MEMBER#<userId>` | `USER#<userId>` | `COURSE#<joinedAt>#<courseId>` | `courseId`, `userId`, `email`, `role`, `joinedAt` |
 | Invite code | `INVITE#<code>` | `INVITE` | | | `courseId`, `createdAt` |
 | Document | `COURSE#<courseId>` | `DOC#<documentId>` | | | `filename`, `sizeBytes`, `s3Key`, `status`, `error`, `pageCount`, `createdAt`, `updatedAt` |
 | Conversation | `USER#<userId>` | `CONV#<conversationId>` | `CONVS#<userId>#<courseId>` | `<updatedAt>#<conversationId>` | `courseId`, `title`, `createdAt`, `updatedAt` (each chat message updates `updatedAt` and `gsi1sk`) |
-| Message | `CONV#<conversationId>` | `MSG#<messageId>` | | | `role`, `content`, `sources`, `inputTokens`, `outputTokens`, `createdAt` |
+| Message | `CONV#<conversationId>` | `MSG#<messageId>` | | | `role`, `content`, `sources`, `model`, `inputTokens`, `outputTokens`, `createdAt` |
 | Question | `COURSE#<courseId>` | `Q#<questionId>` | | | `userId`, `email`, `question`, `conversationId`, `createdAt`, `ttl` (180 days) |
 | Daily usage (user) | `USER#<userId>` | `USAGE#D#<yyyy-mm-dd>` | | | `messages`, `inputTokens`, `outputTokens`, `ttl` (40 days) |
 | Monthly usage (user) | `USER#<userId>` | `USAGE#M#<yyyy-mm>` | | | `messages`, `inputTokens`, `outputTokens` (kept for billing later) |
@@ -95,9 +94,9 @@ The API reads only environment variables. Names and defaults:
 | `OPENBOOK_COGNITO_CLIENT_ID` | (required) | The token `aud` must equal this |
 | `OPENBOOK_COGNITO_REGION` | `AWS_REGION` | Used to build the issuer `https://cognito-idp.<region>.amazonaws.com/<poolId>` |
 | `OPENBOOK_COGNITO_JWKS_URL` | `<issuer>/.well-known/jwks.json` | Local only (AWS Emulator serves JWKS at `https://127.0.0.1:<port>/<poolId>/.well-known/jwks.json`) |
-| `OPENBOOK_MODEL_PROVIDER` | `bedrock` | `bedrock` or `fake` (local only) |
-| `OPENBOOK_CHAT_MODEL_ID` | `au.anthropic.claude-sonnet-4-6` | |
-| `OPENBOOK_FAST_MODEL_ID` | `au.anthropic.claude-haiku-4-5-20251001-v1:0` | |
+| `OPENBOOK_MODELS` | (required) | The model catalog as a JSON array (see "Model catalog") |
+| `OPENBOOK_DEFAULT_CHAT_MODEL` | (required) | A catalog ID with residency `au` |
+| `OPENBOOK_FAST_MODEL` | (required) | A catalog ID with residency `au`, for query rewrite and page transcription |
 | `OPENBOOK_BEDROCK_PROFILE` | (unset) | Local only: use real Bedrock with this AWS profile from `~/.aws`, while every other service uses the emulator |
 | `OPENBOOK_CA_BUNDLE` | (unset) | Local only: a PEM file (the emulator's `ca.pem`) that the AWS SDK and JWKS clients trust in addition to the system roots |
 | `OPENBOOK_PRESIGN_ENDPOINT` | (unset) | Local only: base URL for presigned S3 URLs that the browser can reach, for example `http://localhost:5173/__aws` |
@@ -108,6 +107,41 @@ The API reads only environment variables. Names and defaults:
 | `OPENBOOK_LIMIT_UPLOAD_BYTES` | `26214400` | 25 MiB |
 | `OPENBOOK_LISTEN_ADDR` | `127.0.0.1:8787` | Local server only |
 | `AWS_REGION`, `AWS_ENDPOINT_URL`, `RUST_LOG` | standard | |
+
+## Model catalog
+
+`OPENBOOK_MODELS` is a JSON array. The order is the display order.
+
+```json
+[
+  { "id": "claude-sonnet", "label": "Claude Sonnet 5.5", "vendor": "anthropic", "provider": "bedrock", "modelId": "au.anthropic.claude-sonnet-5-5", "residency": "au", "maxOutputTokens": 2000 }
+]
+```
+
+| Field | Rules |
+|---|---|
+| `id` | Stable catalog ID stored on courses and messages. `[a-z0-9-]{1,40}`, unique |
+| `label`, `vendor` | Display only |
+| `provider` | `bedrock` (Converse and ConverseStream), or `fake` (local only; the API refuses it in Lambda) |
+| `modelId` | The Bedrock model or inference profile ID |
+| `residency` | `au` or `global`. It must match `modelId`: `au.` prefix or no prefix (an on-demand model in Sydney) is `au`; `global.` prefix is `global`; any other prefix is refused |
+| `maxOutputTokens` | Server-fixed output limit (default 2000) |
+| `temperature` | Optional. Leave it out for models that reject it |
+
+The API validates the catalog at startup and refuses to start when it is invalid. The CDK app holds the deployed catalog in context (`models`, `defaultChatModel`, `fastModel`), writes it to the Lambda environment, and derives the Bedrock IAM permissions from it: the inference-profile ARN for each profile ID plus the foundation-model ARNs it routes to (`au.`: Sydney and Melbourne; `global.`: every Region), or the Sydney foundation-model ARN for an ID without a prefix. The streaming code sends only text deltas to the client and ignores reasoning content blocks.
+
+Deployed catalog (the account has accepted the Bedrock agreements for these models):
+
+| `id` | Model | `modelId` | Residency |
+|---|---|---|---|
+| `claude-sonnet` (default chat) | Claude Sonnet 5.5 | `au.anthropic.claude-sonnet-5-5` | `au` |
+| `claude-opus` | Claude Opus 5.5 | `au.anthropic.claude-opus-5-5` | `au` |
+| `claude-haiku` (fast) | Claude Haiku 5.5 | `au.anthropic.claude-haiku-5-5` | `au` |
+| `gpt-oss-120b` | gpt-oss-120b | `openai.gpt-oss-120b-1:0` | `au` |
+| `gpt-6-1-sol` | GPT-6.1 Sol | `global.openai.gpt-6.1-sol` | `global` |
+| `gpt-6-1-terra` | GPT-6.1 Terra | `global.openai.gpt-6.1-terra` | `global` |
+
+Locally, the catalog has one entry `{ "id": "fake", "provider": "fake", ... }` unless `OPENBOOK_BEDROCK_PROFILE` is set, in which case it is the deployed catalog on real Bedrock.
 
 ## Cost guards
 
