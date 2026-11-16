@@ -13,6 +13,9 @@ use crate::embed::DIMENSIONS;
 
 /// Most vectors in one put, and most keys in one delete.
 pub const BATCH_SIZE: usize = 500;
+/// Most results of one query. The S3 Vectors service allows `topK` up to 100 (the SDK sets no limit
+/// of its own), and chat asks for 40.
+pub const MAX_TOP_K: u32 = 100;
 
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("vector store error: {0}")]
@@ -189,12 +192,27 @@ impl VectorStore {
         top_k: u32,
         document_id: Option<&str>,
     ) -> Result<Vec<VectorHit>, VectorError> {
+        Ok(self
+            .query_existing(index, query, top_k, document_id)
+            .await?
+            .unwrap_or_default())
+    }
+
+    /// Like `query`, but `None` when the index does not exist. Chat uses it: a course with ready
+    /// documents always has an index, so `None` means a wrong bucket or index name.
+    pub async fn query_existing(
+        &self,
+        index: &str,
+        query: &[f32],
+        top_k: u32,
+        document_id: Option<&str>,
+    ) -> Result<Option<Vec<VectorHit>>, VectorError> {
         let mut request = self
             .client
             .query_vectors()
             .vector_bucket_name(&self.bucket)
             .index_name(index)
-            .top_k(i32::try_from(top_k).unwrap_or(i32::MAX))
+            .top_k(i32::try_from(top_k.min(MAX_TOP_K)).unwrap_or(100))
             .query_vector(VectorData::Float32(query.to_vec()))
             .return_metadata(true)
             .return_distance(true);
@@ -206,18 +224,24 @@ impl VectorStore {
         }
         let out = match request.send().await {
             Ok(out) => out,
-            // No index means no vectors yet.
+            // No index means no vectors yet. A course with ready documents always has one, so a
+            // missing index points at a wrong bucket or index name: make it visible.
             Err(e)
                 if e.as_service_error()
                     .is_some_and(|s| s.is_not_found_exception()) =>
             {
-                return Ok(Vec::new());
+                tracing::warn!(
+                    bucket = %self.bucket,
+                    index,
+                    "QueryVectors: the vector index was not found"
+                );
+                return Ok(None);
             }
             Err(e) => return Err(err(&e)),
         };
         let mut hits: Vec<VectorHit> = out.vectors().iter().map(hit_from).collect();
         hits.sort_by(|a, b| a.distance.total_cmp(&b.distance));
-        Ok(hits)
+        Ok(Some(hits))
     }
 
     /// Deletes a whole index. A missing index is not an error.

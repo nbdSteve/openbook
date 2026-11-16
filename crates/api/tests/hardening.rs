@@ -927,6 +927,7 @@ async fn messages_saved_after_a_conversation_was_deleted_expire() {
                 content: "late".into(),
                 created_at: openbook_core::domain::now(),
                 sources: None,
+                trace: None,
                 model: Some("fake-a".into()),
                 usage: Default::default(),
             },

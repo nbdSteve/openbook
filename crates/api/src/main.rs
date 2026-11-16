@@ -9,11 +9,14 @@ use openbook_api::{AppState, build_router};
 use openbook_core::auth::TokenVerifier;
 use openbook_core::aws;
 use openbook_core::catalog::ProviderKind;
-use openbook_core::config::Config;
+use openbook_core::config::{Config, FAKE_EMBEDDING_MODEL_ID};
 use openbook_core::files::Files;
 use openbook_core::model::ModelRegistry;
 use openbook_core::queue::IngestQueue;
 use openbook_core::store::Store;
+use openbook_search::bm25::Bm25ReaderCache;
+use openbook_search::embed::{Embedder, FakeEmbedder, TitanEmbedder};
+use openbook_search::vectors::VectorStore;
 use tracing_subscriber::EnvFilter;
 
 fn init_tracing(in_lambda: bool) {
@@ -58,15 +61,40 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error + Send + Sy
     );
     let queue = IngestQueue::new(&sdk, config.ingest_queue_url.clone());
     let verifier = TokenVerifier::from_config(&config)?;
-    let bedrock = config
-        .catalog
-        .entries()
-        .iter()
-        .any(|e| e.provider == ProviderKind::Bedrock)
-        .then(|| aws::bedrock_client(&config, &sdk))
-        .transpose()?;
+    let fake_embeddings = config.embedding_model_id == FAKE_EMBEDDING_MODEL_ID;
+    let bedrock = (!fake_embeddings
+        || config
+            .catalog
+            .entries()
+            .iter()
+            .any(|e| e.provider == ProviderKind::Bedrock))
+    .then(|| aws::bedrock_client(&config, &sdk))
+    .transpose()?;
+    let embedder: Arc<dyn Embedder> = match &bedrock {
+        Some(client) if !fake_embeddings => Arc::new(TitanEmbedder::new(
+            client.clone(),
+            config.embedding_model_id.clone(),
+        )),
+        _ => Arc::new(FakeEmbedder),
+    };
     let models =
         ModelRegistry::from_catalog(config.catalog.clone(), bedrock, Duration::from_millis(20))?;
+    let s3 = {
+        let mut conf = aws_sdk_s3::config::Builder::from(&sdk);
+        if config.aws_endpoint_url.is_some() {
+            conf = conf.force_path_style(true);
+        }
+        aws_sdk_s3::Client::from_conf(conf.build())
+    };
+    let retrieval = Arc::new(openbook_api::retrieval::Retrieval {
+        embedder,
+        vectors: VectorStore::new(&sdk, config.vector_bucket.clone()),
+        bm25: Bm25ReaderCache::new(
+            s3,
+            config.docs_bucket.clone(),
+            std::env::temp_dir().join("openbook-bm25"),
+        ),
+    });
 
     verifier.prefetch().await;
     let in_lambda = config.in_lambda;
@@ -83,6 +111,7 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error + Send + Sy
         files,
         verifier: Arc::new(verifier),
         models,
+        retrieval,
         queue,
         chat_timeouts: Default::default(),
     });

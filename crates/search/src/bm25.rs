@@ -10,16 +10,165 @@ use aws_sdk_s3::Client as S3Client;
 use aws_smithy_types::error::display::DisplayErrorContext;
 use openbook_core::store::Store;
 use tantivy::collector::TopDocs;
-use tantivy::query::QueryParser;
+use tantivy::query::{BooleanQuery, Occur, Query, TermQuery};
 use tantivy::schema::{
     Field, IndexRecordOption, STORED, STRING, Schema, TextFieldIndexing, TextOptions, Value,
 };
 use tantivy::tokenizer::{
-    Language, LowerCaser, RemoveLongFilter, SimpleTokenizer, Stemmer, TextAnalyzer,
+    Language, LowerCaser, RemoveLongFilter, SimpleTokenizer, Stemmer, StopWordFilter, TextAnalyzer,
+    TokenStream,
 };
 use tantivy::{Index, IndexReader, IndexWriter, TantivyDocument, Term, doc};
 
 const TOKENIZER: &str = "en_stem";
+
+/// Common English words that search ignores (the NLTK list, which covers question words such as
+/// "what", "who", "how", and "does"; Tantivy's own English list is much shorter). A word that is a
+/// stop word and a real term in some course would not be found, but in a question it is almost never
+/// the word that matters.
+pub const ENGLISH_STOP_WORDS: &[&str] = &[
+    "i",
+    "me",
+    "my",
+    "myself",
+    "we",
+    "our",
+    "ours",
+    "ourselves",
+    "you",
+    "your",
+    "yours",
+    "yourself",
+    "yourselves",
+    "he",
+    "him",
+    "his",
+    "himself",
+    "she",
+    "her",
+    "hers",
+    "herself",
+    "it",
+    "its",
+    "itself",
+    "they",
+    "them",
+    "their",
+    "theirs",
+    "themselves",
+    "what",
+    "which",
+    "who",
+    "whom",
+    "this",
+    "that",
+    "these",
+    "those",
+    "am",
+    "is",
+    "are",
+    "was",
+    "were",
+    "be",
+    "been",
+    "being",
+    "have",
+    "has",
+    "had",
+    "having",
+    "do",
+    "does",
+    "did",
+    "doing",
+    "a",
+    "an",
+    "the",
+    "and",
+    "but",
+    "if",
+    "or",
+    "because",
+    "as",
+    "until",
+    "while",
+    "of",
+    "at",
+    "by",
+    "for",
+    "with",
+    "about",
+    "against",
+    "between",
+    "into",
+    "through",
+    "during",
+    "before",
+    "after",
+    "above",
+    "below",
+    "to",
+    "from",
+    "up",
+    "down",
+    "in",
+    "out",
+    "on",
+    "off",
+    "over",
+    "under",
+    "again",
+    "further",
+    "then",
+    "once",
+    "here",
+    "there",
+    "when",
+    "where",
+    "why",
+    "how",
+    "all",
+    "any",
+    "both",
+    "each",
+    "few",
+    "more",
+    "most",
+    "other",
+    "some",
+    "such",
+    "no",
+    "nor",
+    "not",
+    "only",
+    "own",
+    "same",
+    "so",
+    "than",
+    "too",
+    "very",
+    "s",
+    "t",
+    "can",
+    "will",
+    "just",
+    "don",
+    "should",
+    "now",
+    "ll",
+    "re",
+    "ve",
+    "ain",
+    "could",
+    "would",
+    "shall",
+    "may",
+    "might",
+    "must",
+    "please",
+    "tell",
+    "show",
+    "explain",
+];
 const WRITER_MEMORY: usize = 30_000_000;
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -112,6 +261,12 @@ fn register_tokenizer(index: &Index) {
     let analyzer = TextAnalyzer::builder(SimpleTokenizer::default())
         .filter(RemoveLongFilter::limit(40))
         .filter(LowerCaser)
+        // Stop words ("what", "the", "who") carry no meaning for search. Without them a question
+        // that has nothing to do with a course matches nothing, so the relevance gate can work.
+        // Blobs that were indexed before this filter stay readable: only the terms differ.
+        .filter(StopWordFilter::remove(
+            ENGLISH_STOP_WORDS.iter().map(|w| (*w).to_owned()),
+        ))
         .filter(Stemmer::new(Language::English))
         .build();
     index.tokenizers().register(TOKENIZER, analyzer);
@@ -211,11 +366,44 @@ impl Bm25Reader {
         self.reader.searcher().num_docs()
     }
 
-    /// The best `limit` chunks for a query, best first. The query is free text: bad syntax is handled.
+    /// The terms of a query, as the index analyzer makes them: lower case, no stop words, stemmed,
+    /// without duplicates. Math such as `x^2 - 5x + 6 = 0` gives `x`, `2`, `5x`, `6`, and `0`.
+    pub fn query_terms(&self, query: &str) -> Vec<String> {
+        let Some(mut analyzer) = self.index.tokenizers().get(TOKENIZER) else {
+            return Vec::new();
+        };
+        let mut stream = analyzer.token_stream(query);
+        let mut terms: Vec<String> = Vec::new();
+        while stream.advance() {
+            let term = stream.token().text.clone();
+            if !terms.contains(&term) {
+                terms.push(term);
+            }
+        }
+        terms
+    }
+
+    /// The best `limit` chunks for a query, best first.
+    ///
+    /// The query is free text. It is not parsed as query syntax: the index analyzer splits it into
+    /// terms, and the search is an OR of term queries over `text` and `heading`. So `^`, `-`, `+`,
+    /// `=`, `?`, `:`, quotes, and brackets in a question cannot break the search.
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<Bm25Hit>, Bm25Error> {
-        let parser =
-            QueryParser::for_index(&self.index, vec![self.fields.text, self.fields.heading]);
-        let (parsed, _errors) = parser.parse_query_lenient(query);
+        let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::new();
+        for term in self.query_terms(query) {
+            for field in [self.fields.text, self.fields.heading] {
+                let term = Term::from_field_text(field, &term);
+                clauses.push((
+                    Occur::Should,
+                    Box::new(TermQuery::new(term, IndexRecordOption::WithFreqs)),
+                ));
+            }
+        }
+        if clauses.is_empty() {
+            // Only stop words, or nothing at all.
+            return Ok(Vec::new());
+        }
+        let parsed = BooleanQuery::new(clauses);
         let searcher = self.reader.searcher();
         let top = searcher
             .search(&parsed, &TopDocs::with_limit(limit.max(1)).order_by_score())
@@ -432,7 +620,224 @@ impl Bm25Store {
     }
 }
 
-/// Opens a given version of a course index with a local cache (for warm Lambda invocations).
+/// Most courses whose readers the API keeps.
+pub const READER_CACHE_MAX_COURSES: usize = 8;
+/// Most bytes of unpacked index files that the API keeps in `/tmp`.
+pub const READER_CACHE_MAX_BYTES: u64 = 1 << 30;
+
+/// One cached reader.
+struct CachedReader {
+    course_id: String,
+    key: String,
+    reader: std::sync::Arc<Bm25Reader>,
+    bytes: u64,
+}
+
+/// The eviction policy: at most `max_courses` entries and `max_bytes` bytes, least recently used first.
+/// Entries are ordered with the most recently used first.
+struct Lru {
+    entries: Vec<CachedReader>,
+    max_courses: usize,
+    max_bytes: u64,
+}
+
+impl Lru {
+    fn get(&mut self, course_id: &str, key: &str) -> Option<std::sync::Arc<Bm25Reader>> {
+        let position = self
+            .entries
+            .iter()
+            .position(|e| e.course_id == course_id && e.key == key)?;
+        let entry = self.entries.remove(position);
+        let reader = entry.reader.clone();
+        self.entries.insert(0, entry);
+        Some(reader)
+    }
+
+    /// Adds an entry (a course has one entry: an older blob of the same course goes). Returns the
+    /// course IDs that were evicted, whose files can be deleted.
+    fn insert(&mut self, entry: CachedReader) -> Vec<String> {
+        let mut evicted = Vec::new();
+        self.entries.retain(|e| e.course_id != entry.course_id);
+        self.entries.insert(0, entry);
+        while self.entries.len() > 1
+            && (self.entries.len() > self.max_courses
+                || self.entries.iter().map(|e| e.bytes).sum::<u64>() > self.max_bytes)
+        {
+            if let Some(old) = self.entries.pop() {
+                evicted.push(old.course_id);
+            }
+        }
+        evicted
+    }
+}
+
+/// Readers for the API: an in-memory LRU over the files in `/tmp` that `Bm25Cache` keeps.
+/// It is keyed by course and blob key, holds at most 8 courses and 1 GB, and drops the least
+/// recently used course first. A new blob key for a course replaces its old reader and its old files.
+///
+/// A cold download does not belong to the request that asked for it: it runs in a detached task,
+/// one per course at a time, and it always finishes and fills the cache. A request that gives up
+/// (its own timeout) leaves the task running, so a large course warms up over a few requests.
+#[derive(Clone)]
+pub struct Bm25ReaderCache {
+    inner: std::sync::Arc<CacheInner>,
+}
+
+type LoadResult = Result<std::sync::Arc<Bm25Reader>, Bm25Error>;
+type SharedLoad = futures::future::Shared<futures::future::BoxFuture<'static, LoadResult>>;
+
+struct CacheInner {
+    files: Bm25Cache,
+    root: PathBuf,
+    state: tokio::sync::Mutex<CacheState>,
+}
+
+struct CacheState {
+    lru: Lru,
+    /// The load that runs for a course now: the blob key and the shared result.
+    loading: std::collections::HashMap<String, (String, SharedLoad)>,
+}
+
+impl Bm25ReaderCache {
+    /// Starts with an empty cache. Files that an earlier process left in `root` are removed:
+    /// nothing in the cache refers to them.
+    pub fn new(s3: S3Client, bucket: String, root: PathBuf) -> Self {
+        Self::with_limits(
+            s3,
+            bucket,
+            root,
+            READER_CACHE_MAX_COURSES,
+            READER_CACHE_MAX_BYTES,
+        )
+    }
+
+    pub fn with_limits(
+        s3: S3Client,
+        bucket: String,
+        root: PathBuf,
+        max_courses: usize,
+        max_bytes: u64,
+    ) -> Self {
+        let _ = std::fs::remove_dir_all(&root);
+        Self {
+            inner: std::sync::Arc::new(CacheInner {
+                files: Bm25Cache::new(s3, bucket, root.clone()),
+                root,
+                state: tokio::sync::Mutex::new(CacheState {
+                    lru: Lru {
+                        entries: Vec::new(),
+                        max_courses,
+                        max_bytes,
+                    },
+                    loading: std::collections::HashMap::new(),
+                }),
+            }),
+        }
+    }
+
+    /// The reader for the blob `key` of the course. A miss starts (or joins) the download of the
+    /// course and waits for it. Drop the future (a timeout) and the download goes on.
+    pub async fn reader(&self, course_id: &str, key: &str) -> LoadResult {
+        loop {
+            let wait = {
+                let mut state = self.inner.state.lock().await;
+                if let Some(reader) = state.lru.get(course_id, key) {
+                    return Ok(reader);
+                }
+                match state.loading.get(course_id) {
+                    Some((loading_key, done)) => (loading_key == key, done.clone()),
+                    None => {
+                        let done = self.start_load(&mut state, course_id, key);
+                        (true, done)
+                    }
+                }
+            };
+            let (same_key, done) = wait;
+            let result = done.await;
+            if same_key {
+                return result;
+            }
+            // Another blob of this course was loading. It is done, so try again for this one.
+        }
+    }
+
+    fn start_load(&self, state: &mut CacheState, course_id: &str, key: &str) -> SharedLoad {
+        use futures::FutureExt;
+        let inner = self.inner.clone();
+        let (course, blob) = (course_id.to_owned(), key.to_owned());
+        let handle = tokio::spawn(async move { inner.load(&course, &blob).await });
+        let done: SharedLoad = async move { handle.await.map_err(index_err)? }
+            .boxed()
+            .shared();
+        state
+            .loading
+            .insert(course_id.to_owned(), (key.to_owned(), done.clone()));
+        done
+    }
+
+    /// The courses that have a reader now, most recently used first.
+    pub async fn cached_courses(&self) -> Vec<String> {
+        self.inner
+            .state
+            .lock()
+            .await
+            .lru
+            .entries
+            .iter()
+            .map(|e| e.course_id.clone())
+            .collect()
+    }
+}
+
+impl CacheInner {
+    /// Downloads, unpacks, opens, and caches. It runs in its own task and ends the load either way.
+    async fn load(&self, course_id: &str, key: &str) -> LoadResult {
+        let opened = self.files.open(course_id, key).await;
+        let bytes = {
+            let dir = self.root.join(course_id);
+            tokio::task::spawn_blocking(move || dir_size(&dir))
+                .await
+                .unwrap_or(0)
+        };
+        let mut state = self.state.lock().await;
+        state.loading.remove(course_id);
+        let reader = std::sync::Arc::new(opened?);
+        let evicted = state.lru.insert(CachedReader {
+            course_id: course_id.to_owned(),
+            key: key.to_owned(),
+            reader: reader.clone(),
+            bytes,
+        });
+        for course in evicted {
+            let _ = std::fs::remove_dir_all(self.root.join(course));
+        }
+        Ok(reader)
+    }
+}
+
+fn dir_size(dir: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|e| match e.metadata() {
+            Ok(m) if m.is_dir() => dir_size(&e.path()),
+            Ok(m) => m.len(),
+            Err(_) => 0,
+        })
+        .sum()
+}
+
+/// Unpacks a blob file into `dir` (created if needed).
+pub fn unpack_file(path: &Path, dir: &Path) -> Result<(), Bm25Error> {
+    std::fs::create_dir_all(dir).map_err(index_err)?;
+    let file = std::fs::File::open(path).map_err(index_err)?;
+    let decoder = zstd::Decoder::new(file).map_err(index_err)?;
+    tar::Archive::new(decoder).unpack(dir).map_err(index_err)
+}
+
+/// Opens a given blob of a course index with files in a local directory (for warm Lambda invocations).
 pub struct Bm25Cache {
     s3: S3Client,
     bucket: String,
@@ -444,8 +849,8 @@ impl Bm25Cache {
         Self { s3, bucket, root }
     }
 
-    /// The reader for the blob `key` (the course item's `bm25Key`). It downloads and unpacks on a
-    /// cache miss, and removes the other cached blobs of the course.
+    /// The reader for the blob `key` (the course item's `bm25Key`). It streams the blob to disk and
+    /// unpacks it on a miss, and removes every other file of the course (older blobs, half-done downloads).
     pub async fn open(&self, course_id: &str, key: &str) -> Result<Bm25Reader, Bm25Error> {
         let name = key
             .rsplit('/')
@@ -455,8 +860,8 @@ impl Bm25Cache {
             .to_owned();
         let course_dir = self.root.join(course_id);
         let dir = course_dir.join(&name);
-        let marker = dir.join(".complete");
-        if !marker.exists() {
+        if !dir.join(".complete").exists() {
+            std::fs::create_dir_all(&course_dir).map_err(index_err)?;
             let out = self
                 .s3
                 .get_object()
@@ -465,18 +870,26 @@ impl Bm25Cache {
                 .send()
                 .await
                 .map_err(|e| s3_err(&e))?;
-            let bytes = out
-                .body
-                .collect()
+            // Stream to a file: the blob never sits in memory as a whole.
+            let download = course_dir.join(format!("{name}.download"));
+            let mut file = tokio::fs::File::create(&download)
                 .await
-                .map_err(|e| s3_err(&e))?
-                .into_bytes()
-                .to_vec();
+                .map_err(index_err)?;
+            let mut body = out.body.into_async_read();
+            tokio::io::copy(&mut body, &mut file)
+                .await
+                .map_err(index_err)?;
+            tokio::io::AsyncWriteExt::flush(&mut file)
+                .await
+                .map_err(index_err)?;
+            drop(file);
             let staging = course_dir.join(format!("{name}.tmp"));
-            let _ = std::fs::remove_dir_all(&staging);
             let final_dir = dir.clone();
             tokio::task::spawn_blocking(move || -> Result<(), Bm25Error> {
-                unpack(&bytes, &staging)?;
+                let _ = std::fs::remove_dir_all(&staging);
+                let result = unpack_file(&download, &staging);
+                let _ = std::fs::remove_file(&download);
+                result?;
                 let _ = std::fs::remove_dir_all(&final_dir);
                 std::fs::rename(&staging, &final_dir).map_err(index_err)?;
                 std::fs::write(final_dir.join(".complete"), b"ok").map_err(index_err)
@@ -484,18 +897,29 @@ impl Bm25Cache {
             .await
             .map_err(index_err)??;
         }
-        if let Ok(entries) = std::fs::read_dir(&course_dir) {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().into_owned();
-                if entry.file_name().to_string_lossy() != name {
-                    let _ = std::fs::remove_dir_all(entry.path());
-                }
-            }
-        }
+        remove_other_entries(&course_dir, &name);
         let open_dir = dir.clone();
         tokio::task::spawn_blocking(move || Bm25Reader::open(&open_dir))
             .await
             .map_err(index_err)?
+    }
+}
+
+/// Removes everything in `course_dir` except the entry `keep`.
+fn remove_other_entries(course_dir: &Path, keep: &str) {
+    let Ok(entries) = std::fs::read_dir(course_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry.file_name().to_string_lossy() == keep {
+            continue;
+        }
+        let path = entry.path();
+        if path.is_dir() {
+            let _ = std::fs::remove_dir_all(&path);
+        } else {
+            let _ = std::fs::remove_file(&path);
+        }
     }
 }
 
@@ -694,6 +1118,168 @@ mod tests {
     }
 
     #[test]
+    fn math_in_a_question_does_not_break_the_search() {
+        let dir = temp_dir();
+        build(
+            &dir,
+            &[
+                chunk(
+                    "D",
+                    0,
+                    1,
+                    "Quadratics",
+                    "Worked example: x^2 - 5x + 6 = 0 factors as (x - 2)(x - 3) = 0, so x = 2 or x = 3.",
+                ),
+                chunk(
+                    "D",
+                    1,
+                    2,
+                    "Geometry",
+                    "The area of a circle is pi times the radius squared.",
+                ),
+            ],
+        );
+        let reader = Bm25Reader::open(&dir).unwrap();
+        let question = "How many real roots does x^2 - 5x + 6 = 0 have, and why?";
+        let hits = reader.search(question, 5).unwrap();
+        assert!(!hits.is_empty(), "the math question found nothing");
+        assert_eq!(hits[0].chunk_id, "D:0");
+        // Every query character that the query parser treats as syntax is plain text now.
+        for query in [
+            "x^2 - 5x + 6 = 0",
+            "roots: (x - 2)(x - 3)",
+            "\"unclosed",
+            "a AND b OR NOT c",
+            "title:foo",
+            "[1 TO 5]",
+            "x*y?",
+            "~fuzzy~2",
+            "\\",
+            "{}",
+            "-",
+            "+",
+            "!",
+            "&&",
+            "||",
+        ] {
+            assert!(reader.search(query, 5).is_ok(), "{query:?}");
+        }
+        assert_eq!(
+            reader.search("(x - 2)(x - 3)", 5).unwrap()[0].chunk_id,
+            "D:0"
+        );
+    }
+
+    #[test]
+    fn query_terms_follow_the_index_analyzer() {
+        let dir = temp_dir();
+        build(&dir, &[chunk("D", 0, 1, "", "text")]);
+        let reader = Bm25Reader::open(&dir).unwrap();
+        assert_eq!(
+            reader.query_terms("x^2 - 5x + 6 = 0"),
+            ["x", "2", "5x", "6", "0"]
+        );
+        assert_eq!(
+            reader.query_terms("Solving the EQUATIONS, solving!"),
+            ["solv", "equat"]
+        );
+        assert!(reader.query_terms("").is_empty());
+        assert!(reader.query_terms("?!- = ^").is_empty());
+    }
+
+    #[test]
+    fn stop_words_alone_match_nothing_and_unrelated_questions_find_nothing() {
+        let dir = temp_dir();
+        build(
+            &dir,
+            &[
+                chunk(
+                    "D",
+                    0,
+                    1,
+                    "Quadratics",
+                    "Worked example: x^2 - 5x + 6 = 0 has two real roots.",
+                ),
+                chunk(
+                    "D",
+                    1,
+                    2,
+                    "Quadratics",
+                    "The quadratic formula is what you use when the roots are not obvious.",
+                ),
+            ],
+        );
+        let reader = Bm25Reader::open(&dir).unwrap();
+        for question in [
+            "what is the",
+            "who was it of and to a",
+            "How do I do this?",
+            "Who painted the Mona Lisa?",
+        ] {
+            let hits = reader.search(question, 5).unwrap();
+            assert!(hits.is_empty(), "{question:?} matched {hits:?}");
+        }
+        // The same words still count when they come with a real term.
+        assert_eq!(
+            reader.search("who uses the quadratic formula", 5).unwrap()[0].chunk_id,
+            "D:1"
+        );
+    }
+
+    #[test]
+    fn math_variables_are_not_stop_words() {
+        let dir = temp_dir();
+        build(&dir, &[chunk("D", 0, 1, "", "text")]);
+        let reader = Bm25Reader::open(&dir).unwrap();
+        assert_eq!(
+            reader.query_terms("y = m x + o, d"),
+            ["y", "m", "x", "o", "d"]
+        );
+    }
+
+    #[test]
+    fn an_index_written_before_the_stop_word_filter_stays_readable() {
+        let dir = temp_dir();
+        // The old analyzer: no stop-word filter.
+        let (schema, fields) = schema();
+        let index = Index::create_in_dir(&*dir, schema).unwrap();
+        index.tokenizers().register(
+            TOKENIZER,
+            TextAnalyzer::builder(SimpleTokenizer::default())
+                .filter(RemoveLongFilter::limit(40))
+                .filter(LowerCaser)
+                .filter(Stemmer::new(Language::English))
+                .build(),
+        );
+        let mut writer: IndexWriter = index.writer_with_num_threads(1, WRITER_MEMORY).unwrap();
+        writer
+            .add_document(doc!(
+                fields.chunk_id => "OLD:0",
+                fields.document_id => "OLD",
+                fields.page => 3u64,
+                fields.heading => "History",
+                fields.text => "The Pythagorean theorem is what builders use.",
+            ))
+            .unwrap();
+        writer.commit().unwrap();
+        writer.wait_merging_threads().unwrap();
+        drop(index);
+        // The new code opens it, searches it, and can write to it.
+        let reader = Bm25Reader::open(&dir).unwrap();
+        let hits = reader.search("pythagorean theorem", 5).unwrap();
+        assert_eq!((hits[0].chunk_id.as_str(), hits[0].page), ("OLD:0", 3));
+        assert_eq!(reader.search("builders", 5).unwrap().len(), 1);
+        let mut writer = Bm25Writer::open(&dir).unwrap();
+        writer
+            .add_chunk(&chunk("NEW", 0, 1, "", "A new chunk about triangles"))
+            .unwrap();
+        writer.commit().unwrap();
+        let reader = Bm25Reader::open(&dir).unwrap();
+        assert_eq!(reader.chunk_count(), 2);
+        assert_eq!(reader.search("triangles", 5).unwrap()[0].chunk_id, "NEW:0");
+    }
+
+    #[test]
     fn a_packed_blob_round_trips() {
         let dir = temp_dir();
         build(
@@ -732,5 +1318,115 @@ mod tests {
         unpack(&pack(&dir).unwrap(), &target).unwrap();
         assert!(!target.join("somewhere.lock").exists());
         assert!(target.join("meta.json").exists());
+    }
+
+    fn cached(course: &str, key: &str, bytes: u64) -> CachedReader {
+        let dir = temp_dir();
+        build(&dir, &[chunk("D", 0, 1, "", "text")]);
+        let reader = std::sync::Arc::new(Bm25Reader::open(&dir).unwrap());
+        // The reader lives in the cache for the whole test, so the directory stays (it is in the temp dir).
+        std::mem::forget(dir);
+        CachedReader {
+            course_id: course.into(),
+            key: key.into(),
+            reader,
+            bytes,
+        }
+    }
+
+    fn lru(max_courses: usize, max_bytes: u64) -> Lru {
+        Lru {
+            entries: Vec::new(),
+            max_courses,
+            max_bytes,
+        }
+    }
+
+    #[test]
+    fn the_cache_keeps_at_most_eight_courses_and_drops_the_least_recently_used() {
+        let mut cache = lru(READER_CACHE_MAX_COURSES, READER_CACHE_MAX_BYTES);
+        for n in 0..8 {
+            assert!(cache.insert(cached(&format!("C{n}"), "k", 10)).is_empty());
+        }
+        // C0 is the oldest. Using it makes C1 the oldest.
+        assert!(cache.get("C0", "k").is_some());
+        let evicted = cache.insert(cached("C8", "k", 10));
+        assert_eq!(evicted, vec!["C1".to_owned()]);
+        assert_eq!(cache.entries.len(), 8);
+        assert!(cache.get("C1", "k").is_none());
+        assert!(cache.get("C0", "k").is_some());
+    }
+
+    #[test]
+    fn the_cache_keeps_at_most_one_gigabyte() {
+        let mut cache = lru(8, READER_CACHE_MAX_BYTES);
+        let gb = READER_CACHE_MAX_BYTES;
+        assert!(cache.insert(cached("A", "k", gb / 2)).is_empty());
+        assert!(cache.insert(cached("B", "k", gb / 2)).is_empty());
+        assert_eq!(cache.insert(cached("C", "k", gb / 4)), vec!["A".to_owned()]);
+        // One course bigger than the limit still stays: it is the one in use.
+        let mut small = lru(8, 100);
+        assert!(small.insert(cached("Big", "k", 1000)).is_empty());
+        assert_eq!(small.entries.len(), 1);
+    }
+
+    #[test]
+    fn a_new_blob_key_replaces_the_old_reader_of_the_course() {
+        let mut cache = lru(8, 1 << 30);
+        cache.insert(cached("C", "v1", 10));
+        assert!(cache.get("C", "v1").is_some());
+        cache.insert(cached("C", "v2", 10));
+        assert_eq!(cache.entries.len(), 1);
+        assert!(cache.get("C", "v1").is_none());
+        assert!(cache.get("C", "v2").is_some());
+    }
+
+    #[test]
+    fn directory_sizes_add_up() {
+        let dir = temp_dir();
+        std::fs::write(dir.join("a"), vec![0u8; 100]).unwrap();
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub/b"), vec![0u8; 50]).unwrap();
+        assert_eq!(dir_size(&dir), 150);
+        assert_eq!(dir_size(&dir.join("missing")), 0);
+    }
+
+    #[test]
+    fn opening_a_new_blob_removes_the_old_blob_and_half_finished_downloads() {
+        let base = temp_dir();
+        let course_dir = base.join("COURSE");
+        for name in ["v1-AAA", "v2-BBB", "v3-CCC.tmp"] {
+            std::fs::create_dir_all(course_dir.join(name)).unwrap();
+            std::fs::write(course_dir.join(name).join("file"), b"x").unwrap();
+        }
+        std::fs::write(course_dir.join("v3-CCC.download"), b"partial").unwrap();
+        remove_other_entries(&course_dir, "v2-BBB");
+        let mut left: Vec<String> = std::fs::read_dir(&course_dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["v2-BBB"]);
+    }
+
+    #[test]
+    fn unpacking_a_blob_file_matches_unpacking_bytes() {
+        let dir = temp_dir();
+        build(&dir, &[chunk("D", 0, 4, "H", "streamed blob")]);
+        let blob = pack(&dir).unwrap();
+        let base = temp_dir();
+        let path = base.join("blob.tar.zst");
+        std::fs::write(&path, &blob).unwrap();
+        let target = base.join("out");
+        unpack_file(&path, &target).unwrap();
+        assert_eq!(
+            Bm25Reader::open(&target)
+                .unwrap()
+                .search("streamed", 3)
+                .unwrap()
+                .len(),
+            1
+        );
     }
 }

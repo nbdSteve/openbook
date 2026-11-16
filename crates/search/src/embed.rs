@@ -26,6 +26,13 @@ pub enum EmbedError {
 pub trait Embedder: Send + Sync {
     /// A normalized vector with `DIMENSIONS` values.
     async fn embed(&self, text: &str) -> Result<Vec<f32>, EmbedError>;
+
+    /// The vector and the number of input tokens. Titan reports the count. For other embedders it is
+    /// an estimate of one token per 4 characters.
+    async fn embed_counted(&self, text: &str) -> Result<(Vec<f32>, u64), EmbedError> {
+        let vector = self.embed(text).await?;
+        Ok((vector, (text.chars().count() as u64).div_ceil(4)))
+    }
 }
 
 /// Titan Text Embeddings v2 through `InvokeModel`.
@@ -63,6 +70,10 @@ fn classify(error: aws_sdk_bedrockruntime::error::SdkError<InvokeModelError>) ->
 #[async_trait]
 impl Embedder for TitanEmbedder {
     async fn embed(&self, text: &str) -> Result<Vec<f32>, EmbedError> {
+        Ok(self.embed_counted(text).await?.0)
+    }
+
+    async fn embed_counted(&self, text: &str) -> Result<(Vec<f32>, u64), EmbedError> {
         let body = serde_json::json!({
             "inputText": text,
             "dimensions": DIMENSIONS,
@@ -92,7 +103,10 @@ impl Embedder for TitanEmbedder {
                 vector.len()
             )));
         }
-        Ok(vector)
+        let tokens = value["inputTextTokenCount"]
+            .as_u64()
+            .unwrap_or_else(|| (text.chars().count() as u64).div_ceil(4));
+        Ok((vector, tokens))
     }
 }
 

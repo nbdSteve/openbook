@@ -54,6 +54,8 @@ pub struct Options {
     pub failed_joins_per_day: u32,
     pub global_tokens: u64,
     pub chat_timeouts: Option<openbook_api::routes::chat::ChatTimeouts>,
+    /// A scripted fast model: its catalog ID (it must be in the catalog) and the provider.
+    pub fast_provider: Option<(String, std::sync::Arc<dyn openbook_core::model::ChatModel>)>,
 }
 
 impl Default for Options {
@@ -68,6 +70,7 @@ impl Default for Options {
             failed_joins_per_day: 20,
             global_tokens: 3_000_000,
             chat_timeouts: None,
+            fast_provider: None,
         }
     }
 }
@@ -203,7 +206,13 @@ pub async fn start_with_models(options: Options, models: &str) -> TestApp {
         ("OPENBOOK_VECTOR_BUCKET", vector_bucket.clone()),
         ("OPENBOOK_EMBEDDING_MODEL_ID", "fake".to_owned()),
         ("OPENBOOK_DEFAULT_CHAT_MODEL", "fake-a".to_owned()),
-        ("OPENBOOK_FAST_MODEL", "fake-a".to_owned()),
+        (
+            "OPENBOOK_FAST_MODEL",
+            options
+                .fast_provider
+                .as_ref()
+                .map_or("fake-a".to_owned(), |(id, _)| id.clone()),
+        ),
         (
             "OPENBOOK_LIMIT_DAILY_MESSAGES_PER_USER",
             options.user_daily_limit.to_string(),
@@ -247,7 +256,13 @@ pub async fn start_with_models(options: Options, models: &str) -> TestApp {
         .build()
         .expect("http client");
 
-    let state = build_state(&vars, &sdk, options.fake_delay, options.chat_timeouts);
+    let state = build_state(
+        &vars,
+        &sdk,
+        options.fake_delay,
+        options.chat_timeouts,
+        options.fast_provider.clone(),
+    );
     TestApp {
         router: build_router(state.clone()),
         state,
@@ -323,6 +338,7 @@ fn build_state(
     sdk: &aws_config::SdkConfig,
     fake_delay: Duration,
     chat_timeouts: Option<openbook_api::routes::chat::ChatTimeouts>,
+    fast_provider: Option<(String, std::sync::Arc<dyn openbook_core::model::ChatModel>)>,
 ) -> AppState {
     let config = Config::from_vars(vars).expect("valid test config");
     let store = Store::new(sdk, config.table_name.clone());
@@ -330,8 +346,28 @@ fn build_state(
     let verifier = TokenVerifier::from_config(&config).expect("verifier");
     let models = ModelRegistry::from_catalog(config.catalog.clone(), None, fake_delay)
         .expect("model registry");
+    let models = match fast_provider {
+        Some((id, provider)) => models.with_provider(&id, provider),
+        None => models,
+    };
+    let s3 = {
+        let conf = aws_sdk_s3::config::Builder::from(sdk)
+            .force_path_style(true)
+            .build();
+        aws_sdk_s3::Client::from_conf(conf)
+    };
+    let retrieval = std::sync::Arc::new(openbook_api::retrieval::Retrieval {
+        embedder: std::sync::Arc::new(openbook_search::embed::FakeEmbedder),
+        vectors: openbook_search::vectors::VectorStore::new(sdk, config.vector_bucket.clone()),
+        bm25: openbook_search::bm25::Bm25ReaderCache::new(
+            s3,
+            config.docs_bucket.clone(),
+            std::env::temp_dir().join(format!("openbook-test-bm25-{}", ids::new_id())),
+        ),
+    });
     let queue = openbook_core::queue::IngestQueue::new(sdk, config.ingest_queue_url.clone());
     AppState {
+        retrieval,
         queue,
         config: std::sync::Arc::new(config),
         store,
@@ -505,7 +541,7 @@ impl TestApp {
         vars.insert("OPENBOOK_MODELS".into(), models.to_owned());
         vars.insert("OPENBOOK_DEFAULT_CHAT_MODEL".into(), default.to_owned());
         vars.insert("OPENBOOK_FAST_MODEL".into(), default.to_owned());
-        build_router(build_state(&vars, &self.sdk, Duration::ZERO, None))
+        build_router(build_state(&vars, &self.sdk, Duration::ZERO, None, None))
     }
 
     /// The environment that the test config was built from.
@@ -513,11 +549,16 @@ impl TestApp {
         &self.vars
     }
 
+    /// A router over the same resources with another set of variables.
+    pub fn router_with_vars(&self, vars: &HashMap<String, String>) -> Router {
+        build_router(build_state(vars, &self.sdk, Duration::ZERO, None, None))
+    }
+
     /// A router over the same resources with another ingest queue URL.
     pub fn router_with_queue(&self, queue_url: &str) -> Router {
         let mut vars = self.vars.clone();
         vars.insert("OPENBOOK_INGEST_QUEUE_URL".into(), queue_url.to_owned());
-        build_router(build_state(&vars, &self.sdk, Duration::ZERO, None))
+        build_router(build_state(&vars, &self.sdk, Duration::ZERO, None, None))
     }
 
     /// Takes every message from the ingest queue (and deletes it), as parsed JSON.
