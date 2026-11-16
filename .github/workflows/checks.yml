@@ -1,28 +1,34 @@
-# The gate every change passes before it is merged.
+# The gate every change passes before it is merged, and again on the exact commit that deploys.
+#
+# `pull_request` runs it for every pull request. `workflow_call` lets deploy.yml run the same
+# jobs first, on the commit that it is about to deploy, and `need` them. There is no `push`
+# trigger: a push to main runs these jobs through deploy.yml, so no run is duplicated.
 #
 # Nothing here needs AWS credentials, and no job can ask for an OIDC token, so a pull request
-# from a fork can run the whole gate and still reach nothing. Deployment lives in
-# deploy.yml, the only workflow that may request an OIDC token.
-#
-# Third-party actions are pinned to full commit SHAs (the tag is in the comment).
+# from a fork can run the whole gate and still reach nothing. Third-party actions are pinned
+# to full commit SHAs (the tag is in the comment).
 name: checks
 
 on:
   pull_request:
-  push:
-    branches: [main]
+  workflow_call:
 
 permissions:
   contents: read
 
 concurrency:
-  group: checks-${{ github.ref }}
-  cancel-in-progress: true
+  group: checks-${{ github.workflow }}-${{ github.ref }}
+  # Only a newer push to the same pull request may cancel older checks. A deploy run never
+  # cancels its own gate.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
   # The emulator image comes from the latest LTS RPM. Docker builds it fresh on every run.
   EMULATOR_IMAGE: aws-emulator
+  # The cargo-lambda version, and the Zig linker that it needs. Keep both in step with deploy.yml.
+  CARGO_LAMBDA_VERSION: '1.9.2'
+  ZIGLANG_VERSION: '0.17.1'
 
 jobs:
   rust:
@@ -40,6 +46,22 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
 
+  lambda:
+    name: arm64 Lambda build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup show
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # pip installs cargo-lambda with the Zig linker it needs to cross-compile for arm64.
+      - name: install cargo-lambda
+        run: pip3 install "cargo-lambda==${CARGO_LAMBDA_VERSION}" "ziglang==${ZIGLANG_VERSION}"
+      - run: make build-lambdas
+      - name: the bootstrap binary exists
+        run: test -s target/lambda/openbook-api/bootstrap
+
   rust-integration:
     name: rust integration (AWS Emulator)
     runs-on: ubuntu-latest
@@ -50,8 +72,9 @@ jobs:
       - run: rustup show
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # Build from the latest RPM, never from a cached layer. `make test-integration` then
-      # starts the container on 127.0.0.1 only, with `-a off` and EMULATOR_TELEMETRY=off,
-      # waits for /__admin/health, runs the ignored tests, and stops the container.
+      # starts the container as the runner user, on 127.0.0.1 only, with `-a off` and
+      # EMULATOR_TELEMETRY=off, waits for /__admin/health with the new CA, runs the ignored
+      # tests, and stops the container.
       - name: build the emulator image
         run: docker build --pull --no-cache -t "$EMULATOR_IMAGE" scripts/emulator
       - run: make test-integration
@@ -97,13 +120,27 @@ jobs:
       - run: npm run typecheck
       - run: npm run build
       - run: npm test
-      # The synth uses placeholder assets, a fake account, and no credentials.
+      # The synth uses placeholder assets and no AWS identity: the script drops every AWS
+      # variable and the CDK CLI finds no account.
       - name: synth with placeholder assets
-        env:
-          CDK_DEFAULT_ACCOUNT: '111111111111'
         run: |
           npm run synth:placeholders
           npm run synth:placeholders -- -c stage=prod
+
+  scripts:
+    name: shell scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: bash -n
+        run: |
+          for file in scripts/*.sh scripts/lib/stack.sh infra/scripts/*.sh; do
+            bash -n "$file"
+          done
+      - name: shellcheck
+        run: shellcheck -x scripts/*.sh scripts/lib/stack.sh infra/scripts/*.sh
 
   e2e-local:
     name: local end-to-end
