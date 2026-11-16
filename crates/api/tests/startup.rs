@@ -70,6 +70,7 @@ fn lambda_refuses_each_local_only_variable() {
     for name in [
         "AWS_ENDPOINT_URL",
         "OPENBOOK_COGNITO_JWKS_URL",
+        "OPENBOOK_COGNITO_ISSUER",
         "OPENBOOK_CA_BUNDLE",
         "OPENBOOK_PRESIGN_ENDPOINT",
         "OPENBOOK_BEDROCK_PROFILE",

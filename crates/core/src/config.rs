@@ -10,9 +10,10 @@ use std::path::PathBuf;
 use crate::catalog::Catalog;
 
 /// Variables that are only for local runs. In Lambda, each of them stops the start-up.
-pub const LOCAL_ONLY_VARS: [&str; 5] = [
+pub const LOCAL_ONLY_VARS: [&str; 6] = [
     "AWS_ENDPOINT_URL",
     "OPENBOOK_COGNITO_JWKS_URL",
+    "OPENBOOK_COGNITO_ISSUER",
     "OPENBOOK_CA_BUNDLE",
     "OPENBOOK_PRESIGN_ENDPOINT",
     "OPENBOOK_BEDROCK_PROFILE",
@@ -78,6 +79,9 @@ pub struct Config {
     pub cognito_region: String,
     /// `OPENBOOK_COGNITO_JWKS_URL`, when set.
     pub cognito_jwks_url: Option<String>,
+    /// `OPENBOOK_COGNITO_ISSUER`, when set (local only): the exact `iss` that tokens must have.
+    /// AWS Emulator puts its own address in `iss`, not the AWS issuer.
+    pub cognito_issuer_override: Option<String>,
     pub catalog: Catalog,
     pub ingest_queue_url: String,
     pub vector_bucket: String,
@@ -97,8 +101,12 @@ pub struct Config {
 }
 
 impl Config {
-    /// The token issuer: `https://cognito-idp.<region>.amazonaws.com/<poolId>`.
+    /// The token issuer that the verifier expects: the local override, or
+    /// `https://cognito-idp.<region>.amazonaws.com/<poolId>`.
     pub fn cognito_issuer(&self) -> String {
+        if let Some(issuer) = &self.cognito_issuer_override {
+            return issuer.clone();
+        }
         format!(
             "https://cognito-idp.{}.amazonaws.com/{}",
             self.cognito_region, self.cognito_user_pool_id
@@ -316,6 +324,7 @@ impl Config {
             cognito_client_id,
             cognito_region,
             cognito_jwks_url: get("OPENBOOK_COGNITO_JWKS_URL"),
+            cognito_issuer_override: get("OPENBOOK_COGNITO_ISSUER"),
             catalog,
             ingest_queue_url,
             vector_bucket,
@@ -651,5 +660,35 @@ mod tests {
         v.insert("AWS_LAMBDA_RUNTIME_API".into(), "127.0.0.1:9001".into());
         v.insert("OPENBOOK_CA_BUNDLE".into(), "x".into());
         assert!(Config::from_vars_for(&v, Service::Ingest).is_err());
+    }
+
+    #[test]
+    fn the_issuer_override_replaces_the_aws_issuer_and_is_refused_in_lambda() {
+        let mut v = base();
+        let aws = Config::from_vars(&v).unwrap();
+        assert_eq!(
+            aws.cognito_issuer(),
+            "https://cognito-idp.ap-southeast-2.amazonaws.com/ap-southeast-2_abc"
+        );
+        v.insert(
+            "OPENBOOK_COGNITO_ISSUER".into(),
+            "https://127.0.0.1:9301/ap-southeast-2_abc".into(),
+        );
+        let local = Config::from_vars(&v).unwrap();
+        assert_eq!(
+            local.cognito_issuer(),
+            "https://127.0.0.1:9301/ap-southeast-2_abc"
+        );
+        // The JWKS URL still follows its own variable, and defaults to the AWS issuer path only without the override.
+        assert!(
+            local.jwks_url().starts_with("https://127.0.0.1:9301/")
+                || local.jwks_url().contains(".well-known")
+        );
+        v.insert("AWS_LAMBDA_RUNTIME_API".into(), "127.0.0.1:9001".into());
+        let err = Config::from_vars(&v).unwrap_err();
+        assert!(
+            err.to_string().contains("OPENBOOK_COGNITO_ISSUER is set"),
+            "{err}"
+        );
     }
 }
