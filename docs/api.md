@@ -175,7 +175,7 @@ Invite codes are 8 characters from `ABCDEFGHJKMNPQRSTUVWXYZ23456789` (no `0`, `O
 `POST /api/join` body `{ "inviteCode": string }` → `200 { "course": Course }`.
 Joins as `student`. If the caller is already a member, returns the course with their existing role. Unknown code → `404`.
 
-`GET /api/courses/{courseId}/members` (owner) → `200 { "members": Member[] }`.
+`GET /api/courses/{courseId}/members` (owner) → `200 { "members": Member[] }`: the owner first, then students by `joinedAt`, oldest first.
 
 `DELETE /api/courses/{courseId}/members/{userId}` → `204`.
 An owner can remove a student. A student can remove only themselves (leave). Nobody can remove the owner (`409 conflict`).
@@ -223,7 +223,7 @@ Stream events, in order (each is `event: <name>` plus one `data: <json>` line):
 | `sources` | `{ "sources": Source[] }` | Phase 3, before the first `delta`; omitted when there are no sources |
 | `delta` | `{ "text": string }` | Zero or more |
 | `done` | `{ "usage": { "inputTokens": number, "outputTokens": number }, "stopReason": string }` | Last event on success |
-| `error` | `{ "code": string, "message": string }` | Last event when the model fails after the stream started |
+| `error` | `{ "code": string, "message": string }` | Last event when the model fails or times out after the stream started. `code` is `model_unavailable` or `internal` |
 
 The server also sends SSE comment lines (`: keep-alive`) at least every 15 seconds.
 The API saves the user message before it calls the model, and saves the assistant message (with sources and usage) before it sends `done`, even if the client disconnects.
