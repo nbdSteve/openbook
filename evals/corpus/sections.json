@@ -1,0 +1,7 @@
+[
+  { "id": "exponents", "title": "1.2 Exponents and Scientific Notation", "firstPage": 1, "lastPage": 8 },
+  { "id": "quadratic-equations", "title": "2.5 Quadratic Equations", "firstPage": 9, "lastPage": 17 },
+  { "id": "functions", "title": "3.1 Functions and Function Notation", "firstPage": 18, "lastPage": 25 },
+  { "id": "quadratic-functions", "title": "5.1 Quadratic Functions", "firstPage": 26, "lastPage": 37 },
+  { "id": "exponential-functions", "title": "6.1 Exponential Functions", "firstPage": 38, "lastPage": 43 }
+]
