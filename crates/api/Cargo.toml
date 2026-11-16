@@ -8,7 +8,9 @@ publish.workspace = true
 
 [dependencies]
 openbook-core.workspace = true
+openbook-search = { workspace = true, features = ["bm25"] }
 axum.workspace = true
+aws-sdk-s3.workspace = true
 chrono.workspace = true
 futures.workspace = true
 lambda_http.workspace = true

@@ -1250,3 +1250,476 @@ async fn transcribed_counter(e: &Env) -> i64 {
         _ => 0,
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// Retrieval in chat (phase 3)
+// ---------------------------------------------------------------------------------------------
+
+const THREE_MODELS: &str = r#"[
+  {"id":"fake-a","label":"Fake A","vendor":"openbook","provider":"fake","modelId":"fake-a","residency":"au","vision":true},
+  {"id":"fake-fast","label":"Fake fast","vendor":"openbook","provider":"fake","modelId":"fake-fast","residency":"au","vision":true}
+]"#;
+
+/// A fast model with a fixed reply that records what it was asked.
+struct ScriptedRewriter {
+    reply: Result<String, String>,
+    seen: std::sync::Mutex<Vec<openbook_core::model::ChatRequest>>,
+}
+
+impl ScriptedRewriter {
+    fn new(reply: Result<&str, &str>) -> Arc<Self> {
+        Arc::new(Self {
+            reply: reply.map(str::to_owned).map_err(str::to_owned),
+            seen: std::sync::Mutex::new(Vec::new()),
+        })
+    }
+
+    fn calls(&self) -> Vec<openbook_core::model::ChatRequest> {
+        self.seen.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl openbook_core::model::ChatModel for ScriptedRewriter {
+    async fn stream(
+        &self,
+        request: openbook_core::model::ChatRequest,
+    ) -> Result<openbook_core::model::ModelStream, openbook_core::model::ModelError> {
+        self.seen.lock().unwrap().push(request);
+        match &self.reply {
+            Err(error) => Err(openbook_core::model::ModelError(error.clone())),
+            Ok(text) => {
+                let events = vec![
+                    Ok(openbook_core::model::ModelEvent::Delta(text.clone())),
+                    Ok(openbook_core::model::ModelEvent::Finish {
+                        usage: Default::default(),
+                        stop_reason: "end_turn".into(),
+                    }),
+                ];
+                Ok(futures::StreamExt::boxed(futures::stream::iter(events)))
+            }
+        }
+    }
+}
+
+async fn env_with_fast(rewriter: Arc<ScriptedRewriter>) -> Env {
+    let options = support::Options {
+        fast_provider: Some(("fake-fast".to_owned(), rewriter)),
+        ..support::Options::default()
+    };
+    let app = support::start_with_models(options, THREE_MODELS).await;
+    let owner = app.user("teacher").await;
+    let course = app.course(&owner, "Geometry and Biology").await;
+    let deps = deps_for(&app, &[]).await;
+    Env {
+        course_id: text(&course, "id"),
+        app,
+        owner,
+        deps,
+    }
+}
+
+impl Env {
+    async fn chat(&self, user: &TestUser, body: Value) -> Vec<(String, Value)> {
+        let reply = self.app.chat(user, &self.course_id, body).await;
+        assert_eq!(reply.status, StatusCode::OK, "{}", reply.text);
+        reply.sse()
+    }
+
+    /// Two ready documents: geometry (3 pages) and biology (1 page).
+    async fn two_documents(&self) -> (String, String) {
+        let (geometry, a) = self.ingest("Geometry notes.pdf", geometry_pdf()).await;
+        let (biology, b) = self
+            .ingest("Biology.pdf", make_pdf(&[biology_page()]))
+            .await;
+        assert!(matches!(a, Outcome::Ready { .. }) && matches!(b, Outcome::Ready { .. }));
+        (geometry, biology)
+    }
+
+    async fn stored_trace(
+        &self,
+        conversation_id: &str,
+        assistant_message_id: &str,
+    ) -> Option<Value> {
+        let item = self
+            .app
+            .dynamodb
+            .get_item()
+            .table_name(&self.app.table)
+            .key("pk", AttributeValue::S(format!("CONV#{conversation_id}")))
+            .key(
+                "sk",
+                AttributeValue::S(format!("MSG#{assistant_message_id}")),
+            )
+            .consistent_read(true)
+            .send()
+            .await
+            .unwrap()
+            .item?;
+        match item.get("trace") {
+            Some(AttributeValue::S(json)) => {
+                Some(serde_json::from_str(json).expect("trace is JSON"))
+            }
+            _ => None,
+        }
+    }
+}
+
+fn names(events: &[(String, Value)]) -> Vec<&str> {
+    events.iter().map(|(n, _)| n.as_str()).collect()
+}
+
+fn answer_of(events: &[(String, Value)]) -> String {
+    events
+        .iter()
+        .filter(|(n, _)| n == "delta")
+        .map(|(_, d)| text(d, "text"))
+        .collect()
+}
+
+#[tokio::test]
+#[ignore = "needs AWS Emulator; run make test-integration"]
+async fn chat_sends_sources_before_the_first_delta_and_the_fake_answer_cites_them() {
+    let e = env_with_fast(ScriptedRewriter::new(Ok("unused"))).await;
+    let student = e.app.user("student").await;
+    let invite = e
+        .app
+        .get(&format!("/api/courses/{}", e.course_id), &e.owner)
+        .await
+        .json()["course"]["inviteCode"]
+        .clone();
+    e.app
+        .post("/api/join", &student, json!({"inviteCode": invite}))
+        .await;
+    let (geometry, _biology) = e.two_documents().await;
+
+    let question = "What does the Pythagorean theorem say about a right triangle?";
+    let events = e.chat(&student, json!({"message": question})).await;
+    let order = names(&events);
+    assert_eq!(order[0], "meta");
+    assert_eq!(
+        order[1], "sources",
+        "sources come right after meta: {order:?}"
+    );
+    assert!(
+        order[2..order.len() - 1].iter().all(|n| *n == "delta"),
+        "{order:?}"
+    );
+    assert_eq!(*order.last().unwrap(), "done");
+
+    let sources = events[1].1["sources"].as_array().unwrap().clone();
+    assert!(!sources.is_empty() && sources.len() <= 8, "{sources:?}");
+    for (i, source) in sources.iter().enumerate() {
+        assert_eq!(source["n"], i + 1);
+        assert!(source["snippet"].as_str().unwrap().chars().count() <= 1200);
+        assert!(source["documentName"].as_str().unwrap().ends_with(".pdf"));
+        assert!(source["page"].as_u64().unwrap() >= 1);
+    }
+    assert_eq!(sources[0]["documentId"], geometry);
+    assert_eq!(sources[0]["documentName"], "Geometry notes.pdf");
+    assert_eq!(sources[0]["page"], 1);
+    assert!(
+        sources[0]["snippet"]
+            .as_str()
+            .unwrap()
+            .contains("Pythagorean")
+    );
+    let per_doc = sources
+        .iter()
+        .filter(|s| s["documentId"] == geometry)
+        .count();
+    assert!(per_doc <= 4, "at most four from one document: {per_doc}");
+
+    // The fake answer quotes the sources and cites [1] and [2].
+    let answer = answer_of(&events);
+    assert!(answer.contains("The course materials say \""), "{answer}");
+    assert!(answer.contains("\" [1]."), "{answer}");
+    assert!(answer.contains("\" [2]."), "{answer}");
+    assert!(!answer.contains("[3]"));
+
+    // The assistant message has the same sources, and GET returns them.
+    let conversation = text(&events[0].1, "conversationId");
+    let body = e
+        .app
+        .get(&format!("/api/conversations/{conversation}"), &student)
+        .await
+        .json();
+    let messages = body["messages"].as_array().unwrap();
+    assert_eq!(messages[1]["sources"], json!(sources));
+    assert!(
+        messages[0].get("sources").is_none(),
+        "the student message has none"
+    );
+
+    // The trace is stored on the assistant message, and the API does not show it.
+    assert!(messages[1].get("trace").is_none());
+    let trace = e
+        .stored_trace(&conversation, &text(&events[0].1, "assistantMessageId"))
+        .await
+        .expect("a trace");
+    assert_eq!(trace["query"], question);
+    assert_eq!(trace["rewritten"], false);
+    assert_eq!(trace["gated"], false);
+    assert!(
+        !trace["dense"].as_array().unwrap().is_empty()
+            && trace["dense"].as_array().unwrap().len() <= 10
+    );
+    assert!(!trace["lexical"].as_array().unwrap().is_empty());
+    assert_eq!(trace["dense"][0]["rank"], 1);
+    let fused_ids: Vec<&Value> = trace["fused"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| &f["documentId"])
+        .collect();
+    let source_ids: Vec<&Value> = sources.iter().map(|s| &s["documentId"]).collect();
+    assert_eq!(
+        fused_ids, source_ids,
+        "the trace lists the sources in fused order"
+    );
+    assert!(trace["timings"]["retrieveMs"].is_number());
+    assert!(trace["errors"].as_array().unwrap().is_empty());
+    let raw = serde_json::to_string(&trace).unwrap();
+    assert!(raw.len() < 32 * 1024);
+
+    // The prompt that the model got has escaped `<source>` tags (checked through the fake answer's quote: no raw tags).
+    assert!(!answer.contains("<source"));
+}
+
+#[tokio::test]
+#[ignore = "needs AWS Emulator; run make test-integration"]
+async fn a_course_without_ready_documents_gets_no_sources_event_and_no_rewrite() {
+    let rewriter = ScriptedRewriter::new(Ok("never used"));
+    let e = env_with_fast(rewriter.clone()).await;
+    // A document that is only queued does not count.
+    let (_, _message) = e.upload("Geometry notes.pdf", geometry_pdf()).await;
+
+    let events = e
+        .chat(
+            &e.owner,
+            json!({"message": "What is the Pythagorean theorem?"}),
+        )
+        .await;
+    assert!(!names(&events).contains(&"sources"), "{:?}", names(&events));
+    let conversation = text(&events[0].1, "conversationId");
+    let plain =
+        openbook_core::model::FakeChat::answer("fake-a", "What is the Pythagorean theorem?");
+    assert_eq!(
+        answer_of(&events),
+        plain,
+        "no retrieval: the plain answer, not a 'not covered' note"
+    );
+    // A follow-up in a course without ready documents does not rewrite either.
+    e.chat(
+        &e.owner,
+        json!({"conversationId": conversation, "message": "And then?"}),
+    )
+    .await;
+    assert!(rewriter.calls().is_empty());
+    let body = e
+        .app
+        .get(&format!("/api/conversations/{conversation}"), &e.owner)
+        .await
+        .json();
+    assert!(body["messages"][1].get("sources").is_none());
+    assert!(
+        e.stored_trace(&conversation, &text(&events[0].1, "assistantMessageId"))
+            .await
+            .is_none()
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs AWS Emulator; run make test-integration"]
+async fn a_question_that_matches_nothing_hits_the_gate() {
+    let e = env_with_fast(ScriptedRewriter::new(Ok("unused"))).await;
+    e.two_documents().await;
+    let events = e
+        .chat(&e.owner, json!({"message": "zebra xylophone quantum"}))
+        .await;
+    assert!(!names(&events).contains(&"sources"), "{:?}", names(&events));
+    assert_eq!(names(&events).first(), Some(&"meta"));
+    assert_eq!(names(&events).last(), Some(&"done"));
+    // The prompt told the model that the materials do not seem to cover the question.
+    let answer = answer_of(&events);
+    assert!(
+        answer.contains("The course materials do not cover this question."),
+        "{answer}"
+    );
+    let conversation = text(&events[0].1, "conversationId");
+    let trace = e
+        .stored_trace(&conversation, &text(&events[0].1, "assistantMessageId"))
+        .await
+        .expect("a trace");
+    assert_eq!(trace["gated"], true);
+    assert!(trace["fused"].as_array().unwrap().is_empty());
+    assert!(trace["lexical"].as_array().unwrap().is_empty());
+    let best = trace["dense"][0]["value"].as_f64().unwrap();
+    assert!(
+        best > 0.65,
+        "the best dense distance {best} is above the gate"
+    );
+    let body = e
+        .app
+        .get(&format!("/api/conversations/{conversation}"), &e.owner)
+        .await
+        .json();
+    assert!(body["messages"][1].get("sources").is_none());
+}
+
+#[tokio::test]
+#[ignore = "needs AWS Emulator; run make test-integration"]
+async fn a_follow_up_is_rewritten_by_the_fast_model_and_a_failed_rewrite_falls_back() {
+    let rewriter = ScriptedRewriter::new(Ok("photosynthesis chlorophyll glucose"));
+    let e = env_with_fast(rewriter.clone()).await;
+    let (_geometry, biology) = e.two_documents().await;
+
+    // The first turn uses the message itself. The fast model is not called.
+    let first = e
+        .chat(
+            &e.owner,
+            json!({"message": "What is the Pythagorean theorem?"}),
+        )
+        .await;
+    assert!(rewriter.calls().is_empty());
+    let conversation = text(&first[0].1, "conversationId");
+    let trace = e
+        .stored_trace(&conversation, &text(&first[0].1, "assistantMessageId"))
+        .await
+        .unwrap();
+    assert_eq!(trace["rewritten"], false);
+
+    // The follow-up has no useful words. The rewrite turns it into a biology query.
+    let follow = e
+        .chat(
+            &e.owner,
+            json!({"conversationId": conversation, "message": "Tell me more about that"}),
+        )
+        .await;
+    let calls = rewriter.calls();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        calls[0].system,
+        openbook_core::prompt::REWRITE_SYSTEM_PROMPT
+    );
+    assert_eq!(calls[0].max_tokens, Some(100));
+    assert_eq!(calls[0].temperature, Some(0.0));
+    let asked = &calls[0].turns[0].text;
+    assert!(
+        asked.contains("What is the Pythagorean theorem?"),
+        "the earlier messages go with it: {asked}"
+    );
+    assert!(
+        asked.ends_with("Last student message: Tell me more about that"),
+        "{asked}"
+    );
+    let sources = follow[1].1["sources"]
+        .as_array()
+        .expect("sources from the rewritten query");
+    assert_eq!(sources[0]["documentId"], biology);
+    let trace = e
+        .stored_trace(&conversation, &text(&follow[0].1, "assistantMessageId"))
+        .await
+        .unwrap();
+    assert_eq!(trace["rewritten"], true);
+    assert_eq!(trace["query"], "photosynthesis chlorophyll glucose");
+    assert!(trace["timings"]["rewriteMs"].is_number());
+    // The student never sees the rewrite.
+    assert!(
+        !answer_of(&follow).contains("chlorophyll glucose"),
+        "{}",
+        answer_of(&follow)
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs AWS Emulator; run make test-integration"]
+async fn a_rewrite_that_fails_uses_the_raw_message() {
+    let rewriter = ScriptedRewriter::new(Err("throttled"));
+    let e = env_with_fast(rewriter.clone()).await;
+    e.two_documents().await;
+    let first = e
+        .chat(
+            &e.owner,
+            json!({"message": "What is photosynthesis in plants?"}),
+        )
+        .await;
+    let conversation = text(&first[0].1, "conversationId");
+    let follow = e
+        .chat(&e.owner, json!({"conversationId": conversation, "message": "How do chlorophyll and glucose fit in?"}))
+        .await;
+    assert_eq!(rewriter.calls().len(), 1);
+    assert_eq!(
+        names(&follow).last(),
+        Some(&"done"),
+        "the chat works without the rewrite"
+    );
+    assert!(names(&follow).contains(&"sources"));
+    let trace = e
+        .stored_trace(&conversation, &text(&follow[0].1, "assistantMessageId"))
+        .await
+        .unwrap();
+    assert_eq!(trace["rewritten"], false);
+    assert_eq!(trace["query"], "How do chlorophyll and glucose fit in?");
+}
+
+#[tokio::test]
+#[ignore = "needs AWS Emulator; run make test-integration"]
+async fn a_member_of_one_course_never_gets_sources_from_another_course() {
+    let mut e = env_with_fast(ScriptedRewriter::new(Ok("unused"))).await;
+    let (geometry, _) = e.ingest("Geometry notes.pdf", geometry_pdf()).await;
+
+    // Course B belongs to someone else and has a biology document. `e` switches between the courses.
+    let other_owner = e.app.user("otherteacher").await;
+    let course_b = e.app.course(&other_owner, "Biology only").await;
+    let mut other = (text(&course_b, "id"), other_owner);
+    std::mem::swap(&mut e.course_id, &mut other.0);
+    std::mem::swap(&mut e.owner, &mut other.1);
+    let (biology_b, outcome) = e.ingest("Biology B.pdf", make_pdf(&[biology_page()])).await;
+    assert!(matches!(outcome, Outcome::Ready { .. }), "{outcome:?}");
+    // The member of B asks about geometry: nothing from A.
+    let events = e
+        .chat(
+            &e.owner,
+            json!({"message": "What does the Pythagorean theorem say about a right triangle?"}),
+        )
+        .await;
+    let all = serde_json::to_string(&events).unwrap();
+    assert!(
+        !all.contains(&geometry) && !all.contains("Geometry notes.pdf"),
+        "a source from course A leaked into course B"
+    );
+    // B's own question works and cites B's document.
+    let own = e
+        .chat(
+            &e.owner,
+            json!({"message": "Photosynthesis converts light energy in chloroplasts"}),
+        )
+        .await;
+    assert_eq!(own[1].1["sources"][0]["documentId"], biology_b);
+
+    // Back to A: a member asks about biology, and nothing from B comes back.
+    std::mem::swap(&mut e.course_id, &mut other.0);
+    std::mem::swap(&mut e.owner, &mut other.1);
+    let events = e
+        .chat(
+            &e.owner,
+            json!({"message": "Photosynthesis converts light energy in chloroplasts"}),
+        )
+        .await;
+    let all = serde_json::to_string(&events).unwrap();
+    assert!(
+        !all.contains(&biology_b),
+        "a source from course B leaked into course A"
+    );
+    assert!(!all.contains("Biology B.pdf"));
+    if names(&events).contains(&"sources") {
+        assert!(
+            events[1].1["sources"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|s| s["documentId"] == geometry)
+        );
+    }
+}

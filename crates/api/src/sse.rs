@@ -21,6 +21,10 @@ pub enum ChatEvent {
         title: String,
         model: String,
     },
+    /// The sources of the answer. It comes after `meta` and before the first `delta`.
+    Sources {
+        sources: Vec<openbook_core::domain::Source>,
+    },
     Delta {
         text: String,
     },
@@ -38,6 +42,7 @@ impl ChatEvent {
     pub fn name(&self) -> &'static str {
         match self {
             ChatEvent::Meta { .. } => "meta",
+            ChatEvent::Sources { .. } => "sources",
             ChatEvent::Delta { .. } => "delta",
             ChatEvent::Done { .. } => "done",
             ChatEvent::Error { .. } => "error",
@@ -59,6 +64,7 @@ impl ChatEvent {
                 "title": title,
                 "model": model,
             }),
+            ChatEvent::Sources { sources } => json!({ "sources": sources }),
             ChatEvent::Delta { text } => json!({ "text": text }),
             ChatEvent::Done { usage, stop_reason } => json!({
                 "usage": { "inputTokens": usage.input_tokens, "outputTokens": usage.output_tokens },

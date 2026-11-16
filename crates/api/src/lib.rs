@@ -15,6 +15,7 @@ use openbook_core::store::Store;
 pub mod error;
 pub mod extract;
 pub mod logging;
+pub mod retrieval;
 pub mod routes;
 pub mod sse;
 pub mod validate;
@@ -29,6 +30,8 @@ pub struct AppState {
     pub files: Files,
     pub verifier: Arc<TokenVerifier>,
     pub models: ModelRegistry,
+    /// Hybrid retrieval for chat: S3 Vectors and the BM25 reader cache.
+    pub retrieval: Arc<retrieval::Retrieval>,
     /// The ingest queue: `complete` and document `DELETE` send messages to it.
     pub queue: IngestQueue,
     /// Time limits for model calls.

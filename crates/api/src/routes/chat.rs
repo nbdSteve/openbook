@@ -7,6 +7,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::retrieval::{Retrieval, run_turn};
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use chrono::{DateTime, Utc};
@@ -16,7 +17,7 @@ use openbook_core::domain::{Conversation, CourseRecord, MessageRole, Question, R
 use openbook_core::ids;
 use openbook_core::model::{ChatModel, ChatRequest, ModelEvent, TokenUsage, estimate_tokens};
 use openbook_core::prompt::{
-    HISTORY_WINDOW, build_system_prompt, normalize_turns, title_from_message,
+    HISTORY_WINDOW, build_system_prompt_for, normalize_turns, title_from_message,
 };
 use openbook_core::quota::{
     Reservation, ReserveLimits, release_message, reserve_message, usage_date,
@@ -54,7 +55,12 @@ struct ChatRun {
     assistant_message_id: String,
     title: String,
     model_id: String,
-    request: ChatRequest,
+    /// The conversation so far, ending with the new student message.
+    history: Vec<(MessageRole, String)>,
+    course: CourseRecord,
+    retrieval: Arc<Retrieval>,
+    /// The fast model, for the query rewrite of later turns.
+    rewriter: Option<Arc<dyn ChatModel>>,
     /// When the message was reserved. Usage is recorded against this day.
     at: DateTime<Utc>,
     timeouts: ChatTimeouts,
@@ -185,7 +191,10 @@ pub async fn chat(
         assistant_message_id: prepared.assistant_message_id,
         title: prepared.title,
         model_id,
-        request: prepared.request,
+        history: prepared.history,
+        course,
+        retrieval: state.retrieval.clone(),
+        rewriter: state.models.provider(state.models.catalog().fast_id()),
         at,
         timeouts: state.chat_timeouts,
     };
@@ -200,7 +209,7 @@ struct Prepared {
     user_message_id: String,
     assistant_message_id: String,
     title: String,
-    request: ChatRequest,
+    history: Vec<(MessageRole, String)>,
 }
 
 /// Loads the history, creates the conversation if needed, and saves the user message (and the question).
@@ -257,6 +266,7 @@ async fn prepare(
                 content: message.to_owned(),
                 created_at: now.clone(),
                 sources: None,
+                trace: None,
                 model: None,
                 usage: TokenUsage::default(),
             },
@@ -276,22 +286,12 @@ async fn prepare(
     }
 
     history.push((MessageRole::User, message.to_owned()));
-    let request = ChatRequest {
-        // Phase 3: pass the retrieved sources here instead of the empty list.
-        system: build_system_prompt(
-            &course.name,
-            &course.description,
-            course.tutoring_style,
-            &[],
-        ),
-        turns: normalize_turns(&history),
-    };
     Ok(Prepared {
         conversation_id,
         user_message_id,
         assistant_message_id,
         title,
-        request,
+        history,
     })
 }
 
@@ -330,14 +330,8 @@ async fn next_event(
 async fn run_chat(run: ChatRun, tx: mpsc::Sender<ChatEvent>) {
     let started = Instant::now();
     let deadline = started + run.timeouts.overall;
-    let input_chars = run.request.system.chars().count()
-        + run
-            .request
-            .turns
-            .iter()
-            .map(|t| t.text.chars().count())
-            .sum::<usize>();
     let date = usage_date(run.at);
+    // `meta` goes first, at once.
     emit(
         &tx,
         ChatEvent::Meta {
@@ -350,6 +344,55 @@ async fn run_chat(run: ChatRun, tx: mpsc::Sender<ChatEvent>) {
     )
     .await;
     tracing::info!(model = %run.model_id, "chat started");
+
+    // Retrieval. It never fails the chat: at worst the answer has no sources.
+    let earlier = &run.history[..run.history.len().saturating_sub(1)];
+    let message = run
+        .history
+        .last()
+        .map(|(_, t)| t.as_str())
+        .unwrap_or_default();
+    let documents = match run.store.list_documents(&run.course.id).await {
+        Ok(documents) => documents,
+        Err(error) => {
+            tracing::error!(%error, "could not list the documents for retrieval");
+            Vec::new()
+        }
+    };
+    let turn = run_turn(
+        &run.retrieval,
+        run.rewriter.as_deref(),
+        &run.course,
+        &documents,
+        earlier,
+        message,
+    )
+    .await;
+    if !turn.sources.is_empty() {
+        emit(
+            &tx,
+            ChatEvent::Sources {
+                sources: turn.sources.clone(),
+            },
+        )
+        .await;
+    }
+    let request = ChatRequest {
+        system: build_system_prompt_for(
+            &run.course.name,
+            &run.course.description,
+            run.course.tutoring_style,
+            turn.mode(),
+        ),
+        turns: normalize_turns(&run.history),
+        ..ChatRequest::default()
+    };
+    let input_chars = request.system.chars().count()
+        + request
+            .turns
+            .iter()
+            .map(|t| t.text.chars().count())
+            .sum::<usize>();
 
     let log_end = |outcome: &str, usage: TokenUsage| {
         tracing::info!(
@@ -364,8 +407,7 @@ async fn run_chat(run: ChatRun, tx: mpsc::Sender<ChatEvent>) {
 
     // The call itself must start within the first-delta time.
     let first_wait = run.timeouts.first_delta.min(run.timeouts.overall);
-    let mut stream = match tokio::time::timeout(first_wait, run.provider.stream(run.request)).await
-    {
+    let mut stream = match tokio::time::timeout(first_wait, run.provider.stream(request)).await {
         Ok(Ok(stream)) => stream,
         outcome => {
             if let Ok(Err(error)) = &outcome {
@@ -457,7 +499,8 @@ async fn run_chat(run: ChatRun, tx: mpsc::Sender<ChatEvent>) {
                 role: MessageRole::Assistant,
                 content: text,
                 created_at: created_at.clone(),
-                sources: None,
+                sources: (!turn.sources.is_empty()).then(|| turn.sources.clone()),
+                trace: turn.trace.clone(),
                 model: Some(run.model_id.clone()),
                 usage,
             },
