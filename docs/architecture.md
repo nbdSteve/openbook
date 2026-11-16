@@ -8,9 +8,9 @@ Think of it as an open-book exam for the model: it answers from the course mater
 ## Hard rules
 
 1. **Pay per use only.** No component may have a baseline monthly cost. Do not add OpenSearch, NAT gateways, RDS or Aurora, ElastiCache, always-on containers, WAF web ACLs, Secrets Manager secrets, or customer-managed KMS keys. An idle stack must cost cents.
-2. **The server owns the prompt.** Clients send a course ID, a conversation ID, and the student's message. The server picks the system prompt, the token limits, and the sources. The model comes from the deployment's model catalog: a course owner can pick any catalog entry for the course, and nobody can use a model outside the catalog.
+2. **The server owns the prompt.** Clients send a course ID, a conversation ID, and the student's message. The server picks the system prompt, the token limits, and the sources. The model comes from the deployment's model catalog: a course owner sets the course default, any member can pick another catalog model for their own chats, and nobody can use a model outside the catalog.
 3. **Tenancy is the course.** Every read and write of course data checks membership first. A non-member gets `404`, never `403`.
-4. **Data stays in Australia by default.** Use the `ap-southeast-2` Region. The default chat and fast models must have residency `au` (an `au.` inference profile, or a model that runs on demand in Sydney). A catalog may also offer `global.` models (for example the frontier GPT models, which Bedrock offers only through global profiles); they are marked `global`, and the web app tells the course owner that such a model may process data outside Australia. No other profile prefixes (`us.`, `apac.`, and so on).
+4. **Data stays in Australia by default.** Use the `ap-southeast-2` Region. The default chat and fast models must have residency `au` (an `au.` inference profile, or a model that runs on demand in Sydney). A catalog may also offer `global.` models (for example the frontier GPT models, which Bedrock offers only through global profiles); they are marked `global`, and the web app tells the user who picks such a model that it may process data outside Australia. No other profile prefixes (`us.`, `apac.`, and so on).
 5. **Same code locally and in Lambda.** The API is one axum router. Lambda runs it through `lambda_http`; locally it runs on a TCP listener. Local runs use AWS Emulator for AWS services.
 6. **Fail closed.** If the API runs in Lambda with local-only settings (stage `local`, a catalog entry with provider `fake`, `AWS_ENDPOINT_URL`, `OPENBOOK_COGNITO_JWKS_URL`, `OPENBOOK_CA_BUNDLE`, `OPENBOOK_PRESIGN_ENDPOINT`, or `OPENBOOK_BEDROCK_PROFILE`), it must refuse to start.
 
@@ -59,7 +59,7 @@ Every item has a `type` attribute. Other attributes are camelCase.
 | Membership | `COURSE#<courseId>` | `MEMBER#<userId>` | `USER#<userId>` | `COURSE#<joinedAt>#<courseId>` | `courseId`, `userId`, `email`, `role`, `joinedAt` |
 | Invite code | `INVITE#<code>` | `INVITE` | | | `courseId`, `createdAt` |
 | Document | `COURSE#<courseId>` | `DOC#<documentId>` | | | `filename`, `sizeBytes`, `s3Key`, `status`, `error`, `pageCount`, `createdAt`, `updatedAt` |
-| Conversation | `USER#<userId>` | `CONV#<conversationId>` | `CONVS#<userId>#<courseId>` | `<updatedAt>#<conversationId>` | `courseId`, `title`, `createdAt`, `updatedAt` (each chat message updates `updatedAt` and `gsi1sk`) |
+| Conversation | `USER#<userId>` | `CONV#<conversationId>` | `CONVS#<userId>#<courseId>` | `<updatedAt>#<conversationId>` | `courseId`, `title`, `model`, `createdAt`, `updatedAt` (each chat message updates `model`, `updatedAt`, and `gsi1sk`) |
 | Message | `CONV#<conversationId>` | `MSG#<messageId>` | | | `role`, `content`, `sources`, `model`, `inputTokens`, `outputTokens`, `createdAt` |
 | Question | `COURSE#<courseId>` | `Q#<questionId>` | | | `userId`, `email`, `question`, `conversationId`, `createdAt`, `ttl` (180 days) |
 | Daily usage (user) | `USER#<userId>` | `USAGE#D#<yyyy-mm-dd>` | | | `messages`, `inputTokens`, `outputTokens`, `ttl` (40 days) |

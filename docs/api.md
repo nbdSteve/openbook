@@ -63,7 +63,7 @@ interface Course {
   name: string;            // 1..80 chars after trim
   description: string;     // 0..500 chars
   tutoringStyle: TutoringStyle;
-  model: string;           // a ModelInfo.id from GET /api/models
+  model: string;           // the course default model, a ModelInfo.id from GET /api/models
   role: Role;              // the caller's role in this course
   inviteCode?: string;     // only present when role === 'owner'
   createdAt: string;
@@ -92,7 +92,7 @@ interface Document {
   updatedAt: string;
 }
 
-interface Conversation { id: string; courseId: string; title: string; createdAt: string; updatedAt: string }
+interface Conversation { id: string; courseId: string; title: string; model: string /* catalog ID of the last answer */; createdAt: string; updatedAt: string }
 
 interface Source {          // phase 3; the API sends none before then
   n: number;               // citation number used in the answer text, starting at 1
@@ -200,13 +200,14 @@ Missing object → `409 conflict`. Calling it again on a document that is not `u
 
 ### Chat
 
-`POST /api/courses/{courseId}/chat` (member) body `{ "conversationId"?: string, "message": string }` → `200 text/event-stream`.
+`POST /api/courses/{courseId}/chat` (member) body `{ "conversationId"?: string, "message": string, "model"?: string }` → `200 text/event-stream`.
 
 - `message` is 1..4000 characters after trim.
 - Without `conversationId`, the API creates a conversation. Its title is the first 60 characters of the message (cut at a word boundary when possible).
 - With `conversationId`, it must belong to the caller and to this course, else `404`.
+- `model` is optional and must be a catalog ID (`GET /api/models`), else `400`. Any member may pick any catalog model. Without it, the API uses the conversation's model, or for a new conversation the course default. The conversation's `model` becomes the model used.
 - The API checks the per-user daily quota and the global daily cap before it calls the model. Those failures, and all validation and auth failures, are normal JSON error responses, not stream events.
-- The server builds the prompt: tutoring style, course name, conversation history (the last 20 messages), and (phase 3) retrieved sources. It uses the course's catalog model. Clients never send a system prompt, model ID, or token limit to this route.
+- The server builds the prompt: tutoring style, course name, conversation history (the last 20 messages), and (phase 3) retrieved sources. Clients never send a system prompt, a raw Bedrock model ID, or a token limit; they can only name a catalog model.
 
 Stream events, in order (each is `event: <name>` plus one `data: <json>` line):
 
