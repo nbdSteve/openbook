@@ -52,8 +52,13 @@ function str(node: Node, key: string): string | undefined {
   return value;
 }
 
-function positiveInt(node: Node, key: string, fallback: number): number {
-  const value: unknown = node.tryGetContext(key);
+/**
+ * A limit comes from, in order: its own context key (`-c limitDailyMessagesGlobal=10`), the
+ * stage defaults in cdk.json (`stageLimits.<stage>.<key>`), and the API default.
+ */
+function limit(node: Node, stage: Stage, key: string, fallback: number): number {
+  const stageLimits = node.tryGetContext('stageLimits') as Record<string, Record<string, unknown>> | undefined;
+  const value: unknown = node.tryGetContext(key) ?? stageLimits?.[stage]?.[key];
   if (value === undefined || value === null || value === '') return fallback;
   const n = typeof value === 'number' ? value : Number(value);
   if (!Number.isInteger(n) || n <= 0) throw new Error(`context ${key} must be a positive integer`);
@@ -93,13 +98,13 @@ export function resolveConfig(node: Node): OpenbookConfig {
     webAssetDir: path.resolve(infraRoot, str(node, 'webAssetDir') ?? '../apps/ask/dist'),
     catalog,
     limits: {
-      dailyMessagesPerUser: positiveInt(node, 'limitDailyMessagesPerUser', defaultLimits.dailyMessagesPerUser),
-      dailyMessagesGlobal: positiveInt(node, 'limitDailyMessagesGlobal', defaultLimits.dailyMessagesGlobal),
-      dailyTokensGlobal: positiveInt(node, 'limitDailyTokensGlobal', defaultLimits.dailyTokensGlobal),
-      failedJoinsPerDay: positiveInt(node, 'limitFailedJoinsPerDay', defaultLimits.failedJoinsPerDay),
-      coursesOwned: positiveInt(node, 'limitCoursesOwned', defaultLimits.coursesOwned),
-      documentsPerCourse: positiveInt(node, 'limitDocumentsPerCourse', defaultLimits.documentsPerCourse),
-      uploadBytes: positiveInt(node, 'limitUploadBytes', defaultLimits.uploadBytes),
+      dailyMessagesPerUser: limit(node, stage, 'limitDailyMessagesPerUser', defaultLimits.dailyMessagesPerUser),
+      dailyMessagesGlobal: limit(node, stage, 'limitDailyMessagesGlobal', defaultLimits.dailyMessagesGlobal),
+      dailyTokensGlobal: limit(node, stage, 'limitDailyTokensGlobal', defaultLimits.dailyTokensGlobal),
+      failedJoinsPerDay: limit(node, stage, 'limitFailedJoinsPerDay', defaultLimits.failedJoinsPerDay),
+      coursesOwned: limit(node, stage, 'limitCoursesOwned', defaultLimits.coursesOwned),
+      documentsPerCourse: limit(node, stage, 'limitDocumentsPerCourse', defaultLimits.documentsPerCourse),
+      uploadBytes: limit(node, stage, 'limitUploadBytes', defaultLimits.uploadBytes),
     },
     ...(domain ? { domain } : {}),
   };

@@ -30,13 +30,10 @@
       "Action": [
         "dynamodb:BatchGetItem",
         "dynamodb:BatchWriteItem",
-        "dynamodb:ConditionCheckItem",
         "dynamodb:DeleteItem",
-        "dynamodb:DescribeTable",
         "dynamodb:GetItem",
         "dynamodb:PutItem",
         "dynamodb:Query",
-        "dynamodb:Scan",
         "dynamodb:UpdateItem"
       ],
       "Resource": [
@@ -81,8 +78,13 @@
         "bedrock:InvokeModelWithResponseStream"
       ],
       "Resource": [
-        "arn:aws:bedrock:ap-southeast-2:111111111111:inference-profile/*",
-        "arn:aws:bedrock:*::foundation-model/*"
+        "arn:aws:bedrock:ap-southeast-2:111111111111:inference-profile/au.anthropic.claude-sonnet-4-6",
+        "arn:aws:bedrock:ap-southeast-2::foundation-model/anthropic.claude-sonnet-4-6",
+        "arn:aws:bedrock:ap-southeast-4::foundation-model/anthropic.claude-sonnet-4-6",
+        "arn:aws:bedrock:ap-southeast-2:111111111111:inference-profile/au.anthropic.claude-haiku-4-5-20251001-v1:0",
+        "arn:aws:bedrock:ap-southeast-2::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0",
+        "arn:aws:bedrock:ap-southeast-4::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0",
+        "arn:aws:bedrock:ap-southeast-2::foundation-model/openai.gpt-oss-120b-1:0"
       ]
     },
     {

@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { describe, expect, test } from 'vitest';
+import { bedrockResourceArns } from '../lib/catalog';
 import { resolveConfig } from '../lib/config';
 import { deploymentSynthesizer, permissionsBoundaryName, spaRewriteFunctionName } from '../lib/deployment';
 import { OpenbookStack } from '../lib/openbook-stack';
@@ -313,5 +314,121 @@ describe('an account-agnostic synth, as the CI build job runs it', () => {
     expect(text).not.toMatch(/\b\d{12}\b/);
     expect(text).toContain('AWS::AccountId');
     expect(text).toContain(':policy/OpenbookProdPermissionsBoundary');
+  });
+});
+
+describe('the least-privilege grants of the execution and deploy roles', () => {
+  type Statement = {
+    Sid: string;
+    Effect: string;
+    Action: string | string[];
+    Resource: string | string[];
+    Condition?: Record<string, Record<string, unknown>>;
+  };
+  const exec = rendered('cloudformation-execution-role-policy').Statement as Statement[];
+  const deployDoc = rendered('github-deploy-role-policy').Statement as Statement[];
+  const withAction = (list: Statement[], action: string): Statement[] =>
+    list.filter((s) => asArray(s.Action).includes(action));
+
+  test('AddPermission only with the CloudFront principal', () => {
+    const grants = withAction(exec, 'lambda:AddPermission');
+    expect(grants).toHaveLength(1);
+    expect(grants[0].Condition).toEqual({ StringEquals: { 'lambda:Principal': 'cloudfront.amazonaws.com' } });
+  });
+
+  test('function URLs are created and updated only with AWS_IAM auth, so none can be public', () => {
+    for (const action of ['lambda:CreateFunctionUrlConfig', 'lambda:UpdateFunctionUrlConfig']) {
+      const grants = withAction(exec, action);
+      expect(grants, action).toHaveLength(1);
+      expect(grants[0].Condition).toEqual({ StringEquals: { 'lambda:FunctionUrlAuthType': 'AWS_IAM' } });
+    }
+  });
+
+  test('the user pool grants are limited to resources that CloudFormation tagged for this stack', () => {
+    const grant = exec.find((s) => s.Sid === 'UserPoolAndClient');
+    expect(grant?.Condition).toEqual({
+      StringEquals: { 'aws:ResourceTag/aws:cloudformation:stack-name': 'Openbook-prod' },
+    });
+    // CreateUserPool takes no resource, so it cannot carry that condition. It is alone in its statement.
+    expect(asArray(exec.find((s) => s.Sid === 'UserPoolCreateTakesNoResource')?.Action)).toEqual(['cognito-idp:CreateUserPool']);
+  });
+
+  test('the deploy role cannot import resources into the stack, delete it, or lose its protection by accident', () => {
+    const deny = deployDoc.find((s) => s.Effect === 'Deny');
+    expect(deny).toMatchObject({
+      Action: 'cloudformation:CreateChangeSet',
+      Condition: { StringEquals: { 'cloudformation:ChangeSetType': 'IMPORT' } },
+    });
+    expect(deployDoc.filter((s) => s.Effect === 'Deny')).toHaveLength(1);
+    const allowed = deployDoc.filter((s) => s.Effect === 'Allow').flatMap((s) => asArray(s.Action));
+    expect(allowed).not.toContain('cloudformation:DeleteStack');
+    // The CDK CLI sets termination protection on the first deploy of a stack that has it.
+    expect(allowed).toContain('cloudformation:UpdateTerminationProtection');
+  });
+});
+
+describe('the boundary follows the catalog and the real API calls', () => {
+  const boundary = rendered('permissions-boundary-policy').Statement as {
+    Sid: string;
+    Action: string[];
+    Resource: string[];
+  }[];
+  const models = cdkJsonContext.models as Parameters<typeof bedrockResourceArns>[0];
+
+  test('the boundary Bedrock resources are exactly the catalog ARNs, and equal to the stack policy', () => {
+    const resources = boundary.find((s) => s.Sid === 'InvokeBedrockModels')?.Resource ?? [];
+    expect([...resources].sort()).toEqual([...bedrockResourceArns(models, fakeAccount)].sort());
+    const stackBedrock = stackStatements(prod)
+      .filter((x) => x.statement.Action.some((a) => a.startsWith('bedrock:')))
+      .flatMap((x) => x.statement.Resource);
+    expect([...resources].sort()).toEqual([...stackBedrock].sort());
+    for (const r of resources) expect(r).not.toContain('*');
+  });
+
+  test('the boundary has exactly the DynamoDB actions that the stack role has, and none that the API never calls', () => {
+    const boundaryActions = boundary.find((s) => s.Sid === 'UseTheApplicationTable')?.Action ?? [];
+    const stackActions = stackStatements(prod)
+      .filter((x) => x.statement.Action.some((a) => a.startsWith('dynamodb:')))
+      .flatMap((x) => x.statement.Action);
+    expect([...boundaryActions].sort()).toEqual([...stackActions].sort());
+    for (const never of ['dynamodb:Scan', 'dynamodb:DescribeTable', 'dynamodb:ConditionCheckItem']) {
+      expect(boundaryActions).not.toContain(never);
+    }
+    // The calls that crates/core/src/store.rs makes. A transaction needs Put, Update, and Delete.
+    expect([...stackActions].sort()).toEqual([
+      'dynamodb:BatchGetItem',
+      'dynamodb:BatchWriteItem',
+      'dynamodb:DeleteItem',
+      'dynamodb:GetItem',
+      'dynamodb:PutItem',
+      'dynamodb:Query',
+      'dynamodb:UpdateItem',
+    ]);
+  });
+
+  test('the renderer refuses ${BEDROCK_RESOURCES} anywhere but as a whole JSON string', () => {
+    expect(() => renderIamDocument('{"Resource": ["x${BEDROCK_RESOURCES}"]}', values)).toThrow(/whole JSON string/);
+  });
+});
+
+describe('the spend caps of the stages', () => {
+  const env = (s: Synth): Record<string, string> =>
+    (
+      Object.values(s.json.Resources).find(
+        (r) => r.Type === 'AWS::Lambda::Function' && r.Properties?.Handler === 'bootstrap',
+      )?.Properties?.Environment as { Variables: Record<string, string> }
+    ).Variables;
+
+  test('prod and dev have the pre-launch caps from cdk.json', () => {
+    expect(env(prod).OPENBOOK_LIMIT_DAILY_MESSAGES_GLOBAL).toBe('300');
+    expect(env(prod).OPENBOOK_LIMIT_DAILY_TOKENS_GLOBAL).toBe('300000');
+    expect(env(dev).OPENBOOK_LIMIT_DAILY_MESSAGES_GLOBAL).toBe('100');
+    expect(env(dev).OPENBOOK_LIMIT_DAILY_TOKENS_GLOBAL).toBe('100000');
+  });
+
+  test('a context key overrides the stage default, for the launch', () => {
+    const launched = synth({ stage: 'prod', limitDailyMessagesGlobal: '500', limitDailyTokensGlobal: '3000000' });
+    expect(env(launched).OPENBOOK_LIMIT_DAILY_MESSAGES_GLOBAL).toBe('500');
+    expect(env(launched).OPENBOOK_LIMIT_DAILY_TOKENS_GLOBAL).toBe('3000000');
   });
 });

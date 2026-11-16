@@ -6,13 +6,10 @@
       "Action": [
         "dynamodb:BatchGetItem",
         "dynamodb:BatchWriteItem",
-        "dynamodb:ConditionCheckItem",
         "dynamodb:DeleteItem",
-        "dynamodb:DescribeTable",
         "dynamodb:GetItem",
         "dynamodb:PutItem",
         "dynamodb:Query",
-        "dynamodb:Scan",
         "dynamodb:UpdateItem"
       ],
       "Resource": [

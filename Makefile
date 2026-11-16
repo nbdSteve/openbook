@@ -86,7 +86,7 @@ emulator-down: ## Stop the AWS Emulator container
 	scripts/emulator.sh down $(OPENBOOK_EMULATOR_PORT)
 
 .PHONY: bootstrap
-bootstrap: ## Create the local resources and write .local/api.env and apps/ask/public/config.json
+bootstrap: ## Create the local resources and write .local/dev/api.env and .local/dev/web-config.json
 	scripts/bootstrap-local.sh --emulator-port $(OPENBOOK_EMULATOR_PORT)
 
 .PHONY: dev
