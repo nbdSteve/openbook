@@ -18,6 +18,18 @@ pub const LOCAL_ONLY_VARS: [&str; 5] = [
     "OPENBOOK_BEDROCK_PROFILE",
 ];
 
+/// Which service reads the configuration. The ingest worker does not need Cognito settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Service {
+    Api,
+    Ingest,
+}
+
+/// Default embedding model: on demand in Sydney, 1024 dimensions.
+pub const DEFAULT_EMBEDDING_MODEL_ID: &str = "amazon.titan-embed-text-v2:0";
+/// The embedding model name that selects the local hashed bag-of-words embedder.
+pub const FAKE_EMBEDDING_MODEL_ID: &str = "fake";
+
 /// Deployment stage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stage {
@@ -44,6 +56,10 @@ pub struct LimitsConfig {
     pub courses_owned: u32,
     pub documents_per_course: u32,
     pub upload_bytes: u64,
+    pub pages_per_document: u32,
+    /// Transcribed pages per day, counted for the document owner.
+    pub transcribed_pages_per_user: u32,
+    pub transcribed_pages_global: u32,
     /// Failed join attempts (unknown invite codes) per user per day.
     pub failed_joins_per_day: u32,
     /// Global input plus output tokens per day. At or above it, chat returns 503.
@@ -63,6 +79,14 @@ pub struct Config {
     /// `OPENBOOK_COGNITO_JWKS_URL`, when set.
     pub cognito_jwks_url: Option<String>,
     pub catalog: Catalog,
+    pub ingest_queue_url: String,
+    pub vector_bucket: String,
+    /// A Bedrock embedding model ID, or `fake` (local only).
+    pub embedding_model_id: String,
+    /// A catalog ID with vision and residency `au`.
+    pub transcribe_model: String,
+    /// Directory with `libpdfium`. `None` means the executable's directory.
+    pub pdfium_path: Option<PathBuf>,
     pub bedrock_profile: Option<String>,
     pub ca_bundle: Option<PathBuf>,
     pub presign_endpoint: Option<String>,
@@ -93,8 +117,21 @@ impl Config {
         Config::from_vars(&std::env::vars().collect())
     }
 
-    /// Parses and validates a snapshot of environment variables.
+    /// Reads the process environment for one service.
+    pub fn from_env_for(service: Service) -> Result<Config, ConfigError> {
+        Config::from_vars_for(&std::env::vars().collect(), service)
+    }
+
+    /// Parses and validates a snapshot of environment variables for the API.
     pub fn from_vars(vars: &HashMap<String, String>) -> Result<Config, ConfigError> {
+        Config::from_vars_for(vars, Service::Api)
+    }
+
+    /// Parses and validates a snapshot of environment variables for one service.
+    pub fn from_vars_for(
+        vars: &HashMap<String, String>,
+        service: Service,
+    ) -> Result<Config, ConfigError> {
         let mut problems: Vec<String> = Vec::new();
         let get = |name: &str| -> Option<String> {
             vars.get(name)
@@ -111,8 +148,16 @@ impl Config {
         let stage_raw = required(&mut problems, "OPENBOOK_STAGE");
         let table_name = required(&mut problems, "OPENBOOK_TABLE_NAME");
         let docs_bucket = required(&mut problems, "OPENBOOK_DOCS_BUCKET");
-        let cognito_user_pool_id = required(&mut problems, "OPENBOOK_COGNITO_USER_POOL_ID");
-        let cognito_client_id = required(&mut problems, "OPENBOOK_COGNITO_CLIENT_ID");
+        let (cognito_user_pool_id, cognito_client_id) = if service == Service::Api {
+            (
+                required(&mut problems, "OPENBOOK_COGNITO_USER_POOL_ID"),
+                required(&mut problems, "OPENBOOK_COGNITO_CLIENT_ID"),
+            )
+        } else {
+            (String::new(), String::new())
+        };
+        let ingest_queue_url = required(&mut problems, "OPENBOOK_INGEST_QUEUE_URL");
+        let vector_bucket = required(&mut problems, "OPENBOOK_VECTOR_BUCKET");
 
         let stage = match stage_raw.as_str() {
             "local" => Stage::Local,
@@ -130,11 +175,15 @@ impl Config {
         let aws_region = get("AWS_REGION").or_else(|| get("AWS_DEFAULT_REGION"));
         let cognito_region = match get("OPENBOOK_COGNITO_REGION").or_else(|| aws_region.clone()) {
             Some(r) => r,
+            None if service == Service::Ingest => String::new(),
             None => {
                 problems.push("OPENBOOK_COGNITO_REGION or AWS_REGION is required".into());
                 String::new()
             }
         };
+        if service == Service::Ingest && aws_region.is_none() {
+            problems.push("AWS_REGION is required".into());
+        }
         if !cognito_user_pool_id.is_empty() && !cognito_user_pool_id.contains('_') {
             problems.push("OPENBOOK_COGNITO_USER_POOL_ID must look like <region>_<id>".into());
         }
@@ -153,6 +202,17 @@ impl Config {
                 }
             }
         };
+
+        let embedding_model_id =
+            get("OPENBOOK_EMBEDDING_MODEL_ID").unwrap_or_else(|| DEFAULT_EMBEDDING_MODEL_ID.into());
+        let transcribe_model = get("OPENBOOK_TRANSCRIBE_MODEL")
+            .or_else(|| (!fast.is_empty()).then(|| fast.clone()))
+            .unwrap_or_default();
+        if let Some(catalog) = &catalog
+            && let Err(problem) = catalog.check_transcribe_model(&transcribe_model)
+        {
+            problems.push(problem);
+        }
 
         let number = |problems: &mut Vec<String>, name: &str, default: u64| -> u64 {
             match get(name) {
@@ -185,6 +245,21 @@ impl Config {
                 50,
             )),
             upload_bytes: number(&mut problems, "OPENBOOK_LIMIT_UPLOAD_BYTES", 26_214_400),
+            pages_per_document: to_u32(number(
+                &mut problems,
+                "OPENBOOK_LIMIT_PAGES_PER_DOCUMENT",
+                500,
+            )),
+            transcribed_pages_per_user: to_u32(number(
+                &mut problems,
+                "OPENBOOK_LIMIT_DAILY_TRANSCRIBED_PAGES_PER_USER",
+                300,
+            )),
+            transcribed_pages_global: to_u32(number(
+                &mut problems,
+                "OPENBOOK_LIMIT_DAILY_TRANSCRIBED_PAGES_GLOBAL",
+                1000,
+            )),
             failed_joins_per_day: to_u32(number(
                 &mut problems,
                 "OPENBOOK_LIMIT_FAILED_JOINS_PER_DAY",
@@ -216,6 +291,11 @@ impl Config {
         if in_lambda {
             let has_fake = catalog.as_ref().is_some_and(Catalog::has_fake);
             problems.extend(lambda_violations(vars, stage, has_fake));
+            if embedding_model_id == FAKE_EMBEDDING_MODEL_ID {
+                problems.push(
+                    "refusing to start in Lambda: OPENBOOK_EMBEDDING_MODEL_ID is fake".into(),
+                );
+            }
         }
 
         let Some(catalog) = catalog.filter(|_| problems.is_empty()) else {
@@ -232,6 +312,11 @@ impl Config {
             cognito_region,
             cognito_jwks_url: get("OPENBOOK_COGNITO_JWKS_URL"),
             catalog,
+            ingest_queue_url,
+            vector_bucket,
+            embedding_model_id,
+            transcribe_model,
+            pdfium_path: get("OPENBOOK_PDFIUM_PATH").map(PathBuf::from),
             bedrock_profile: get("OPENBOOK_BEDROCK_PROFILE"),
             ca_bundle: get("OPENBOOK_CA_BUNDLE").map(PathBuf::from),
             presign_endpoint,
@@ -292,10 +377,10 @@ mod tests {
     use super::*;
 
     const REAL_CATALOG: &str = r#"[
-        {"id":"claude","label":"Claude","vendor":"anthropic","provider":"bedrock","modelId":"au.anthropic.claude-x","residency":"au"}
+        {"id":"claude","label":"Claude","vendor":"anthropic","provider":"bedrock","modelId":"au.anthropic.claude-x","residency":"au","vision":true}
     ]"#;
     const FAKE_CATALOG: &str = r#"[
-        {"id":"fake","label":"Fake","vendor":"openbook","provider":"fake","modelId":"fake","residency":"au"}
+        {"id":"fake","label":"Fake","vendor":"openbook","provider":"fake","modelId":"fake","residency":"au","vision":true}
     ]"#;
 
     fn base() -> HashMap<String, String> {
@@ -305,6 +390,11 @@ mod tests {
             ("OPENBOOK_DOCS_BUCKET", "b"),
             ("OPENBOOK_COGNITO_USER_POOL_ID", "ap-southeast-2_abc"),
             ("OPENBOOK_COGNITO_CLIENT_ID", "client"),
+            (
+                "OPENBOOK_INGEST_QUEUE_URL",
+                "https://sqs.example/queue.fifo",
+            ),
+            ("OPENBOOK_VECTOR_BUCKET", "vectors"),
             ("OPENBOOK_MODELS", REAL_CATALOG),
             ("OPENBOOK_DEFAULT_CHAT_MODEL", "claude"),
             ("OPENBOOK_FAST_MODEL", "claude"),
@@ -332,6 +422,12 @@ mod tests {
         assert_eq!(c.limits.courses_owned, 10);
         assert_eq!(c.limits.documents_per_course, 50);
         assert_eq!(c.limits.upload_bytes, 26_214_400);
+        assert_eq!(c.limits.pages_per_document, 500);
+        assert_eq!(c.limits.transcribed_pages_per_user, 300);
+        assert_eq!(c.limits.transcribed_pages_global, 1000);
+        assert_eq!(c.embedding_model_id, DEFAULT_EMBEDDING_MODEL_ID);
+        assert_eq!(c.transcribe_model, "claude");
+        assert!(c.pdfium_path.is_none());
         assert_eq!(c.limits.failed_joins_per_day, 20);
         assert_eq!(c.limits.daily_tokens_global, 3_000_000);
         assert_eq!(c.listen_addr.to_string(), "127.0.0.1:8787");
@@ -372,6 +468,8 @@ mod tests {
             "OPENBOOK_DOCS_BUCKET",
             "OPENBOOK_COGNITO_USER_POOL_ID",
             "OPENBOOK_COGNITO_CLIENT_ID",
+            "OPENBOOK_INGEST_QUEUE_URL",
+            "OPENBOOK_VECTOR_BUCKET",
             "OPENBOOK_MODELS",
             "OPENBOOK_DEFAULT_CHAT_MODEL",
             "OPENBOOK_FAST_MODEL",
@@ -391,6 +489,9 @@ mod tests {
             ("OPENBOOK_LIMIT_DAILY_TOKENS_GLOBAL", "-1"),
             ("OPENBOOK_LISTEN_ADDR", "nowhere"),
             ("OPENBOOK_MODELS", "not json"),
+            ("OPENBOOK_LIMIT_PAGES_PER_DOCUMENT", "0"),
+            ("OPENBOOK_LIMIT_DAILY_TRANSCRIBED_PAGES_PER_USER", "x"),
+            ("OPENBOOK_TRANSCRIBE_MODEL", "missing"),
             ("OPENBOOK_DEFAULT_CHAT_MODEL", "missing"),
             ("OPENBOOK_FAST_MODEL", "missing"),
             ("OPENBOOK_PRESIGN_ENDPOINT", "localhost:5173"),
@@ -496,5 +597,46 @@ mod tests {
             c.aws_endpoint_url.as_deref(),
             Some("https://127.0.0.1:9297")
         );
+    }
+
+    #[test]
+    fn the_transcribe_model_needs_vision() {
+        let blind = REAL_CATALOG.replace(",\"vision\":true", "");
+        let mut v = base();
+        v.insert("OPENBOOK_MODELS".into(), blind);
+        let err = Config::from_vars(&v).unwrap_err();
+        assert!(err.to_string().contains("vision"), "{err}");
+        // A catalog entry with vision can be named explicitly.
+        let mut v = base();
+        v.insert("OPENBOOK_TRANSCRIBE_MODEL".into(), "claude".into());
+        assert_eq!(Config::from_vars(&v).unwrap().transcribe_model, "claude");
+    }
+
+    #[test]
+    fn lambda_refuses_the_fake_embedder() {
+        let mut v = lambda();
+        v.insert("OPENBOOK_EMBEDDING_MODEL_ID".into(), "fake".into());
+        let err = Config::from_vars(&v).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("OPENBOOK_EMBEDDING_MODEL_ID is fake"),
+            "{err}"
+        );
+        v.remove("AWS_LAMBDA_RUNTIME_API");
+        assert!(Config::from_vars(&v).is_ok());
+    }
+
+    #[test]
+    fn the_ingest_service_needs_no_cognito_settings() {
+        let mut v = base();
+        v.remove("OPENBOOK_COGNITO_USER_POOL_ID");
+        v.remove("OPENBOOK_COGNITO_CLIENT_ID");
+        assert!(Config::from_vars(&v).is_err());
+        let c = Config::from_vars_for(&v, Service::Ingest).unwrap();
+        assert_eq!(c.vector_bucket, "vectors");
+        // Local-only settings are still refused in Lambda.
+        v.insert("AWS_LAMBDA_RUNTIME_API".into(), "127.0.0.1:9001".into());
+        v.insert("OPENBOOK_CA_BUNDLE".into(), "x".into());
+        assert!(Config::from_vars_for(&v, Service::Ingest).is_err());
     }
 }

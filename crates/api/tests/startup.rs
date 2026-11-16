@@ -3,8 +3,8 @@
 
 use std::process::{Command, Output};
 
-const CATALOG: &str = r#"[{"id":"claude","label":"Claude","vendor":"anthropic","provider":"bedrock","modelId":"au.anthropic.claude-x","residency":"au"}]"#;
-const FAKE_CATALOG: &str = r#"[{"id":"fake","label":"Fake","vendor":"openbook","provider":"fake","modelId":"fake","residency":"au"}]"#;
+const CATALOG: &str = r#"[{"id":"claude","label":"Claude","vendor":"anthropic","provider":"bedrock","modelId":"au.anthropic.claude-x","residency":"au","vision":true}]"#;
+const FAKE_CATALOG: &str = r#"[{"id":"fake","label":"Fake","vendor":"openbook","provider":"fake","modelId":"fake","residency":"au","vision":true}]"#;
 
 fn run(env: &[(&str, &str)]) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_openbook-api"));
@@ -14,6 +14,8 @@ fn run(env: &[(&str, &str)]) -> Output {
         ("OPENBOOK_DOCS_BUCKET", "bucket"),
         ("OPENBOOK_COGNITO_USER_POOL_ID", "ap-southeast-2_abc"),
         ("OPENBOOK_COGNITO_CLIENT_ID", "client"),
+        ("OPENBOOK_INGEST_QUEUE_URL", "https://sqs.example/q.fifo"),
+        ("OPENBOOK_VECTOR_BUCKET", "vectors"),
         ("OPENBOOK_MODELS", CATALOG),
         ("OPENBOOK_DEFAULT_CHAT_MODEL", "claude"),
         ("OPENBOOK_FAST_MODEL", "claude"),

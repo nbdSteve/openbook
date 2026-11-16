@@ -36,6 +36,20 @@ pub struct ReserveLimits {
     pub global_tokens: u64,
 }
 
+/// The counters behind the daily caps on transcribed pages.
+#[async_trait]
+pub trait PageCounter: Send + Sync {
+    /// Adds one page to the daily counter unless it is at `limit`.
+    async fn reserve_page(
+        &self,
+        scope: &UsageScope,
+        date: &str,
+        limit: u32,
+    ) -> Result<bool, StoreError>;
+    /// Gives one reserved page back.
+    async fn release_page(&self, scope: &UsageScope, date: &str) -> Result<(), StoreError>;
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reservation {
     Reserved,
@@ -79,6 +93,46 @@ pub async fn reserve_message(
                 tracing::error!(%release_error, "could not give back the user reservation");
             }
             Err(e)
+        }
+    }
+}
+
+/// Reserves one transcribed page: the owner's counter first, then the global counter.
+/// The result is `UserLimit` or `GlobalCap` when a cap is reached.
+pub async fn reserve_transcribed_page(
+    counter: &dyn PageCounter,
+    owner_id: &str,
+    date: &str,
+    user_limit: u32,
+    global_limit: u32,
+) -> Result<Reservation, StoreError> {
+    let user = UsageScope::User(owner_id.to_owned());
+    if !counter.reserve_page(&user, date, user_limit).await? {
+        return Ok(Reservation::UserLimit);
+    }
+    match counter
+        .reserve_page(&UsageScope::Global, date, global_limit)
+        .await
+    {
+        Ok(true) => Ok(Reservation::Reserved),
+        Ok(false) => {
+            counter.release_page(&user, date).await?;
+            Ok(Reservation::GlobalCap)
+        }
+        Err(e) => {
+            if let Err(release_error) = counter.release_page(&user, date).await {
+                tracing::error!(%release_error, "could not give back the user page reservation");
+            }
+            Err(e)
+        }
+    }
+}
+
+/// Gives back a page reservation (both counters).
+pub async fn release_transcribed_page(counter: &dyn PageCounter, owner_id: &str, date: &str) {
+    for scope in [UsageScope::User(owner_id.to_owned()), UsageScope::Global] {
+        if let Err(error) = counter.release_page(&scope, date).await {
+            tracing::error!(%error, ?scope, "could not give back a page reservation");
         }
     }
 }
@@ -292,5 +346,60 @@ mod tests {
             .with_timezone(&Utc);
         assert_eq!(usage_date(at), "2026-01-05");
         assert_eq!(usage_month(at), "2026-01");
+    }
+
+    #[async_trait]
+    impl PageCounter for Memory {
+        async fn reserve_page(
+            &self,
+            scope: &UsageScope,
+            date: &str,
+            limit: u32,
+        ) -> Result<bool, StoreError> {
+            self.reserve(scope, date, limit).await
+        }
+        async fn release_page(&self, scope: &UsageScope, date: &str) -> Result<(), StoreError> {
+            self.release(scope, date).await
+        }
+    }
+
+    #[tokio::test]
+    async fn page_reservations_follow_the_same_rules() {
+        let m = Memory::default();
+        assert_eq!(
+            reserve_transcribed_page(&m, "owner", D, 2, 3)
+                .await
+                .unwrap(),
+            Reservation::Reserved
+        );
+        assert_eq!(
+            reserve_transcribed_page(&m, "owner", D, 2, 3)
+                .await
+                .unwrap(),
+            Reservation::Reserved
+        );
+        assert_eq!(
+            reserve_transcribed_page(&m, "owner", D, 2, 3)
+                .await
+                .unwrap(),
+            Reservation::UserLimit
+        );
+        assert_eq!(
+            reserve_transcribed_page(&m, "other", D, 2, 3)
+                .await
+                .unwrap(),
+            Reservation::Reserved
+        );
+        // The global cap is reached: the user reservation goes back.
+        assert_eq!(
+            reserve_transcribed_page(&m, "third", D, 2, 3)
+                .await
+                .unwrap(),
+            Reservation::GlobalCap
+        );
+        assert_eq!(m.count(&UsageScope::User("third".into()), D), 0);
+        release_transcribed_page(&m, "owner", D).await;
+        assert_eq!(m.count(&UsageScope::User("owner".into()), D), 1);
+        assert_eq!(m.count(&UsageScope::Global, D), 2);
     }
 }

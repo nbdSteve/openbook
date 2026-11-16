@@ -39,6 +39,7 @@ pub enum DocumentStatus {
     Processing,
     Ready,
     Failed,
+    Deleting,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,6 +102,8 @@ pub struct CourseRecord {
     pub model: String,
     pub owner_id: String,
     pub invite_code: String,
+    /// Version of the course BM25 index. `None` until the first document is indexed.
+    pub bm25_version: Option<u64>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -165,6 +168,12 @@ pub struct Document {
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub page_count: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chunk_count: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transcribed_pages: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warnings: Option<Vec<String>>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -233,6 +242,7 @@ mod tests {
             model: "claude".into(),
             owner_id: "u".into(),
             invite_code: "ABCD2345".into(),
+            bm25_version: None,
             created_at: "t".into(),
             updated_at: "t".into(),
         };
@@ -259,6 +269,9 @@ mod tests {
             status: DocumentStatus::Uploading,
             error: None,
             page_count: None,
+            chunk_count: None,
+            transcribed_pages: None,
+            warnings: None,
             created_at: "t".into(),
             updated_at: "t".into(),
         };

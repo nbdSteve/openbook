@@ -50,6 +50,9 @@ pub struct ModelEntry {
     pub max_output_tokens: Option<i32>,
     #[serde(default)]
     pub temperature: Option<f32>,
+    /// True when the model accepts images (page transcription needs it).
+    #[serde(default)]
+    pub vision: bool,
 }
 
 impl ModelEntry {
@@ -209,6 +212,22 @@ impl Catalog {
             stored
         } else {
             &self.default_chat
+        }
+    }
+
+    /// Checks the model for page transcription: it must be in the catalog, accept images, and run in Australia.
+    pub fn check_transcribe_model(&self, id: &str) -> Result<(), String> {
+        match self.get(id) {
+            None => Err(format!(
+                "OPENBOOK_TRANSCRIBE_MODEL {id:?} is not in the catalog"
+            )),
+            Some(e) if !e.vision => Err(format!(
+                "OPENBOOK_TRANSCRIBE_MODEL {id:?} must have vision set to true"
+            )),
+            Some(e) if e.residency != Residency::Au => Err(format!(
+                "OPENBOOK_TRANSCRIBE_MODEL {id:?} must have residency au"
+            )),
+            Some(_) => Ok(()),
         }
     }
 
@@ -387,6 +406,33 @@ mod tests {
         let mut e = entry("a", "au.anthropic.y", "au");
         e["provider"] = json!("openai");
         assert!(catalog(json!([e])).is_err());
+    }
+
+    #[test]
+    fn the_transcribe_model_must_have_vision_and_residency_au() {
+        let list = json!([
+            {"id": "seeing", "label": "S", "vendor": "v", "provider": "fake", "modelId": "x", "residency": "au", "vision": true},
+            {"id": "blind", "label": "B", "vendor": "v", "provider": "fake", "modelId": "x", "residency": "au"},
+            {"id": "far", "label": "F", "vendor": "v", "provider": "fake", "modelId": "x", "residency": "global", "vision": true}
+        ]);
+        let c = Catalog::parse(&list.to_string(), "seeing", "seeing").unwrap();
+        assert!(c.check_transcribe_model("seeing").is_ok());
+        assert!(
+            c.check_transcribe_model("blind")
+                .unwrap_err()
+                .contains("vision")
+        );
+        assert!(
+            c.check_transcribe_model("far")
+                .unwrap_err()
+                .contains("residency au")
+        );
+        assert!(
+            c.check_transcribe_model("gone")
+                .unwrap_err()
+                .contains("not in the catalog")
+        );
+        assert!(!c.get("blind").unwrap().vision);
     }
 
     #[test]

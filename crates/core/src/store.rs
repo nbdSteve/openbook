@@ -22,7 +22,7 @@ use crate::domain::{
 };
 use crate::ids;
 use crate::model::TokenUsage;
-use crate::quota::{UsageCounter, UsageScope, usage_date, usage_month};
+use crate::quota::{PageCounter, UsageCounter, UsageScope, usage_date, usage_month};
 
 type Item = HashMap<String, AttributeValue>;
 
@@ -117,6 +117,8 @@ struct CourseItem {
     model: String,
     owner_id: String,
     invite_code: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    bm25_version: Option<u64>,
     created_at: String,
     updated_at: String,
 }
@@ -133,6 +135,7 @@ impl CourseItem {
             model: record.model.clone(),
             owner_id: record.owner_id.clone(),
             invite_code: record.invite_code.clone(),
+            bm25_version: record.bm25_version,
             created_at: record.created_at.clone(),
             updated_at: record.updated_at.clone(),
         }
@@ -151,6 +154,7 @@ impl CourseItem {
             model: self.model,
             owner_id: self.owner_id,
             invite_code: self.invite_code,
+            bm25_version: self.bm25_version,
             created_at: self.created_at,
             updated_at: self.updated_at,
         }
@@ -238,6 +242,12 @@ struct DocumentItem {
     error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     page_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    chunk_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    transcribed_pages: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    warnings: Option<Vec<String>>,
     created_at: String,
     updated_at: String,
 }
@@ -254,6 +264,9 @@ impl DocumentItem {
             status: d.status,
             error: d.error.clone(),
             page_count: d.page_count,
+            chunk_count: d.chunk_count,
+            transcribed_pages: d.transcribed_pages,
+            warnings: d.warnings.clone(),
             created_at: d.created_at.clone(),
             updated_at: d.updated_at.clone(),
         }
@@ -272,6 +285,9 @@ impl DocumentItem {
             status: self.status,
             error: self.error,
             page_count: self.page_count,
+            chunk_count: self.chunk_count,
+            transcribed_pages: self.transcribed_pages,
+            warnings: self.warnings,
             created_at: self.created_at,
             updated_at: self.updated_at,
         }
@@ -661,6 +677,7 @@ impl Store {
                 model: model.into(),
                 owner_id: owner.user_id.clone(),
                 invite_code: ids::new_invite_code(),
+                bm25_version: None,
                 created_at: now.clone(),
                 updated_at: now.clone(),
             };
@@ -1561,6 +1578,49 @@ impl UsageCounter for Store {
         date: &str,
         limit: u32,
     ) -> Result<bool, StoreError> {
+        self.reserve_counter(scope, date, limit, "messages").await
+    }
+
+    async fn global_tokens(&self, date: &str) -> Result<u64, StoreError> {
+        let item = self.get(GLOBAL_PK, &usage_daily_sk(date)).await?;
+        let number = |name: &str| match item.as_ref().and_then(|i| i.get(name)) {
+            Some(AttributeValue::N(v)) => v.parse::<u64>().unwrap_or(0),
+            _ => 0,
+        };
+        Ok(number("inputTokens").saturating_add(number("outputTokens")))
+    }
+
+    async fn release(&self, scope: &UsageScope, date: &str) -> Result<(), StoreError> {
+        self.release_counter(scope, date, "messages").await
+    }
+}
+
+#[async_trait]
+impl PageCounter for Store {
+    async fn reserve_page(
+        &self,
+        scope: &UsageScope,
+        date: &str,
+        limit: u32,
+    ) -> Result<bool, StoreError> {
+        self.reserve_counter(scope, date, limit, "transcribedPages")
+            .await
+    }
+
+    async fn release_page(&self, scope: &UsageScope, date: &str) -> Result<(), StoreError> {
+        self.release_counter(scope, date, "transcribedPages").await
+    }
+}
+
+impl Store {
+    /// Adds one to a daily counter unless it is at `limit`.
+    async fn reserve_counter(
+        &self,
+        scope: &UsageScope,
+        date: &str,
+        limit: u32,
+        attribute: &str,
+    ) -> Result<bool, StoreError> {
         let (pk, sk) = Self::usage_keys(scope, date);
         let result = self
             .client
@@ -1568,12 +1628,11 @@ impl UsageCounter for Store {
             .table_name(&self.table)
             .key("pk", s(pk))
             .key("sk", s(sk))
-            .update_expression(
-                "SET #type = :type, #ttl = if_not_exists(#ttl, :ttl) ADD messages :one",
-            )
-            .condition_expression("attribute_not_exists(messages) OR messages < :limit")
+            .update_expression("SET #type = :type, #ttl = if_not_exists(#ttl, :ttl) ADD #attr :one")
+            .condition_expression("attribute_not_exists(#attr) OR #attr < :limit")
             .expression_attribute_names("#type", "type")
             .expression_attribute_names("#ttl", "ttl")
+            .expression_attribute_names("#attr", attribute)
             .expression_attribute_values(":type", s("usage"))
             .expression_attribute_values(":ttl", n(epoch_in_days(DAILY_USAGE_TTL_DAYS)))
             .expression_attribute_values(":one", n(1))
@@ -1587,29 +1646,287 @@ impl UsageCounter for Store {
         }
     }
 
-    async fn global_tokens(&self, date: &str) -> Result<u64, StoreError> {
-        let item = self.get(GLOBAL_PK, &usage_daily_sk(date)).await?;
-        let number = |name: &str| match item.as_ref().and_then(|i| i.get(name)) {
-            Some(AttributeValue::N(v)) => v.parse::<u64>().unwrap_or(0),
-            _ => 0,
-        };
-        Ok(number("inputTokens").saturating_add(number("outputTokens")))
-    }
-
-    async fn release(&self, scope: &UsageScope, date: &str) -> Result<(), StoreError> {
+    async fn release_counter(
+        &self,
+        scope: &UsageScope,
+        date: &str,
+        attribute: &str,
+    ) -> Result<(), StoreError> {
         let (pk, sk) = Self::usage_keys(scope, date);
         self.client
             .update_item()
             .table_name(&self.table)
             .key("pk", s(pk))
             .key("sk", s(sk))
-            .update_expression("ADD messages :minusOne")
+            .update_expression("ADD #attr :minusOne")
+            .expression_attribute_names("#attr", attribute)
             .expression_attribute_values(":minusOne", n(-1))
             .send()
             .await
             .map_err(internal)?;
         Ok(())
     }
+
+    // -----------------------------------------------------------------------------------------
+    // Ingestion
+    // -----------------------------------------------------------------------------------------
+
+    async fn update_document_status(
+        &self,
+        course_id: &str,
+        document_id: &str,
+        update: &str,
+        condition: &str,
+        values: Vec<(&str, AttributeValue)>,
+        ret: Option<aws_sdk_dynamodb::types::ReturnValue>,
+    ) -> Result<Option<Item>, StoreError> {
+        let mut request = self
+            .client
+            .update_item()
+            .table_name(&self.table)
+            .key("pk", s(course_pk(course_id)))
+            .key("sk", s(doc_sk(document_id)))
+            .update_expression(update)
+            .condition_expression(condition)
+            .expression_attribute_values(":now", s(crate::domain::now()));
+        // DynamoDB rejects names and values that no expression uses, so pass only the used ones.
+        let used = |token: &str| update.contains(token) || condition.contains(token);
+        for (token, attribute) in [
+            ("#status", "status"),
+            ("#error", "error"),
+            ("#warnings", "warnings"),
+        ] {
+            if used(token) {
+                request = request.expression_attribute_names(token, attribute);
+            }
+        }
+        for (name, value) in values {
+            if used(name) {
+                request = request.expression_attribute_values(name, value);
+            }
+        }
+        if let Some(ret) = ret {
+            request = request.return_values(ret);
+        }
+        match request.send().await {
+            Ok(out) => Ok(Some(out.attributes.unwrap_or_default())),
+            Err(e) if is_conditional_failure(&e) => Ok(None),
+            Err(e) => Err(internal(e)),
+        }
+    }
+
+    /// Moves a document to `processing`. It must be `queued`, or `processing` when `retry` is true
+    /// (the earlier attempt crashed or timed out). Returns false when the message is stale.
+    pub async fn begin_processing(
+        &self,
+        course_id: &str,
+        document_id: &str,
+        retry: bool,
+    ) -> Result<bool, StoreError> {
+        let condition = if retry {
+            "#status = :queued OR #status = :processing"
+        } else {
+            "#status = :queued"
+        };
+        let done = self
+            .update_document_status(
+                course_id,
+                document_id,
+                "SET #status = :processing, updatedAt = :now REMOVE #error, #warnings",
+                condition,
+                vec![(":queued", s("queued")), (":processing", s("processing"))],
+                None,
+            )
+            .await?;
+        Ok(done.is_some())
+    }
+
+    /// Puts a document back to `queued` after a transient failure, so the retry accepts it.
+    pub async fn requeue(&self, course_id: &str, document_id: &str) -> Result<(), StoreError> {
+        self.update_document_status(
+            course_id,
+            document_id,
+            "SET #status = :queued, updatedAt = :now",
+            "#status = :processing",
+            vec![(":queued", s("queued")), (":processing", s("processing"))],
+            None,
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Sets `ready` with the results. Returns false when the document is no longer `processing`
+    /// (for example, the owner deleted it).
+    pub async fn finish_ingest(
+        &self,
+        course_id: &str,
+        document_id: &str,
+        result: &IngestResult,
+    ) -> Result<bool, StoreError> {
+        let warnings = if result.warnings.is_empty() {
+            None
+        } else {
+            Some(AttributeValue::L(
+                result.warnings.iter().map(|w| s(w.as_str())).collect(),
+            ))
+        };
+        let mut sets = String::from(
+            "SET #status = :ready, updatedAt = :now, pageCount = :pages, chunkCount = :chunks, transcribedPages = :transcribed",
+        );
+        let mut removes = String::from("REMOVE #error");
+        let mut values = vec![
+            (":ready", s("ready")),
+            (":processing", s("processing")),
+            (":pages", n(result.page_count)),
+            (":chunks", n(result.chunk_count)),
+            (":transcribed", n(result.transcribed_pages)),
+        ];
+        match warnings {
+            Some(list) => {
+                sets.push_str(", #warnings = :warnings");
+                values.push((":warnings", list));
+            }
+            None => removes.push_str(", #warnings"),
+        }
+        let update = format!("{sets} {removes}");
+        let done = self
+            .update_document_status(
+                course_id,
+                document_id,
+                &update,
+                "#status = :processing",
+                values,
+                None,
+            )
+            .await?;
+        Ok(done.is_some())
+    }
+
+    /// Sets `failed` with an owner-safe message. Returns false when the document is not `queued` or `processing`.
+    pub async fn fail_document(
+        &self,
+        course_id: &str,
+        document_id: &str,
+        message: &str,
+    ) -> Result<bool, StoreError> {
+        let done = self
+            .update_document_status(
+                course_id,
+                document_id,
+                "SET #status = :failed, #error = :message, updatedAt = :now",
+                "#status = :queued OR #status = :processing",
+                vec![
+                    (":failed", s("failed")),
+                    (":message", s(message)),
+                    (":queued", s("queued")),
+                    (":processing", s("processing")),
+                ],
+                None,
+            )
+            .await?;
+        Ok(done.is_some())
+    }
+
+    /// Moves a document from `queued` back to `uploading` when the ingest message could not be sent.
+    pub async fn revert_queued(
+        &self,
+        course_id: &str,
+        document_id: &str,
+    ) -> Result<(), StoreError> {
+        self.update_document_status(
+            course_id,
+            document_id,
+            "SET #status = :uploading, updatedAt = :now",
+            "#status = :queued",
+            vec![(":uploading", s("uploading")), (":queued", s("queued"))],
+            None,
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Sets `deleting`. Returns the document as it was, or `None` when it was already `deleting`
+    /// (or does not exist).
+    pub async fn mark_deleting(
+        &self,
+        course_id: &str,
+        document_id: &str,
+    ) -> Result<Option<Document>, StoreError> {
+        let old = self
+            .update_document_status(
+                course_id,
+                document_id,
+                "SET #status = :deleting, updatedAt = :now",
+                "attribute_exists(pk) AND #status <> :deleting",
+                vec![(":deleting", s("deleting"))],
+                Some(aws_sdk_dynamodb::types::ReturnValue::AllOld),
+            )
+            .await?;
+        match old {
+            Some(item) if !item.is_empty() => Ok(Some(from_item::<DocumentItem>(item)?.document())),
+            _ => Ok(None),
+        }
+    }
+
+    /// Undoes `mark_deleting` when the delete message could not be sent.
+    pub async fn restore_status(
+        &self,
+        course_id: &str,
+        document_id: &str,
+        status: DocumentStatus,
+    ) -> Result<(), StoreError> {
+        let value =
+            serde_dynamo::to_attribute_value::<_, AttributeValue>(status).map_err(internal)?;
+        self.update_document_status(
+            course_id,
+            document_id,
+            "SET #status = :previous, updatedAt = :now",
+            "#status = :deleting",
+            vec![(":previous", value), (":deleting", s("deleting"))],
+            None,
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Moves the course BM25 version forward. `expected` is the version that the writer started from.
+    /// Returns false when another writer moved it first.
+    pub async fn set_bm25_version(
+        &self,
+        course_id: &str,
+        expected: Option<u64>,
+        new: u64,
+    ) -> Result<bool, StoreError> {
+        let mut request = self
+            .client
+            .update_item()
+            .table_name(&self.table)
+            .key("pk", s(course_pk(course_id)))
+            .key("sk", s(META_SK))
+            .update_expression("SET bm25Version = :new")
+            .expression_attribute_values(":new", n(new));
+        request = match expected {
+            None => request
+                .condition_expression("attribute_exists(pk) AND attribute_not_exists(bm25Version)"),
+            Some(old) => request
+                .condition_expression("attribute_exists(pk) AND bm25Version = :old")
+                .expression_attribute_values(":old", n(old)),
+        };
+        match request.send().await {
+            Ok(_) => Ok(true),
+            Err(e) if is_conditional_failure(&e) => Ok(false),
+            Err(e) => Err(internal(e)),
+        }
+    }
+}
+
+/// What a finished ingest reports.
+#[derive(Debug, Clone, Default)]
+pub struct IngestResult {
+    pub page_count: u32,
+    pub chunk_count: u32,
+    pub transcribed_pages: u32,
+    pub warnings: Vec<String>,
 }
 
 /// True when a transaction was cancelled and item `index` had the cancellation reason `code`.

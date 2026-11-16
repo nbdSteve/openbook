@@ -1,0 +1,45 @@
+[package]
+name = "openbook-ingest"
+description = "Openbook ingest worker: PDF pages to Markdown, chunks, embeddings, vectors, and the BM25 index"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+openbook-core.workspace = true
+openbook-search = { workspace = true, features = ["bm25"] }
+async-trait.workspace = true
+aws-config.workspace = true
+aws_lambda_events = { version = "1", default-features = false, features = ["sqs"] }
+aws-sdk-bedrockruntime.workspace = true
+aws-sdk-s3.workspace = true
+aws-sdk-sqs.workspace = true
+aws-smithy-types.workspace = true
+chrono.workspace = true
+futures.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"] }
+lambda_runtime = "1"
+pdfium-render = "0.9"
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+http-body-util.workspace = true
+tower = { workspace = true, features = ["util"] }
+aws-credential-types.workspace = true
+aws-sdk-cognitoidentityprovider = { version = "1", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio"] }
+aws-sdk-dynamodb.workspace = true
+aws-sdk-s3vectors.workspace = true
+openbook-api.path = "../api"
+reqwest.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true
