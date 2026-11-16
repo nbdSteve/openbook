@@ -55,7 +55,9 @@ Every item has a `type` attribute. Other attributes are camelCase.
 | Item | `pk` | `sk` | `gsi1pk` | `gsi1sk` | Main attributes |
 |---|---|---|---|---|---|
 | Profile | `USER#<userId>` | `PROFILE` | | | `email`, `createdAt` |
-| Course | `COURSE#<courseId>` | `META` | | | `name`, `description`, `tutoringStyle`, `model`, `ownerId`, `inviteCode`, `createdAt`, `updatedAt` |
+| Counters (user) | `USER#<userId>` | `COUNTERS` | | | `courses` (courses owned; changed only inside the create and delete transactions, with a condition on the limit) |
+| Failed joins | `USER#<userId>` | `JOINFAIL#D#<yyyy-mm-dd>` | | | `attempts`, `ttl` (2 days) |
+| Course | `COURSE#<courseId>` | `META` | | | `name`, `description`, `tutoringStyle`, `model`, `ownerId`, `inviteCode`, `docCount`, `createdAt`, `updatedAt` |
 | Membership | `COURSE#<courseId>` | `MEMBER#<userId>` | `USER#<userId>` | `COURSE#<joinedAt>#<courseId>` | `courseId`, `userId`, `email`, `role`, `joinedAt` |
 | Invite code | `INVITE#<code>` | `INVITE` | | | `courseId`, `createdAt` |
 | Document | `COURSE#<courseId>` | `DOC#<documentId>` | | | `filename`, `sizeBytes`, `s3Key`, `status`, `error`, `pageCount`, `createdAt`, `updatedAt` |
@@ -70,6 +72,8 @@ Rules:
 
 - Create a course, its owner membership, and its invite code in one `TransactWriteItems`, with `attribute_not_exists(pk)` on the invite code. Retry with a new code on a conflict.
 - Quotas: before the model call, reserve one message with `UpdateItem` `ADD messages :one` and the condition `attribute_not_exists(messages) OR messages < :limit`, first on the user's daily item, then on the global daily item. If the global reservation fails, give back the user reservation (`ADD messages :minusOne`). After the call, add the token counts to the daily, monthly, and global items (best effort; log failures).
+- Limits on courses owned and documents per course are exact: the create transaction updates the counter (`COUNTERS.courses`, `META.docCount`) with a condition `< :limit`, and the delete transaction gives the slot back.
+- Authorization reads (membership, course, invite, conversation, document) use strongly consistent reads.
 - ULIDs make `sk` values sort by creation time. List queries that need newest first use `ScanIndexForward = false`.
 
 ## S3 layout
