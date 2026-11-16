@@ -2,11 +2,79 @@
   "app": "npx tsx bin/openbook.ts",
   "output": "cdk.out",
   "watch": {
-    "include": ["bin/**", "lib/**"],
-    "exclude": ["node_modules/**", "cdk.out/**", "dist/**", "test/**"]
+    "include": [
+      "bin/**",
+      "lib/**"
+    ],
+    "exclude": [
+      "node_modules/**",
+      "cdk.out/**",
+      "dist/**",
+      "test/**"
+    ]
   },
   "context": {
     "@aws-cdk/aws-iam:minimizePolicies": true,
-    "@aws-cdk/core:target-partitions": ["aws"]
+    "@aws-cdk/core:target-partitions": [
+      "aws"
+    ],
+    "models": [
+      {
+        "id": "claude-sonnet",
+        "label": "Claude Sonnet 5.5",
+        "vendor": "anthropic",
+        "provider": "bedrock",
+        "modelId": "au.anthropic.claude-sonnet-5-5",
+        "residency": "au",
+        "maxOutputTokens": 2000
+      },
+      {
+        "id": "claude-opus",
+        "label": "Claude Opus 5.5",
+        "vendor": "anthropic",
+        "provider": "bedrock",
+        "modelId": "au.anthropic.claude-opus-5-5",
+        "residency": "au",
+        "maxOutputTokens": 2000
+      },
+      {
+        "id": "claude-haiku",
+        "label": "Claude Haiku 5.5",
+        "vendor": "anthropic",
+        "provider": "bedrock",
+        "modelId": "au.anthropic.claude-haiku-5-5",
+        "residency": "au",
+        "maxOutputTokens": 2000
+      },
+      {
+        "id": "gpt-oss-120b",
+        "label": "gpt-oss-120b",
+        "vendor": "openai",
+        "provider": "bedrock",
+        "modelId": "openai.gpt-oss-120b-1:0",
+        "residency": "au",
+        "maxOutputTokens": 2000
+      },
+      {
+        "id": "gpt-6-1-sol",
+        "label": "GPT-6.1 Sol",
+        "vendor": "openai",
+        "provider": "bedrock",
+        "modelId": "global.openai.gpt-6.1-sol",
+        "residency": "global",
+        "maxOutputTokens": 2000
+      },
+      {
+        "id": "gpt-6-1-terra",
+        "label": "GPT-6.1 Terra",
+        "vendor": "openai",
+        "provider": "bedrock",
+        "modelId": "global.openai.gpt-6.1-terra",
+        "residency": "global",
+        "maxOutputTokens": 2000
+      }
+    ],
+    "defaultChatModel": "claude-sonnet",
+    "fastModel": "claude-haiku"
   }
 }

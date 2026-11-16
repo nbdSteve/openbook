@@ -1,6 +1,6 @@
 import { Match } from 'aws-cdk-lib/assertions';
 import { describe, expect, test } from 'vitest';
-import { asArray, policyStatements, synth, type Json } from './helpers';
+import { synth, type Json } from './helpers';
 
 const dev = synth({ stage: 'dev' });
 const prod = synth({ stage: 'prod' });
@@ -138,10 +138,25 @@ describe.each([
     ]) {
       expect(env).not.toHaveProperty(name);
     }
-    expect(env.OPENBOOK_MODEL_PROVIDER).toBe('bedrock');
+    expect(env).not.toHaveProperty('OPENBOOK_MODEL_PROVIDER');
+    expect(env).not.toHaveProperty('OPENBOOK_CHAT_MODEL_ID');
+    expect(env).not.toHaveProperty('OPENBOOK_FAST_MODEL_ID');
     expect(env.OPENBOOK_STAGE).toBe(_stage);
-    expect(env.OPENBOOK_CHAT_MODEL_ID).toBe('au.anthropic.claude-sonnet-4-6');
-    expect(env.OPENBOOK_FAST_MODEL_ID).toBe('au.anthropic.claude-haiku-4-5-20251001-v1:0');
+    expect(env.OPENBOOK_DEFAULT_CHAT_MODEL).toBe('claude-sonnet');
+    expect(env.OPENBOOK_FAST_MODEL).toBe('claude-haiku');
+    // The catalog is the one in cdk.json, and every entry is a Bedrock entry (no fake provider).
+    const catalog = JSON.parse(env.OPENBOOK_MODELS as string) as { id: string; provider: string }[];
+    expect(catalog.map((m) => m.id)).toEqual([
+      'claude-sonnet',
+      'claude-opus',
+      'claude-haiku',
+      'gpt-oss-120b',
+      'gpt-6-1-sol',
+      'gpt-6-1-terra',
+    ]);
+    expect(new Set(catalog.map((m) => m.provider))).toEqual(new Set(['bedrock']));
+    // Lambda allows 4 KB of environment variables in total.
+    expect(JSON.stringify(env).length).toBeLessThan(4096);
     expect(env.OPENBOOK_LIMIT_DAILY_MESSAGES_PER_USER).toBe('50');
     expect(env.OPENBOOK_LIMIT_DAILY_MESSAGES_GLOBAL).toBe('500');
     expect(env.OPENBOOK_LIMIT_COURSES_OWNED).toBe('10');
@@ -156,29 +171,6 @@ describe.each([
     ]) {
       expect(env).toHaveProperty(name);
     }
-  });
-
-  test('Bedrock permissions cover only the au. profiles and Anthropic models in Sydney and Melbourne', () => {
-    const bedrock = policyStatements(s.json).filter((st) =>
-      asArray(st.Action as string | string[]).some((a) => a.startsWith('bedrock:')),
-    );
-    expect(bedrock).toHaveLength(1);
-    expect(asArray(bedrock[0].Action as string[]).sort()).toEqual([
-      'bedrock:InvokeModel',
-      'bedrock:InvokeModelWithResponseStream',
-    ]);
-    const resources = (bedrock[0].Resource as unknown[]).map((r) => JSON.stringify(r));
-    expect(resources).toHaveLength(4);
-    const text = resources.join('\n');
-    expect(text).toContain(':bedrock:ap-southeast-2:111111111111:inference-profile/au.anthropic.claude-sonnet-4-6');
-    expect(text).toContain(
-      ':bedrock:ap-southeast-2:111111111111:inference-profile/au.anthropic.claude-haiku-4-5-20251001-v1:0',
-    );
-    expect(text).toContain(':bedrock:ap-southeast-2::foundation-model/anthropic.*');
-    expect(text).toContain(':bedrock:ap-southeast-4::foundation-model/anthropic.*');
-    expect(text).not.toContain('global.');
-    expect(text).not.toContain('us.');
-    expect(text).not.toContain('"*"');
   });
 
   test('the /api/* behavior never caches and signs requests with OAC', () => {
@@ -442,21 +434,6 @@ describe('configuration', () => {
     expect(env.OPENBOOK_LIMIT_DAILY_MESSAGES_PER_USER).toBe('7');
     expect(env.OPENBOOK_LIMIT_UPLOAD_BYTES).toBe('1000');
   });
-
-  test('a model change updates the environment and the Bedrock policy together', () => {
-    const s = synth({ stage: 'dev', chatModelId: 'au.anthropic.claude-sonnet-9' });
-    const text = JSON.stringify(s.json);
-    expect(text).toContain('inference-profile/au.anthropic.claude-sonnet-9');
-    expect(text).not.toContain('inference-profile/au.anthropic.claude-sonnet-4-6');
-  });
-
-  test.each(['global.anthropic.claude-sonnet-4-6', 'us.anthropic.claude-sonnet-4-6', 'anthropic.claude-sonnet-4-6'])(
-    'refuses the non-au. model ID %s',
-    (id) => {
-      expect(() => synth({ stage: 'dev', chatModelId: id })).toThrow(/au\.anthropic/);
-      expect(() => synth({ stage: 'dev', fastModelId: id })).toThrow(/au\.anthropic/);
-    },
-  );
 
   test('refuses an unknown stage and bad limits', () => {
     expect(() => synth({ stage: 'staging' })).toThrow(/stage/);

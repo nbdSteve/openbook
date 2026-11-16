@@ -1,0 +1,5 @@
+{
+  "ACCOUNT_ID": "000000000000",
+  "CLOUDFORMATION_EXECUTION_ROLE_NAME": "ExampleOpenbookExecutionRole",
+  "GITHUB_REPOSITORY_IDENTITY": "nbdSteve@1/openbook@2"
+}

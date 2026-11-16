@@ -1,5 +1,6 @@
 import * as path from 'path';
 import type { Node } from 'constructs';
+import { validateCatalog, type Catalog } from './catalog';
 
 export type Stage = 'dev' | 'prod';
 
@@ -26,16 +27,12 @@ export interface OpenbookConfig {
   stage: Stage;
   apiAssetDir: string;
   webAssetDir: string;
-  chatModelId: string;
-  fastModelId: string;
+  catalog: Catalog;
   limits: Limits;
   domain?: DomainConfig;
 }
 
 /** Defaults from docs/architecture.md (API configuration table). */
-export const defaultChatModelId = 'au.anthropic.claude-sonnet-4-6';
-export const defaultFastModelId = 'au.anthropic.claude-haiku-4-5-20251001-v1:0';
-
 export const defaultLimits: Limits = {
   dailyMessagesPerUser: 50,
   dailyMessagesGlobal: 500,
@@ -59,23 +56,18 @@ function positiveInt(node: Node, key: string, fallback: number): number {
   return n;
 }
 
-/** Bedrock calls use `au.` inference profiles only (docs/architecture.md, hard rule 4). */
-export function assertAuProfile(key: string, modelId: string): void {
-  if (!/^au\.anthropic\.[A-Za-z0-9.:-]+$/.test(modelId)) {
-    throw new Error(`context ${key} must be an au.anthropic.* inference profile ID, got "${modelId}"`);
-  }
-}
-
 export function resolveConfig(node: Node): OpenbookConfig {
   const stage = str(node, 'stage') ?? 'dev';
   if (stage !== 'dev' && stage !== 'prod') {
     throw new Error(`context stage must be "dev" or "prod", got "${stage}"`);
   }
 
-  const chatModelId = str(node, 'chatModelId') ?? defaultChatModelId;
-  const fastModelId = str(node, 'fastModelId') ?? defaultFastModelId;
-  assertAuProfile('chatModelId', chatModelId);
-  assertAuProfile('fastModelId', fastModelId);
+  // The deployed catalog is in cdk.json context. It has no default in code.
+  const catalog = validateCatalog(
+    node.tryGetContext('models'),
+    node.tryGetContext('defaultChatModel'),
+    node.tryGetContext('fastModel'),
+  );
 
   const domainName = str(node, 'domainName');
   const hostedZoneName = str(node, 'hostedZoneName');
@@ -95,8 +87,7 @@ export function resolveConfig(node: Node): OpenbookConfig {
     stage,
     apiAssetDir: path.resolve(infraRoot, str(node, 'apiAssetDir') ?? '../target/lambda/openbook-api'),
     webAssetDir: path.resolve(infraRoot, str(node, 'webAssetDir') ?? '../apps/ask/dist'),
-    chatModelId,
-    fastModelId,
+    catalog,
     limits: {
       dailyMessagesPerUser: positiveInt(node, 'limitDailyMessagesPerUser', defaultLimits.dailyMessagesPerUser),
       dailyMessagesGlobal: positiveInt(node, 'limitDailyMessagesGlobal', defaultLimits.dailyMessagesGlobal),

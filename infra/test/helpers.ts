@@ -1,3 +1,4 @@
+import * as fs from 'fs';
 import * as path from 'path';
 import * as cdk from 'aws-cdk-lib';
 import { Template } from 'aws-cdk-lib/assertions';
@@ -24,9 +25,14 @@ export interface Synth {
   json: { Resources: Record<string, { Type: string; Properties?: Json; DeletionPolicy?: string; UpdateReplacePolicy?: string }> };
 }
 
-export function synth(context: Record<string, string> = {}): Synth {
+/** The context of cdk.json, which the CDK CLI loads but `new App` does not. It holds the model catalog. */
+export const cdkJsonContext = (
+  JSON.parse(fs.readFileSync(path.resolve(__dirname, '../cdk.json'), 'utf8')) as { context: Record<string, unknown> }
+).context;
+
+export function synth(context: Record<string, unknown> = {}): Synth {
   const app = new cdk.App({
-    context: { apiAssetDir: fixtures.api, webAssetDir: fixtures.web, ...context },
+    context: { ...cdkJsonContext, apiAssetDir: fixtures.api, webAssetDir: fixtures.web, ...context },
   });
   const config = resolveConfig(app.node);
   let certStack: CertificateStack | undefined;

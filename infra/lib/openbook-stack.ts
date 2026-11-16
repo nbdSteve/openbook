@@ -12,6 +12,7 @@ import * as targets from 'aws-cdk-lib/aws-route53-targets';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
 import type { Construct } from 'constructs';
+import { bedrockStatements } from './catalog';
 import { region, type OpenbookConfig } from './config';
 import { spaRewriteCode } from './spa-rewrite';
 
@@ -117,9 +118,9 @@ export class OpenbookStack extends cdk.Stack {
         OPENBOOK_DOCS_BUCKET: docsBucketName,
         OPENBOOK_COGNITO_USER_POOL_ID: userPool.userPoolId,
         OPENBOOK_COGNITO_CLIENT_ID: userPoolClient.userPoolClientId,
-        OPENBOOK_MODEL_PROVIDER: 'bedrock',
-        OPENBOOK_CHAT_MODEL_ID: config.chatModelId,
-        OPENBOOK_FAST_MODEL_ID: config.fastModelId,
+        OPENBOOK_MODELS: JSON.stringify(config.catalog.models),
+        OPENBOOK_DEFAULT_CHAT_MODEL: config.catalog.defaultChatModel,
+        OPENBOOK_FAST_MODEL: config.catalog.fastModel,
         OPENBOOK_LIMIT_DAILY_MESSAGES_PER_USER: String(config.limits.dailyMessagesPerUser),
         OPENBOOK_LIMIT_DAILY_MESSAGES_GLOBAL: String(config.limits.dailyMessagesGlobal),
         OPENBOOK_LIMIT_COURSES_OWNED: String(config.limits.coursesOwned),
@@ -143,21 +144,11 @@ export class OpenbookStack extends cdk.Stack {
         resources: [`arn:${this.partition}:s3:::${docsBucketName}`],
       }),
     );
-    // The `au.` profiles route to Sydney and Melbourne. The profile ARNs come from the
-    // configured model IDs, so a model change updates both the environment and this policy.
-    apiFunction.addToRolePolicy(
-      new iam.PolicyStatement({
-        sid: 'InvokeAuInferenceProfilesAndAnthropicModels',
-        actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
-        resources: [
-          ...[...new Set([config.chatModelId, config.fastModelId])].map(
-            (profile) => `arn:${this.partition}:bedrock:${region}:${this.account}:inference-profile/${profile}`,
-          ),
-          `arn:${this.partition}:bedrock:ap-southeast-2::foundation-model/anthropic.*`,
-          `arn:${this.partition}:bedrock:ap-southeast-4::foundation-model/anthropic.*`,
-        ],
-      }),
-    );
+    // The Bedrock permissions come from the catalog, so the environment and the policy
+    // cannot disagree. See `bedrockStatements` for the exact resources.
+    for (const statement of bedrockStatements(config.catalog.models, this.partition, this.account)) {
+      apiFunction.addToRolePolicy(statement);
+    }
 
     const functionUrl = apiFunction.addFunctionUrl({
       authType: lambda.FunctionUrlAuthType.AWS_IAM,
