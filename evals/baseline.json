@@ -1,0 +1,13 @@
+{
+  "cacheKind": "live",
+  "embeddingModel": "amazon.titan-embed-text-v2:0",
+  "hybrid": {
+    "recallAt5": 0.9605,
+    "recallAt8": 0.9605,
+    "ndcgAt10": 0.4919,
+    "mrr": 0.8476,
+    "gateAccuracy": 0.8,
+    "falseGateRate": 0.0,
+    "missedGateRate": 1.0
+  }
+}

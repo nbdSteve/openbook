@@ -1,0 +1,17 @@
+{
+  "format": 1,
+  "kind": "live",
+  "corpus": "college-algebra-excerpt.pdf",
+  "corpusSha256": "076fd7c8eaca464b5efe05c61a09c57c63ed4a306d6583f1bd056b259dfb9caf",
+  "embeddingModel": "amazon.titan-embed-text-v2:0",
+  "transcribeModel": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+  "rewriteModel": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+  "pages": 43,
+  "transcribedPages": 33,
+  "fallbackPages": [],
+  "latency": {
+    "queryEmbeddingMsP50": 70,
+    "queryEmbeddingMsP95": 111,
+    "samples": 95
+  }
+}
