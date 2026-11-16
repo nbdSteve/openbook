@@ -8,7 +8,6 @@ publish.workspace = true
 
 [dependencies]
 openbook-core.workspace = true
-openbook-search.workspace = true
 axum.workspace = true
 chrono.workspace = true
 futures.workspace = true

@@ -11,7 +11,6 @@ use openbook_core::files::Files;
 use openbook_core::model::ModelRegistry;
 use openbook_core::queue::IngestQueue;
 use openbook_core::store::Store;
-use openbook_search::vectors::VectorStore;
 
 pub mod error;
 pub mod extract;
@@ -32,8 +31,6 @@ pub struct AppState {
     pub models: ModelRegistry,
     /// The ingest queue: `complete` and document `DELETE` send messages to it.
     pub queue: IngestQueue,
-    /// The S3 Vectors store, used to delete a course index.
-    pub vectors: VectorStore,
     /// Time limits for model calls.
     pub chat_timeouts: routes::chat::ChatTimeouts,
 }
@@ -57,7 +54,8 @@ impl AppState {
             self.store.get_course(&course_id)
         );
         match (membership?, course?) {
-            (Some(membership), Some(course)) => Ok((course, membership)),
+            // A course that the worker is deleting does not exist for its members.
+            (Some(membership), Some(course)) if !course.deleting => Ok((course, membership)),
             _ => Err(ApiError::not_found("Course")),
         }
     }

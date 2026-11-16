@@ -3,16 +3,20 @@
 //! `libpdfium` comes from `OPENBOOK_PDFIUM_PATH`, or from the directory of the executable.
 
 use std::collections::HashSet;
-use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use image::ImageFormat;
+use image::DynamicImage;
+use image::codecs::jpeg::JpegEncoder;
+use image::imageops::FilterType;
 use openbook_search::quality::needs_transcription;
 use pdfium_render::prelude::*;
 use tokio::sync::mpsc::Sender;
 
-use crate::transcribe::MAX_RENDER_SIDE;
+use crate::transcribe::{MAX_IMAGE_BYTES, MAX_RENDER_SIDE};
+
+/// JPEG qualities to try, best first.
+const JPEG_QUALITIES: [u8; 4] = [85, 70, 55, 40];
 
 /// Why a PDF cannot be read.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -36,8 +40,11 @@ pub struct PageData {
     /// The text layer, cleaned.
     pub text: String,
     pub has_images: bool,
-    /// The rendered page (PNG). Only present when the text layer looks poor.
-    pub png: Option<Vec<u8>>,
+    /// The text layer looks poor, so the page needs transcription.
+    pub needs_transcription: bool,
+    /// The rendered page (grayscale JPEG under `MAX_IMAGE_BYTES`). Only for pages that need
+    /// transcription, and `None` when rendering failed.
+    pub image: Option<Vec<u8>>,
 }
 
 static PDFIUM: OnceLock<Result<Pdfium, String>> = OnceLock::new();
@@ -135,17 +142,15 @@ pub fn extract_pages(
             .objects()
             .iter()
             .any(|object| object.object_type() == PdfPageObjectType::Image);
-        let png = if needs_transcription(&text, has_images) {
-            render_png(&page)
-        } else {
-            None
-        };
+        let needs = needs_transcription(&text, has_images);
+        let image = if needs { render_image(&page) } else { None };
         if tx
             .blocking_send(PageData {
                 number,
                 text,
                 has_images,
-                png,
+                needs_transcription: needs,
+                image,
             })
             .is_err()
         {
@@ -155,20 +160,100 @@ pub fn extract_pages(
     Ok(())
 }
 
-fn render_png(page: &PdfPage<'_>) -> Option<Vec<u8>> {
+fn render_image(page: &PdfPage<'_>) -> Option<Vec<u8>> {
+    let side = MAX_RENDER_SIDE as i32;
     let config = PdfRenderConfig::new()
-        .set_maximum_width(MAX_RENDER_SIDE as i32)
-        .set_maximum_height(MAX_RENDER_SIDE as i32);
+        .set_maximum_width(side)
+        .set_maximum_height(side);
     let bitmap = page.render_with_config(&config).ok()?;
     let image = bitmap.as_image().ok()?;
-    let mut bytes = Cursor::new(Vec::new());
-    image.write_to(&mut bytes, ImageFormat::Png).ok()?;
-    Some(bytes.into_inner())
+    encode_for_model(&image)
+}
+
+/// Turns a rendered page into a grayscale JPEG with the longest side at most `MAX_RENDER_SIDE`
+/// and under `MAX_IMAGE_BYTES` (Bedrock accepts at most 3.75 MB per image). It lowers the JPEG
+/// quality first, then the size, until the image fits. Returns `None` when nothing fits.
+pub fn encode_for_model(image: &DynamicImage) -> Option<Vec<u8>> {
+    let gray = DynamicImage::ImageLuma8(image.to_luma8());
+    let longest = gray.width().max(gray.height());
+    let base = if longest > MAX_RENDER_SIDE {
+        gray.resize(MAX_RENDER_SIDE, MAX_RENDER_SIDE, FilterType::Lanczos3)
+    } else {
+        gray
+    };
+    for scale in [1.0_f32, 0.85, 0.7, 0.55, 0.4] {
+        let candidate = if scale < 1.0 {
+            let w = ((base.width() as f32) * scale).max(1.0) as u32;
+            let h = ((base.height() as f32) * scale).max(1.0) as u32;
+            base.resize_exact(w, h, FilterType::Triangle)
+        } else {
+            base.clone()
+        };
+        for quality in JPEG_QUALITIES {
+            let mut bytes = Vec::new();
+            let encoder = JpegEncoder::new_with_quality(&mut bytes, quality);
+            if candidate.write_with_encoder(encoder).is_ok() && bytes.len() <= MAX_IMAGE_BYTES {
+                return Some(bytes);
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Pseudo-random noise: it compresses badly, like a scanned page with grain.
+    fn noisy_image(width: u32, height: u32) -> DynamicImage {
+        let mut state: u64 = 0x2545_F491_4F6C_DD1D;
+        let mut image = image::RgbImage::new(width, height);
+        for pixel in image.pixels_mut() {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            *pixel = image::Rgb([(state >> 8) as u8, (state >> 24) as u8, (state >> 40) as u8]);
+        }
+        DynamicImage::ImageRgb8(image)
+    }
+
+    #[test]
+    fn a_noisy_full_page_image_ends_up_under_the_limit_with_the_right_size() {
+        // Far bigger than a model needs, and incompressible.
+        let image = noisy_image(3200, 4200);
+        let bytes = encode_for_model(&image).expect("an image that fits");
+        assert!(bytes.len() <= MAX_IMAGE_BYTES, "{} bytes", bytes.len());
+        const { assert!(MAX_IMAGE_BYTES < 3_750_000) }; // Bedrock accepts at most 3.75 MB
+        let decoded = image::load_from_memory(&bytes).unwrap();
+        assert!(decoded.width().max(decoded.height()) <= MAX_RENDER_SIDE);
+        assert_eq!(&bytes[..2], &[0xFF, 0xD8], "a JPEG");
+        // Grayscale: one component.
+        assert_eq!(decoded.color().channel_count(), 1);
+    }
+
+    #[test]
+    fn noise_at_the_render_size_is_squeezed_by_quality_and_scale() {
+        let image = noisy_image(MAX_RENDER_SIDE, MAX_RENDER_SIDE);
+        let bytes = encode_for_model(&image).unwrap();
+        assert!(bytes.len() <= MAX_IMAGE_BYTES);
+    }
+
+    #[test]
+    fn a_plain_page_keeps_its_size_and_is_small() {
+        let page = DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            1000,
+            1400,
+            image::Rgb([255, 255, 255]),
+        ));
+        let bytes = encode_for_model(&page).unwrap();
+        assert!(bytes.len() < 100_000);
+        let decoded = image::load_from_memory(&bytes).unwrap();
+        assert_eq!(
+            (decoded.width(), decoded.height()),
+            (1000, 1400),
+            "small images are not scaled up or down"
+        );
+    }
 
     #[test]
     fn clean_text_joins_lines_and_keeps_paragraphs() {
