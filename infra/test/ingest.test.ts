@@ -53,7 +53,7 @@ describe.each([
       VisibilityTimeout: 960,
       MessageRetentionPeriod: 4 * 24 * 3600,
       SqsManagedSseEnabled: true,
-      RedrivePolicy: { maxReceiveCount: 3, deadLetterTargetArn: Match.anyValue() },
+      RedrivePolicy: { maxReceiveCount: 5, deadLetterTargetArn: Match.anyValue() },
     });
   });
 
@@ -154,14 +154,10 @@ describe('the IAM statements of the two functions', () => {
     expect(api.flatMap(actionsOf).filter((a) => a.startsWith('sqs:'))).toEqual(['sqs:SendMessage']);
   });
 
-  test('the API deletes and queries course indexes, and nothing else in S3 Vectors', () => {
+  test('the API queries course indexes, and does nothing else in S3 Vectors', () => {
     const indexes = bySid(api, 'CourseVectorIndexes');
-    expect(actionsOf(indexes)).toEqual([
-      's3vectors:DeleteIndex',
-      's3vectors:GetIndex',
-      's3vectors:GetVectors',
-      's3vectors:QueryVectors',
-    ]);
+    // Phase 3 queries (with metadata, so GetVectors too). The API never deletes an index.
+    expect(actionsOf(indexes)).toEqual(['s3vectors:GetVectors', 's3vectors:QueryVectors']);
     expect(flat(indexes.Resource)).toBe(indexARN);
     expect(api.flatMap(actionsOf).filter((a) => a.startsWith('s3vectors:')).sort()).toEqual(actionsOf(indexes));
   });
@@ -179,19 +175,21 @@ describe('the IAM statements of the two functions', () => {
     expect(text(consume[0].Resource)).toContain('IngestQueue');
   });
 
-  test('the worker creates indexes in the stage bucket, and reads and writes only its indexes', () => {
+  test('the worker creates, writes, and deletes course indexes, and cannot query them', () => {
     const indexes = bySid(ingest, 'CourseVectorIndexes');
     expect(actionsOf(indexes)).toEqual([
       's3vectors:CreateIndex',
+      's3vectors:DeleteIndex',
       's3vectors:DeleteVectors',
       's3vectors:GetIndex',
-      's3vectors:GetVectors',
       's3vectors:PutVectors',
-      's3vectors:QueryVectors',
     ]);
     expect(flat(indexes.Resource)).toBe(indexARN);
-    // It can delete vectors, but not an index: only the API deletes an index (with the course).
-    expect(ingest.flatMap(actionsOf)).not.toContain('s3vectors:DeleteIndex');
+    // It never queries or reads vectors back: only the API does that, in phase 3. The worker
+    // deletes a course's index when it handles delete_course, so the API cannot.
+    expect(ingest.flatMap(actionsOf)).not.toContain('s3vectors:QueryVectors');
+    expect(ingest.flatMap(actionsOf)).not.toContain('s3vectors:GetVectors');
+    expect(api.flatMap(actionsOf)).not.toContain('s3vectors:DeleteIndex');
   });
 
   test('the worker uses the table and the docs bucket like the API does', () => {

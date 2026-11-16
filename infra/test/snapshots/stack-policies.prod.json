@@ -92,8 +92,6 @@
     "statement": {
       "Effect": "Allow",
       "Action": [
-        "s3vectors:DeleteIndex",
-        "s3vectors:GetIndex",
         "s3vectors:GetVectors",
         "s3vectors:QueryVectors"
       ],
@@ -169,11 +167,10 @@
       "Effect": "Allow",
       "Action": [
         "s3vectors:CreateIndex",
+        "s3vectors:DeleteIndex",
         "s3vectors:DeleteVectors",
         "s3vectors:GetIndex",
-        "s3vectors:GetVectors",
-        "s3vectors:PutVectors",
-        "s3vectors:QueryVectors"
+        "s3vectors:PutVectors"
       ],
       "Resource": [
         "arn:aws:s3vectors:ap-southeast-2:111111111111:bucket/openbook-prod-vectors/index/c-*"

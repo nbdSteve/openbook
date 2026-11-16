@@ -340,6 +340,22 @@ describe('the least-privilege grants of the execution and deploy roles', () => {
     expect(grants[0].Condition).toEqual({ StringEquals: { 'lambda:Principal': 'cloudfront.amazonaws.com' } });
   });
 
+  test('the event source mapping: create and update only for the stack functions, get and delete without the condition', () => {
+    const conditioned = withAction(exec, 'lambda:CreateEventSourceMapping');
+    expect(conditioned).toHaveLength(1);
+    expect(asArray(conditioned[0].Action).sort()).toEqual(['lambda:CreateEventSourceMapping', 'lambda:UpdateEventSourceMapping']);
+    expect(conditioned[0].Condition).toEqual({
+      ArnLike: { 'lambda:FunctionArn': `arn:aws:lambda:ap-southeast-2:${fakeAccount}:function:Openbook-prod-*` },
+    });
+    // AWS does not support the FunctionArn condition on these two. Denying them would stop
+    // CloudFormation from reading the mapping after it creates it, and roll the stack back.
+    const plain = withAction(exec, 'lambda:GetEventSourceMapping');
+    expect(plain).toHaveLength(1);
+    expect(asArray(plain[0].Action).sort()).toEqual(['lambda:DeleteEventSourceMapping', 'lambda:GetEventSourceMapping']);
+    expect(plain[0]).not.toHaveProperty('Condition');
+    expect(plain[0].Resource).toBe(`arn:aws:lambda:ap-southeast-2:${fakeAccount}:event-source-mapping:*`);
+  });
+
   test('function URLs are created and updated only with AWS_IAM auth, so none can be public', () => {
     for (const action of ['lambda:CreateFunctionUrlConfig', 'lambda:UpdateFunctionUrlConfig']) {
       const grants = withAction(exec, action);

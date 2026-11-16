@@ -214,7 +214,7 @@ done
 
 # ---- Ingest queue and vector bucket ----------------------------------------------------
 # The same settings as the deployed stack (docs/retrieval.md): FIFO, the sender names the
-# deduplication ID, visibility 960 s, retention 4 days, and a FIFO dead-letter queue after 3
+# deduplication ID, visibility 960 s, retention 4 days, and a FIFO dead-letter queue after 5
 # receives. The script sets them on a queue that already exists too.
 if aws s3vectors get-vector-bucket --vector-bucket-name "$vector_bucket" > /dev/null 2>&1; then
   log "vector bucket ${vector_bucket} exists"
@@ -234,7 +234,7 @@ queue_settings="$(jq -nc --arg arn "$dlq_arn" '{
   ContentBasedDeduplication: "false",
   VisibilityTimeout: "960",
   MessageRetentionPeriod: "345600",
-  RedrivePolicy: ({deadLetterTargetArn: $arn, maxReceiveCount: 3} | tojson)}')"
+  RedrivePolicy: ({deadLetterTargetArn: $arn, maxReceiveCount: 5} | tojson)}')"
 if aws sqs get-queue-url --queue-name "$queue_name" > /dev/null 2>&1; then
   log "queue ${queue_name} exists"
 else

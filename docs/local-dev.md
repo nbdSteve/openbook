@@ -37,7 +37,7 @@ The Vite proxy trusts it through `NODE_EXTRA_CA_CERTS`.
 | Cognito user pool and app client | `openbook-local` | Email sign-in, no client secret, `ALLOW_USER_PASSWORD_AUTH` and `ALLOW_REFRESH_TOKEN_AUTH` only (the emulator has no SRP, and the app uses one flow in every stage) |
 | Seed users | `teacher@openbook.test`, `student@openbook.test` | Password `Openbook-local-1`, confirmed, `email_verified=true` |
 | S3 Vectors bucket | `openbook-local-vectors` | `OPENBOOK_VECTOR_BUCKET`. The worker creates one index per course in it |
-| Ingest queue and dead-letter queue | `openbook-local-ingest.fifo`, `openbook-local-ingest-dlq.fifo` | The settings of the deployed queues (`docs/retrieval.md`): FIFO, no content-based deduplication, visibility 960 s, retention 4 days, dead-letter after 3 receives. The script sets them on a queue that already exists |
+| Ingest queue and dead-letter queue | `openbook-local-ingest.fifo`, `openbook-local-ingest-dlq.fifo` | The settings of the deployed queues (`docs/retrieval.md`): FIFO, no content-based deduplication, visibility 960 s, retention 4 days, dead-letter after 5 receives. The script sets them on a queue that already exists |
 
 It also writes two files for each stack, in a folder of its own (`.local/dev` for `make dev`, `.local/e2e` for `make e2e-local`):
 

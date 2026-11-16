@@ -195,8 +195,6 @@
       "Effect": "Allow",
       "Action": [
         "lambda:CreateEventSourceMapping",
-        "lambda:DeleteEventSourceMapping",
-        "lambda:GetEventSourceMapping",
         "lambda:UpdateEventSourceMapping"
       ],
       "Resource": "arn:aws:lambda:ap-southeast-2:111111111111:event-source-mapping:*",
@@ -205,6 +203,15 @@
           "lambda:FunctionArn": "arn:aws:lambda:ap-southeast-2:111111111111:function:Openbook-prod-*"
         }
       }
+    },
+    {
+      "Sid": "ReadAndDeleteEventSourceMappings",
+      "Effect": "Allow",
+      "Action": [
+        "lambda:DeleteEventSourceMapping",
+        "lambda:GetEventSourceMapping"
+      ],
+      "Resource": "arn:aws:lambda:ap-southeast-2:111111111111:event-source-mapping:*"
     },
     {
       "Sid": "VectorBucket",

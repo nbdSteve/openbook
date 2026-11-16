@@ -144,7 +144,9 @@ export class OpenbookStack extends cdk.Stack {
       // Longer than the 900 s timeout of the worker, as AWS requires for an event source.
       visibilityTimeout: cdk.Duration.seconds(960),
       retentionPeriod: cdk.Duration.days(4),
-      deadLetterQueue: { queue: ingestDlq, maxReceiveCount: 3 },
+      // The worker gives up after 3 receives and marks the document failed. The two extra
+      // receives cover a worker that crashed before it could do that.
+      deadLetterQueue: { queue: ingestDlq, maxReceiveCount: 5 },
       encryption: sqs.QueueEncryption.SQS_MANAGED,
       enforceSSL: true,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
@@ -251,11 +253,11 @@ export class OpenbookStack extends cdk.Stack {
     }
     // Phase 3 embeds the question with the same model that the worker uses for the chunks.
     apiFunction.addToRolePolicy(embeddingStatement());
-    // The API sends `ingest` and `delete` messages, deletes a course's index with the course,
-    // and (phase 3) queries the indexes. Every index action is authorized on the INDEX ARN
-    // (`bucket/<name>/index/<index>`), never on the bucket ARN. The course indexes are named
-    // `c-<course ID in lower case>`. A query that filters or returns metadata also needs
-    // `GetVectors` (Service Authorization Reference for S3 Vectors).
+    // The API sends `ingest`, `delete`, and `delete_course` messages, and (phase 3) queries the
+    // indexes. It never deletes an index: course deletion goes through the worker. Every index
+    // action is authorized on the INDEX ARN (`bucket/<name>/index/<index>`), never on the bucket
+    // ARN. The course indexes are named `c-<course ID in lower case>`. A query that filters or
+    // returns metadata also needs `GetVectors` (Service Authorization Reference for S3 Vectors).
     apiFunction.addToRolePolicy(
       new iam.PolicyStatement({
         sid: 'SendIngestMessages',
@@ -266,7 +268,7 @@ export class OpenbookStack extends cdk.Stack {
     apiFunction.addToRolePolicy(
       new iam.PolicyStatement({
         sid: 'CourseVectorIndexes',
-        actions: ['s3vectors:DeleteIndex', 's3vectors:GetIndex', 's3vectors:GetVectors', 's3vectors:QueryVectors'],
+        actions: ['s3vectors:GetVectors', 's3vectors:QueryVectors'],
         resources: [`${vectorBucketArn}/index/${courseIndexPattern}`],
       }),
     );
@@ -308,17 +310,18 @@ export class OpenbookStack extends cdk.Stack {
     );
     ingestFunction.addToRolePolicy(tableStatement());
     for (const statement of docsObjectsStatements()) ingestFunction.addToRolePolicy(statement);
-    // CreateIndex is authorized on the index ARN too: AWS checks the index that is created.
+    // CreateIndex is authorized on the index ARN too: AWS checks the index that is created. The
+    // worker writes and deletes. It never queries: only the API does, in phase 3. It deletes a
+    // course's index when it handles `delete_course`.
     ingestFunction.addToRolePolicy(
       new iam.PolicyStatement({
         sid: 'CourseVectorIndexes',
         actions: [
           's3vectors:CreateIndex',
+          's3vectors:DeleteIndex',
           's3vectors:DeleteVectors',
           's3vectors:GetIndex',
-          's3vectors:GetVectors',
           's3vectors:PutVectors',
-          's3vectors:QueryVectors',
         ],
         resources: [`${vectorBucketArn}/index/${courseIndexPattern}`],
       }),

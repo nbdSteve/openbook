@@ -213,6 +213,7 @@ describe('the CloudFormation execution role', () => {
       'ReadTheBootstrapVersion',
       'CloudFrontSpaRewriteFunction',
       'IngestEventSourceMappingOfTheStackFunctions',
+      'ReadAndDeleteEventSourceMappings',
       'NeverRemoveTheBoundary',
     ]);
     for (const s of execPolicy.Statement) {
