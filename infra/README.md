@@ -25,7 +25,7 @@ The CDK app reads all settings from context (`cdk.json` or `-c key=value`). Noth
 | `apiAssetDir` | `../target/lambda/openbook-api` | The directory with the Lambda `bootstrap` binary |
 | `webAssetDir` | `../apps/ask/dist` | The built web app. Synth refuses an `index.html` with an inline `<script>`, because the CSP blocks it. |
 | `models`, `defaultChatModel`, `fastModel` | in `cdk.json` | The model catalog (`docs/architecture.md`, "Model catalog"). Synth fails if it breaks a rule, including the model ID allowlist. The Bedrock IAM policy comes from it. |
-| `limitDailyMessagesPerUser`, `limitDailyMessagesGlobal`, `limitDailyTokensGlobal`, `limitFailedJoinsPerDay`, `limitCoursesOwned`, `limitDocumentsPerCourse`, `limitUploadBytes` | the API defaults | The `OPENBOOK_LIMIT_*` values |
+| `limitDailyMessagesPerUser`, `limitDailyMessagesGlobal`, `limitDailyTokensGlobal`, `limitFailedJoinsPerDay`, `limitCoursesOwned`, `limitDocumentsPerCourse`, `limitUploadBytes` | `stageLimits.<stage>` in `cdk.json`, then the API default | The `OPENBOOK_LIMIT_*` values. Until the public launch, `cdk.json` caps the global spend: prod 300 messages and 300,000 tokens a day, dev 100 and 100,000 (the API defaults of 500 and 3,000,000 allow more than the US$20 budget). For the launch, delete `stageLimits` or override with `-c limitDailyMessagesGlobal=...`. |
 | `domainName`, `hostedZoneName`, `hostedZoneId` | unset | A custom domain. All three are needed. The hosted zone ID avoids a lookup at synth time. |
 
 ## Deploy
@@ -35,14 +35,16 @@ The CDK app reads all settings from context (`cdk.json` or `-c key=value`). Noth
 3. Dev: `AWS_PROFILE=<profile> make deploy STAGE=dev`.
 4. Prod: push to `main`. `.github/workflows/deploy.yml` deploys it.
 
-The deploy workflow has three jobs. `checks` runs `checks.yml` on the exact commit. `build` has no OIDC token: it builds the Lambda and the web app, runs the tests, runs `cdk synth -c stage=prod` with no AWS identity, and uploads `infra/cdk.out`. `deploy` is the only job with `id-token: write` and the `production` environment. It runs no build and no test: it downloads the assembly, runs `npm ci --ignore-scripts` for the pinned CDK CLI, and runs `cdk deploy Openbook-prod --app cdk.out --role-arn <execution role>`. Third-party code (pip, npm, cargo, Vite) therefore never runs next to the token.
+The deploy workflow has three jobs. `checks` runs `checks.yml` on the exact commit. `build` has no OIDC token: it builds the Lambda and the web app, runs the tests, runs `cdk synth -c stage=prod` with no AWS identity, packs `infra/cdk.out` into one tar file (the artifact actions save every file as mode 644, which would remove the execute bit of the Lambda `bootstrap`), and records the tar's SHA-256 as a job output. `deploy` is the only job with `id-token: write` and the `production` environment. It runs no build and no test. It downloads the tar, compares the SHA-256, checks the tar entries (only plain files and directories under `cdk.out/`), unpacks it, checks that `bootstrap` is executable, and validates the assembly with `scripts/validate-assembly.js` (from the checked-out commit) before it asks for the token. Then it runs `npm ci --ignore-scripts` for the pinned CDK CLI and `cdk deploy Openbook-prod --app cdk.out --role-arn <execution role>`.
+
+The hash protects the transport only. The assembly is build-controlled input, and the CDK CLI runs the `source.executable` of an asset, if the asset manifest has one, with the full environment. So the deploy job does read output of code that the build job ran. `validate-assembly.js` is the control for that: it accepts only the exact shape of the stack (the four artifacts, an account-agnostic environment, no role or lookup field, no docker image, file and zip sources with a `path` and nothing else, no path that leaves the assembly, no symbolic link, the bootstrap bucket and the `openbook-prod/` prefix, and a template asset that is the hashed template file) and refuses everything else. A CDK upgrade that adds an artifact or a field fails there until you review the change and extend the allowlist. The job does not run the build's pip, npm, cargo, or Vite code itself.
 
 `make deploy STAGE=prod ALLOW_PROD=1` exists for recovery only. CDK writes assets under the key prefix `openbook-<stage>/` of the bootstrap bucket, and the deploy role may write only under `openbook-prod/`.
 
 ## GitHub settings
 
 - Environment `production`, with a deployment branch policy that allows `main` only.
-- Environment secrets (not variables, because this repository and its logs are public): `AWS_ACCOUNT_ID`, `AWS_DEPLOY_ROLE_ARN`, and `AWS_CLOUDFORMATION_EXECUTION_ROLE_ARN`. The workflow masks the account ID and sends the `cdk deploy` output to a file, and only a filtered summary reaches the log.
+- Environment secrets (not variables, because this repository and its logs are public): `AWS_ACCOUNT_ID` (the twelve digits), `AWS_DEPLOY_ROLE_ARN` (the full ARN of the deploy role), and `AWS_CLOUDFORMATION_EXECUTION_ROLE_ARN` (the full ARN of the execution role). There are no variables. The workflow masks the account ID and sends the `cdk deploy` output to a file, and only a filtered summary reaches the log.
 - Branch protection on `main` that requires a pull request and the `checks` jobs. The deploy workflow runs the checks again on the commit it deploys, so a direct push cannot skip them.
 - No AWS access key anywhere. The OIDC token is the only credential.
 
@@ -50,6 +52,7 @@ The deploy workflow has three jobs. `checks` runs `checks.yml` on the exact comm
 
 - Cognito uses the default email sender. It allows about 50 emails a day. Add Amazon SES before public sign-up.
 - Reserved concurrency needs headroom: Lambda keeps 100 units of the account quota unreserved. The account needs a quota of at least 100 plus every reserved total (25 for prod, 5 for dev). A new account has a quota of 10, which is too low. This account has 400.
+- The docs bucket CORS allows only the CloudFront domain and the custom domain. Local development goes through the Vite proxy (`/__aws`), so no localhost origin is allowed in any stage.
 - The docs bucket has a fixed name, `openbook-<stage>-docs-<account>-<region>`. A fixed name avoids a dependency cycle between its CORS rule (which names the CloudFront domain) and the distribution (which names the bucket in the CSP and the function).
 - Only the hashed files under `assets/` get the one-year immutable cache. Every other file, the favicon included, is sent with `no-cache`.
 - The two bucket-deployment helper functions share one log group with the stage retention.
