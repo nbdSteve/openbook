@@ -124,7 +124,7 @@ The API reads only environment variables. Names and defaults:
 | `label`, `vendor` | Display only |
 | `provider` | `bedrock` (Converse and ConverseStream), or `fake` (local only; the API refuses it in Lambda) |
 | `modelId` | The Bedrock model or inference profile ID |
-| `residency` | `au` or `global`. It must match `modelId`, which must have one of three shapes (an allowlist; anything else is refused): `au.<vendor>.<model>` is `au`; `<vendor>.<model>` (an on-demand model in Sydney) is `au`; `global.<vendor>.<model>` is `global`. `<vendor>` must be one of `anthropic`, `openai`, `amazon`, `meta`, `mistral`, `cohere`, `deepseek`, `qwen`. The API and the CDK app use the same rule and the same vendor list |
+| `residency` | `au` or `global`. It must match `modelId`, which must have one of three shapes (an allowlist; anything else is refused): `au.<vendor>.<model>` is `au`; `<vendor>.<model>` (an on-demand model in Sydney) is `au`; `global.<vendor>.<model>` is `global`. `<vendor>` must be one of `anthropic`, `openai`, `amazon`, `meta`, `mistral`, `cohere`, `deepseek`, `qwen`. The API and the CDK app use the same rule and the same vendor list. Entries with provider `fake` (local only, refused in Lambda) skip the shape rule and keep the residency they declare, so local tests can have an `au` and a `global` fake model |
 | `maxOutputTokens` | Server-fixed output limit (default 2000) |
 | `temperature` | Optional. Leave it out for models that reject it |
 
