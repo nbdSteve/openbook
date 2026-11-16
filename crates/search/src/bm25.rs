@@ -655,11 +655,36 @@ mod tests {
         }
     }
 
-    fn temp_dir() -> PathBuf {
+    /// A test directory that is removed when the guard drops. Tantivy keeps background threads for
+    /// a reader (it reloads the index and takes a lock file in the directory) and a writer (it
+    /// removes old segment files), so a removal can meet a file that appears at that moment.
+    /// The guard retries. Declare it before the readers and writers of the test, so they drop first.
+    struct TempDir(PathBuf);
+
+    impl std::ops::Deref for TempDir {
+        type Target = Path;
+        fn deref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            for _ in 0..50 {
+                match std::fs::remove_dir_all(&self.0) {
+                    Ok(()) => return,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+                    Err(_) => std::thread::sleep(std::time::Duration::from_millis(20)),
+                }
+            }
+        }
+    }
+
+    fn temp_dir() -> TempDir {
         let dir =
             std::env::temp_dir().join(format!("openbook-bm25-{}", openbook_core::ids::new_id()));
         std::fs::create_dir_all(&dir).unwrap();
-        dir
+        TempDir(dir)
     }
 
     fn build(dir: &Path, chunks: &[Bm25Chunk]) {
@@ -724,7 +749,6 @@ mod tests {
         );
         assert_eq!(reader.search("quadratic", 1).unwrap()[0].page, 7);
         assert!(reader.search("zebra", 5).unwrap().is_empty());
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -744,7 +768,6 @@ mod tests {
         for query in ["solve equation", "factor polynomial", "SOLVING"] {
             assert_eq!(reader.search(query, 3).unwrap().len(), 1, "{query}");
         }
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -762,7 +785,6 @@ mod tests {
         );
         let reader = Bm25Reader::open(&dir).unwrap();
         assert_eq!(reader.search("thermodynamics", 3).unwrap().len(), 1);
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -774,7 +796,6 @@ mod tests {
             assert!(reader.search(query, 3).is_ok(), "{query:?}");
         }
         assert_eq!(reader.search("limits AND (", 3).unwrap().len(), 1);
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -812,7 +833,6 @@ mod tests {
         let reader = Bm25Reader::open(&dir).unwrap();
         assert!(reader.search("delta", 5).unwrap().is_empty());
         assert_eq!(reader.chunk_count(), 1);
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -826,7 +846,8 @@ mod tests {
         assert!(blob.len() > 100);
         // The blob has the zstd magic number.
         assert_eq!(&blob[..4], &[0x28, 0xB5, 0x2F, 0xFD]);
-        let target = temp_dir().join("unpacked");
+        let base = temp_dir();
+        let target = base.join("unpacked");
         unpack(&blob, &target).unwrap();
         let reader = Bm25Reader::open(&target).unwrap();
         let hits = reader.search("tar blob", 3).unwrap();
@@ -838,10 +859,9 @@ mod tests {
             .unwrap();
         writer.commit().unwrap();
         let again = pack(&target).unwrap();
-        let third = temp_dir().join("third");
+        let third = base.join("third");
         unpack(&again, &third).unwrap();
         assert_eq!(Bm25Reader::open(&third).unwrap().chunk_count(), 2);
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -849,7 +869,8 @@ mod tests {
         let dir = temp_dir();
         build(&dir, &[chunk("D", 0, 1, "", "text")]);
         std::fs::write(dir.join("somewhere.lock"), b"x").unwrap();
-        let target = temp_dir().join("out");
+        let base = temp_dir();
+        let target = base.join("out");
         unpack(&pack(&dir).unwrap(), &target).unwrap();
         assert!(!target.join("somewhere.lock").exists());
         assert!(target.join("meta.json").exists());
