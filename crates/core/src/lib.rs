@@ -10,5 +10,6 @@ pub mod files;
 pub mod ids;
 pub mod model;
 pub mod prompt;
+pub mod queue;
 pub mod quota;
 pub mod store;
