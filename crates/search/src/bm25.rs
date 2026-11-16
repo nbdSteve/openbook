@@ -879,10 +879,13 @@ mod tests {
     fn cached(course: &str, key: &str, bytes: u64) -> CachedReader {
         let dir = temp_dir();
         build(&dir, &[chunk("D", 0, 1, "", "text")]);
+        let reader = std::sync::Arc::new(Bm25Reader::open(&dir).unwrap());
+        // The reader lives in the cache for the whole test, so the directory stays (it is in the temp dir).
+        std::mem::forget(dir);
         CachedReader {
             course_id: course.into(),
             key: key.into(),
-            reader: std::sync::Arc::new(Bm25Reader::open(&dir).unwrap()),
+            reader,
             bytes,
         }
     }
