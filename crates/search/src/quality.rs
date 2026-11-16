@@ -25,14 +25,101 @@ fn is_bad_char(c: char) -> bool {
         || (0x100000..=0x10FFFD).contains(&code)
 }
 
-fn is_math_symbol(c: char) -> bool {
+/// Mathematical operators and a few Latin-1 signs. Greek letters are not here: see `count_math_symbols`.
+fn is_math_operator(c: char) -> bool {
     let code = c as u32;
-    // Mathematical operators, supplemental operators, Greek letters, and a few Latin-1 signs.
     (0x2200..=0x22FF).contains(&code)
         || (0x2A00..=0x2AFF).contains(&code)
         || (0x27C0..=0x27EF).contains(&code)
-        || (0x0391..=0x03C9).contains(&code)
         || matches!(c, '±' | '×' | '÷' | '∑' | '∫' | '√' | '∞')
+}
+
+/// A Greek letter (capital or small, with or without an accent mark in one code point).
+fn is_greek_letter(c: char) -> bool {
+    (0x0391..=0x03C9).contains(&(c as u32)) && c != '\u{03A2}' && c != '\u{03C2}'
+}
+
+/// The ASCII signs that join terms in a formula.
+fn is_ascii_operator(c: char) -> bool {
+    matches!(c, '=' | '+' | '-' | '*' | '/' | '^' | '<' | '>' | '~')
+}
+
+/// A letter of a word. Combining accent marks belong to the letter before them (XeTeX writes
+/// Greek accents that way).
+fn is_wordish(c: char) -> bool {
+    c.is_alphabetic() || (0x0300..=0x036F).contains(&(c as u32))
+}
+
+/// A character that wraps or separates symbols in a formula: `(α)`, `α, β`.
+fn is_separator(c: char) -> bool {
+    matches!(c, ',' | ';' | ':' | '(' | ')' | '[' | ']' | '{' | '}' | '|')
+}
+
+/// The number of math symbols in the text.
+///
+/// Operators and the like count one each. A Greek letter counts only as a symbol, never as a part of
+/// a Greek word. The text is cut into runs of letters. A run of one Greek letter is a candidate,
+/// and it counts when it
+/// - touches a math operator, a bracket, a comma, or a digit (`2α`, `(α)`, `α,`),
+/// - has an operator as the next or the previous character that is not a space (`α + β`), or
+/// - has another one-letter Greek run next to it, with only spaces, commas, or semicolons between
+///   (`α, β, γ`).
+///
+/// A letter inside a word, and the one-letter articles of Greek prose (`Ο Σωκράτης`), do not count.
+fn count_math_symbols(text: &str) -> usize {
+    let chars: Vec<char> = text.chars().collect();
+    // The runs of letters: [start, end) and whether the run is one Greek letter.
+    let mut runs: Vec<(usize, usize, bool)> = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if !is_wordish(chars[i]) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < chars.len() && is_wordish(chars[i]) {
+            i += 1;
+        }
+        let letters: Vec<char> = chars[start..i]
+            .iter()
+            .copied()
+            .filter(|c| c.is_alphabetic())
+            .collect();
+        runs.push((start, i, letters.len() == 1 && is_greek_letter(letters[0])));
+    }
+    let operator = |c: Option<char>| c.is_some_and(|c| is_ascii_operator(c) || is_math_operator(c));
+    let only_gaps = |from: usize, to: usize| {
+        chars[from..to]
+            .iter()
+            .all(|c| c.is_whitespace() || matches!(c, ',' | ';'))
+    };
+
+    let mut count = chars.iter().filter(|c| is_math_operator(**c)).count();
+    for (n, &(start, end, lone_greek)) in runs.iter().enumerate() {
+        if !lone_greek {
+            continue;
+        }
+        let immediate = [
+            start.checked_sub(1).map(|j| chars[j]),
+            chars.get(end).copied(),
+        ];
+        let spaced_before = chars[..start]
+            .iter()
+            .rev()
+            .copied()
+            .find(|c| !c.is_whitespace());
+        let spaced_after = chars[end..].iter().copied().find(|c| !c.is_whitespace());
+        let touching = immediate.iter().flatten().any(|c| {
+            is_ascii_operator(*c) || is_math_operator(*c) || is_separator(*c) || c.is_ascii_digit()
+        });
+        let operator_near = operator(spaced_before) || operator(spaced_after);
+        let neighbor = (n > 0 && runs[n - 1].2 && only_gaps(runs[n - 1].1, start))
+            || (n + 1 < runs.len() && runs[n + 1].2 && only_gaps(end, runs[n + 1].0));
+        if touching || operator_near || neighbor {
+            count += 1;
+        }
+    }
+    count
 }
 
 /// A one-character token that is normal in prose: the words "a" and "I", and plain digits.
@@ -55,7 +142,7 @@ pub fn needs_transcription(text: &str, has_images: bool) -> bool {
     if (bad as f64) / (total as f64) > MAX_BAD_CHAR_SHARE {
         return true;
     }
-    if chars.iter().filter(|c| is_math_symbol(**c)).count() >= MATH_SYMBOL_THRESHOLD {
+    if count_math_symbols(text) >= MATH_SYMBOL_THRESHOLD {
         return true;
     }
     let tokens: Vec<&str> = text.split_whitespace().collect();
@@ -120,7 +207,10 @@ mod tests {
     #[test]
     fn math_symbols_trigger_it() {
         assert!(needs_transcription(&format!("{} ∑ ∫ ≤", prose(500)), false));
-        assert!(needs_transcription(&format!("{} α β γ", prose(500)), false));
+        assert!(needs_transcription(
+            &format!("{} α, β, γ", prose(500)),
+            false
+        ));
         assert!(
             !needs_transcription(&format!("{} ∑ ∫", prose(500)), false),
             "two symbols are not enough"
@@ -148,5 +238,60 @@ mod tests {
         // 150 two-byte characters with an image: still under 200 characters.
         assert!(needs_transcription(&"é".repeat(150), true));
         assert!(!needs_transcription(&"é".repeat(250), true));
+    }
+
+    #[test]
+    fn greek_prose_uses_the_text_layer() {
+        let prose = "Ο Πυθαγόρας γεννήθηκε στη Σάμο. Το θεώρημά του συνδέει τις τρεις πλευρές ενός ορθογώνιου τριγώνου. \
+                     Η ιδέα είναι απλή: το τετράγωνο της υποτείνουσας ισούται με το άθροισμα των τετραγώνων των δύο άλλων πλευρών. \
+                     Οι οικοδόμοι το χρησιμοποιούν για να ελέγχουν αν μια γωνία είναι ορθή. Ο δάσκαλος εξηγεί το θεώρημα στην τάξη.";
+        assert!(prose.chars().filter(|c| is_greek_letter(*c)).count() > 100);
+        assert!(!needs_transcription(&prose.repeat(3), false));
+        // The same prose with combining accent marks (NFD, as XeTeX writes it).
+        let decomposed = prose
+            .replace('ά', "α\u{0301}")
+            .replace('ή', "η\u{0301}")
+            .replace('ώ', "ω\u{0301}");
+        assert!(!needs_transcription(&decomposed.repeat(3), false));
+    }
+
+    #[test]
+    fn greek_letters_that_stand_alone_or_touch_operators_are_math() {
+        for text in [
+            "α + β = γ",
+            "Let α, β, γ be real numbers",
+            "the angles (α) (β) (γ)",
+            "2α = β ± γ",
+            "sin θ = a/c, cos θ = b/c, tan θ = a/b, φ = 90 - θ",
+        ] {
+            assert!(
+                count_math_symbols(text) >= 3,
+                "{text:?} counted {}",
+                count_math_symbols(text)
+            );
+            assert!(
+                needs_transcription(&format!("{} {text}", prose(400)), false),
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn greek_letters_inside_words_do_not_count() {
+        assert_eq!(count_math_symbols("αβγ δελτα Ωμέγα"), 0);
+        assert_eq!(
+            count_math_symbols("Ο Σωκράτης είναι ο δάσκαλος. Η Αθήνα είναι Η πόλη."),
+            0
+        );
+        assert_eq!(count_math_symbols("ΠΥΘΑΓΟΡΑΣ"), 0);
+        // One article between letters never counts; a lone letter in a formula does.
+        assert_eq!(count_math_symbols("το ο το"), 0);
+        assert_eq!(count_math_symbols("x = α"), 1);
+    }
+
+    #[test]
+    fn other_math_symbols_still_count_one_each() {
+        assert_eq!(count_math_symbols("∑ ∫ ≤ √ ∞ ± × ÷"), 8);
+        assert_eq!(count_math_symbols("plain text"), 0);
     }
 }

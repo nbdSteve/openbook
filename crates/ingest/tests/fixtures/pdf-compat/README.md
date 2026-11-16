@@ -20,7 +20,9 @@ The base text is "Cell Biology Notes. Mitochondria produce most of the chemical 
 | `qpdf-encrypted-owner-only.pdf` | qpdf | base, AES-256, owner password only (empty user password) | ready, 1 page |
 | `qpdf-encrypted-user-password.pdf` | qpdf | base, AES-256, user password `student-secret` | failed, "This PDF is password protected. Remove the password and upload it again." |
 | `scanned-image-only.pdf` | ImageMagick | text rasterized at 150 DPI, JPEG, no text layer | ready, 1 page, 1 transcribed |
-| `qpdf-rotated-90.pdf` | qpdf | base, page `/Rotate 90` | ready, 1 page. KNOWN BUG: fails with "No text could be found in this PDF." The case is skipped in the test. |
+| `qpdf-rotated-90.pdf` | qpdf | base, page `/Rotate 90` | ready, 1 page. pdfium's `all()` looks in a rectangle with width and height swapped for 90 and 270 degrees, so the worker reads the text inside the page's bounding box instead (`pdf::read_text`). |
+| `qpdf-rotated-180.pdf` | qpdf | base, page `/Rotate 180` | ready, 1 page |
+| `qpdf-rotated-270.pdf` | qpdf | base, page `/Rotate 270` | ready, 1 page |
 | `multipage-3.pdf` | pdflatex | 3 pages, different text on each (rivers, mountains, deserts) | ready, 3 pages, right text on each page |
 | `greek-xelatex.pdf` | XeLaTeX | Greek, embedded TeX Gyre Termes (OpenType) | ready, 1 page. Greek letters count as math symbols, so the page may be transcribed. |
 | `chinese-xelatex.pdf` | XeLaTeX | Chinese, embedded FandolSong (OpenType) | ready, 1 page |
