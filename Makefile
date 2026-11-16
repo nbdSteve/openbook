@@ -84,7 +84,7 @@ eval-dev: ## Retrieval evaluation on the development cache (shows that the harne
 .PHONY: eval-live
 eval-live: ## Refresh evals/cache with REAL Bedrock calls: needs AWS_PROFILE. It prints the calls and the cost; add YES=1 to start
 	@test -n "$${AWS_PROFILE:-}" || { echo "error: set AWS_PROFILE (this calls real AWS)" >&2; exit 1; }
-	OPENBOOK_PDFIUM_PATH="$$(scripts/fetch-pdfium.sh | tail -1)/lib" cargo run -q --release -p openbook-eval -- refresh $(if $(YES),--yes,)
+	OPENBOOK_PDFIUM_PATH="$$(scripts/fetch-pdfium.sh | tail -1)" cargo run -q --release -p openbook-eval -- refresh $(if $(YES),--yes,)
 
 .PHONY: test-integration
 test-integration: ## Rust integration tests against AWS Emulator (port 9320)
