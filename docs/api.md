@@ -43,6 +43,7 @@ Error responses always have this shape and a matching status code:
 ## Accounts
 
 The Cognito user pool uses email as the username. Passwords: at least 8 characters, with at least one lower-case letter, one upper-case letter, and one digit. Symbols are allowed but not required. The web app checks the same rules before it calls Cognito.
+The web app signs in with the `USER_PASSWORD_AUTH` flow in every stage (the password goes only to Cognito, over HTTPS). The app client allows only `ALLOW_USER_PASSWORD_AUTH` and `ALLOW_REFRESH_TOKEN_AUTH`. AWS Emulator does not implement SRP, and one flow everywhere keeps the local end-to-end tests faithful to production.
 
 ## Types
 
