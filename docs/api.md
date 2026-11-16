@@ -12,7 +12,7 @@ Locally, the Vite dev server proxies `/api/*` to the API process on `127.0.0.1:8
 Request rules:
 
 - Bodies are JSON (`content-type: application/json`) unless a route says otherwise.
-- Authenticated routes need the header `x-auth-token: <Cognito ID token>`.
+- Every route except `GET /api/health` is authenticated and needs the header `x-auth-token: <Cognito ID token>`.
   Do not use `Authorization`: CloudFront OAC replaces that header with its own SigV4 signature.
 - Every request that is not `GET` or `HEAD` must send `x-amz-content-sha256: <lowercase hex SHA-256 of the exact body bytes>`.
   For an empty body, send the hash of the empty string (`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`).
@@ -40,6 +40,12 @@ Error responses always have this shape and a matching status code:
 | 503 | `capacity_exhausted`, `model_unavailable` | The global daily cap is reached, or the model provider fails or throttles |
 | 500 | `internal` | Anything else (the message must not leak internals) |
 
+## Accounts
+
+The Cognito user pool uses email as the username. Passwords: at least 8 characters, with at least one lower-case letter, one upper-case letter, and one digit. Symbols are allowed but not required. The web app checks the same rules before it calls Cognito.
+The API accepts only ID tokens with `email_verified` equal to `true`. The pool keeps the original email until a new one is verified. Local tests that confirm users with `AdminConfirmSignUp` must also set `email_verified=true` with `AdminUpdateUserAttributes`, because the emulator (like Cognito for admin confirmation) leaves it `false`.
+The web app signs in with the `USER_PASSWORD_AUTH` flow in every stage (the password goes only to Cognito, over HTTPS). The app client allows only `ALLOW_USER_PASSWORD_AUTH` and `ALLOW_REFRESH_TOKEN_AUTH`. AWS Emulator does not implement SRP, and one flow everywhere keeps the local end-to-end tests faithful to production.
+
 ## Types
 
 ```ts
@@ -65,7 +71,7 @@ interface Course {
   tutoringStyle: TutoringStyle;
   model: string;           // the course default model, a ModelInfo.id from GET /api/models
   role: Role;              // the caller's role in this course
-  inviteCode?: string;     // only present when role === 'owner'
+  inviteCode?: string;     // present in every Course response when role === 'owner', never otherwise
   createdAt: string;
   updatedAt: string;
 }
@@ -164,7 +170,7 @@ Conversations stay with their owners; later reads of a deleted course return `40
 
 `POST /api/courses/{courseId}/invite-code` (owner, empty body) → `200 { "inviteCode": string }`.
 Replaces the invite code. The old code stops working at once.
-Invite codes are 8 characters from `ABCDEFGHJKMNPQRSTUVWXYZ23456789` (no `0`, `O`, `1`, `I`, `L`) and are matched case-insensitively.
+Invite codes are 8 characters from `ABCDEFGHJKMNPQRSTUVWXYZ23456789` (no `0`, `O`, `1`, `I`, `L`). The API matches them case-insensitively and ignores spaces and hyphens. Failed join attempts are limited per user per day (`429 quota_exceeded`).
 
 `POST /api/join` body `{ "inviteCode": string }` → `200 { "course": Course }`.
 Joins as `student`. If the caller is already a member, returns the course with their existing role. Unknown code → `404`.
@@ -230,7 +236,7 @@ The API records one question for each chat message a student sends.
 
 ## Web runtime config
 
-The web app loads `/config.json` before it renders. The deployed stack writes this file; locally, `make bootstrap` writes `apps/ask/public/config.json` (git-ignored).
+The web app loads `/config.json` before it renders. The deployed stack writes this file. Locally, each stack (`make dev`, `make e2e-local`) has its own file under `.local/` (git-ignored), and the Vite dev server serves the file named by `OPENBOOK_WEB_CONFIG` at `/config.json`.
 
 ```json
 {
@@ -240,4 +246,4 @@ The web app loads `/config.json` before it renders. The deployed stack writes th
 }
 ```
 
-`cognito.endpoint` is `null` for deployed stages. Locally it is `"http://localhost:5173/__aws/"`, which the Vite dev server proxies to AWS Emulator, and the web app passes it to `CognitoUserPool` as `endpoint`.
+`cognito.endpoint` is `null` for deployed stages. Locally it is the relative path `"/__aws/"`, which the Vite dev server proxies to AWS Emulator. The web app resolves it against `location.origin` and passes the absolute URL to `CognitoUserPool` as `endpoint`, so the file does not depend on the port.

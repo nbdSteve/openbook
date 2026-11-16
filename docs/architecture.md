@@ -124,22 +124,21 @@ The API reads only environment variables. Names and defaults:
 | `label`, `vendor` | Display only |
 | `provider` | `bedrock` (Converse and ConverseStream), or `fake` (local only; the API refuses it in Lambda) |
 | `modelId` | The Bedrock model or inference profile ID |
-| `residency` | `au` or `global`. It must match `modelId`: `au.` prefix or no prefix (an on-demand model in Sydney) is `au`; `global.` prefix is `global`; any other prefix is refused |
+| `residency` | `au` or `global`. It must match `modelId`, which must have one of three shapes (an allowlist; anything else is refused): `au.<vendor>.<model>` is `au`; `<vendor>.<model>` (an on-demand model in Sydney) is `au`; `global.<vendor>.<model>` is `global`. `<vendor>` must be one of `anthropic`, `openai`, `amazon`, `meta`, `mistral`, `cohere`, `deepseek`, `qwen`. The API and the CDK app use the same rule and the same vendor list |
 | `maxOutputTokens` | Server-fixed output limit (default 2000) |
 | `temperature` | Optional. Leave it out for models that reject it |
 
 The API validates the catalog at startup and refuses to start when it is invalid. The CDK app holds the deployed catalog in context (`models`, `defaultChatModel`, `fastModel`), writes it to the Lambda environment, and derives the Bedrock IAM permissions from it: the inference-profile ARN for each profile ID plus the foundation-model ARNs it routes to (`au.`: Sydney and Melbourne; `global.`: every Region), or the Sydney foundation-model ARN for an ID without a prefix. The streaming code sends only text deltas to the client and ignores reasoning content blocks.
 
-Deployed catalog (the account has accepted the Bedrock agreements for these models):
+Deployed catalog (only models that this account can call today):
 
 | `id` | Model | `modelId` | Residency |
 |---|---|---|---|
-| `claude-sonnet` (default chat) | Claude Sonnet 5.5 | `au.anthropic.claude-sonnet-5-5` | `au` |
-| `claude-opus` | Claude Opus 5.5 | `au.anthropic.claude-opus-5-5` | `au` |
-| `claude-haiku` (fast) | Claude Haiku 5.5 | `au.anthropic.claude-haiku-5-5` | `au` |
+| `claude-sonnet` (default chat) | Claude Sonnet 4.6 | `au.anthropic.claude-sonnet-4-6` | `au` |
+| `claude-haiku` (fast) | Claude Haiku 4.5 | `au.anthropic.claude-haiku-4-5-20251001-v1:0` | `au` |
 | `gpt-oss-120b` | gpt-oss-120b | `openai.gpt-oss-120b-1:0` | `au` |
-| `gpt-6-1-sol` | GPT-6.1 Sol | `global.openai.gpt-6.1-sol` | `global` |
-| `gpt-6-1-terra` | GPT-6.1 Terra | `global.openai.gpt-6.1-terra` | `global` |
+
+Waiting for AWS access (the Bedrock agreements are accepted, but AWS blocks the account: Claude 5.5 has a tokens-per-minute quota of 0, and GPT-6.1 returns "not available for this account"): `au.anthropic.claude-sonnet-5-5`, `au.anthropic.claude-opus-5-5`, `au.anthropic.claude-haiku-5-5`, `global.openai.gpt-6.1-sol`, `global.openai.gpt-6.1-terra`. When access arrives, add them to the catalog in `infra/cdk.json` and make Claude Sonnet 5.5 the default chat model.
 
 Locally, the catalog has one entry `{ "id": "fake", "provider": "fake", ... }` unless `OPENBOOK_BEDROCK_PROFILE` is set, in which case it is the deployed catalog on real Bedrock.
 
