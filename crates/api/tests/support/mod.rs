@@ -183,6 +183,10 @@ pub async fn start_with_models(options: Options, models: &str) -> TestApp {
         .and_then(|c| c.client_id)
         .expect("client id");
 
+    // AWS Emulator decides what `iss` its tokens have (it changed from the AWS form to its own address
+    // in v1.0.471). Read it from a real token once, so the tests pass with either shape.
+    let issuer = probe_issuer(&cognito, &pool_id, &client_id).await;
+
     let mut vars: HashMap<String, String> = [
         ("OPENBOOK_STAGE", "local".to_owned()),
         ("OPENBOOK_TABLE_NAME", table.clone()),
@@ -190,6 +194,7 @@ pub async fn start_with_models(options: Options, models: &str) -> TestApp {
         ("OPENBOOK_COGNITO_USER_POOL_ID", pool_id.clone()),
         ("OPENBOOK_COGNITO_CLIENT_ID", client_id.clone()),
         ("OPENBOOK_COGNITO_REGION", REGION.to_owned()),
+        ("OPENBOOK_COGNITO_ISSUER", issuer),
         (
             "OPENBOOK_COGNITO_JWKS_URL",
             format!("{endpoint}/{pool_id}/.well-known/jwks.json"),
@@ -277,6 +282,55 @@ pub async fn start_with_models(options: Options, models: &str) -> TestApp {
         vector_bucket,
         vars,
     }
+}
+
+/// The `iss` claim of a token that the emulator issues for this pool.
+async fn probe_issuer(
+    cognito: &aws_sdk_cognitoidentityprovider::Client,
+    pool_id: &str,
+    client_id: &str,
+) -> String {
+    let username = format!("probe-{}", ids::new_id().to_lowercase());
+    cognito
+        .sign_up()
+        .client_id(client_id)
+        .username(&username)
+        .password(PASSWORD)
+        .user_attributes(
+            AttributeType::builder()
+                .name("email")
+                .value(format!("{username}@openbook.test"))
+                .build()
+                .unwrap(),
+        )
+        .send()
+        .await
+        .expect("sign up the probe user");
+    cognito
+        .admin_confirm_sign_up()
+        .user_pool_id(pool_id)
+        .username(&username)
+        .send()
+        .await
+        .expect("confirm the probe user");
+    let auth = cognito
+        .initiate_auth()
+        .auth_flow(AuthFlowType::UserPasswordAuth)
+        .client_id(client_id)
+        .auth_parameters("USERNAME", &username)
+        .auth_parameters("PASSWORD", PASSWORD)
+        .send()
+        .await
+        .expect("sign in the probe user");
+    let token = auth
+        .authentication_result()
+        .and_then(|r| r.id_token())
+        .expect("an ID token");
+    let payload = token.split('.').nth(1).expect("a JWT payload");
+    let bytes = base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, payload)
+        .expect("a base64 payload");
+    let claims: serde_json::Value = serde_json::from_slice(&bytes).expect("JSON claims");
+    claims["iss"].as_str().expect("an iss claim").to_owned()
 }
 
 fn build_state(

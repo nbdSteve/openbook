@@ -37,6 +37,7 @@ tower = { workspace = true, features = ["util"] }
 aws-credential-types.workspace = true
 aws-sdk-cognitoidentityprovider = { version = "1", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio"] }
 aws-sdk-dynamodb.workspace = true
+base64 = "0.23"
 aws-sdk-s3vectors.workspace = true
 openbook-api.path = "../api"
 reqwest.workspace = true
