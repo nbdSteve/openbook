@@ -234,7 +234,7 @@ The API records one question for each chat message a student sends.
 
 ## Web runtime config
 
-The web app loads `/config.json` before it renders. The deployed stack writes this file; locally, `make bootstrap` writes `apps/ask/public/config.json` (git-ignored).
+The web app loads `/config.json` before it renders. The deployed stack writes this file. Locally, each stack (`make dev`, `make e2e-local`) has its own file under `.local/` (git-ignored), and the Vite dev server serves the file named by `OPENBOOK_WEB_CONFIG` at `/config.json`.
 
 ```json
 {
@@ -244,4 +244,4 @@ The web app loads `/config.json` before it renders. The deployed stack writes th
 }
 ```
 
-`cognito.endpoint` is `null` for deployed stages. Locally it is `"http://localhost:5173/__aws/"`, which the Vite dev server proxies to AWS Emulator, and the web app passes it to `CognitoUserPool` as `endpoint`.
+`cognito.endpoint` is `null` for deployed stages. Locally it is the relative path `"/__aws/"`, which the Vite dev server proxies to AWS Emulator. The web app resolves it against `location.origin` and passes the absolute URL to `CognitoUserPool` as `endpoint`, so the file does not depend on the port.
