@@ -212,6 +212,26 @@ for user in "${seed_users[@]}"; do
     --permanent
 done
 
+# ---- The issuer of the tokens ------------------------------------------------------------
+# The emulator decides what `iss` its ID tokens carry (an AWS-shaped issuer before v1.0.471,
+# `https://127.0.0.1:<port>/<poolId>` since). Read it from a real token of a seed user, and
+# give exactly that to the API as OPENBOOK_COGNITO_ISSUER, so that a later change of the shape
+# needs no change here.
+id_token="$(aws cognito-idp initiate-auth \
+  --client-id "$client_id" \
+  --auth-flow USER_PASSWORD_AUTH \
+  --auth-parameters "USERNAME=${seed_users[0]},PASSWORD=${seed_password}" \
+  --query 'AuthenticationResult.IdToken' --output text)"
+# A JWT payload is base64url without padding.
+payload="$(printf '%s' "$id_token" | cut -d. -f2 | tr '_-' '/+')"
+while [ $(( ${#payload} % 4 )) -ne 0 ]; do payload="${payload}="; done
+issuer="$(printf '%s' "$payload" | base64 -d 2> /dev/null | jq -r '.iss // empty' 2> /dev/null || true)"
+if [ -z "$issuer" ]; then
+  echo "error: the ID token of ${seed_users[0]} has no readable iss claim" >&2
+  exit 1
+fi
+log "token issuer: ${issuer}"
+
 # ---- Ingest queue and vector bucket ----------------------------------------------------
 # The same settings as the deployed stack (docs/retrieval.md): FIFO, the sender names the
 # deduplication ID, visibility 960 s, retention 4 days, and a FIFO dead-letter queue after 5
@@ -298,6 +318,7 @@ fi
   echo "OPENBOOK_COGNITO_CLIENT_ID=${client_id}"
   echo "OPENBOOK_COGNITO_REGION=us-east-1"
   echo "OPENBOOK_COGNITO_JWKS_URL=${endpoint}/${pool_id}/.well-known/jwks.json"
+  echo "OPENBOOK_COGNITO_ISSUER=$(sq "$issuer")"
   echo "OPENBOOK_MODELS=$(sq "$models")"
   echo "OPENBOOK_DEFAULT_CHAT_MODEL=${default_chat}"
   echo "OPENBOOK_FAST_MODEL=${fast_model}"
