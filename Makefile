@@ -21,11 +21,25 @@ else \
 fi
 endef
 
-# Install npm dependencies when node_modules is missing, then run the scripts.
+# Run `npm ci` in a directory when node_modules is missing or package-lock.json changed since
+# the last install. A stamp file in node_modules holds the checksum of the lockfile that was
+# installed, so an unchanged lockfile prints nothing and costs nothing.
+# usage: $(call npm_install,<dir>)
+define npm_install
+stamp="$(1)/node_modules/.openbook-lockfile"; \
+want="$$(cksum < "$(1)/package-lock.json")"; \
+if [ ! -d "$(1)/node_modules" ] || [ "$$(cat "$$stamp" 2>/dev/null)" != "$$want" ]; then \
+  echo "--> npm ci ($(1)): package-lock.json changed or node_modules is missing"; \
+  npm --prefix "$(1)" ci; \
+  echo "$$want" > "$$stamp"; \
+fi
+endef
+
+# Install npm dependencies when needed, then run the scripts.
 define npm_check
 @if [ -f "$(1)/package.json" ]; then \
   echo "==> $(2)"; \
-  if [ ! -d "$(1)/node_modules" ]; then npm --prefix "$(1)" ci; fi; \
+  $(call npm_install,$(1)); \
   for script in $(3); do echo "--> npm run $$script ($(1))"; npm --prefix "$(1)" run "$$script"; done; \
 else \
   echo "==> $(2): skipped ($(1)/package.json does not exist yet)"; \
@@ -90,12 +104,12 @@ build-lambdas: ## Build the API Lambda for arm64 (target/lambda/openbook-api/boo
 
 .PHONY: build-web
 build-web: ## Build the web app (apps/ask/dist)
-	@if [ ! -d apps/ask/node_modules ]; then npm --prefix apps/ask ci; fi
+	@$(call npm_install,apps/ask)
 	npm --prefix apps/ask run build
 
 .PHONY: synth
 synth: ## Synthesize the CDK app for STAGE (needs built Lambda and web assets)
-	@if [ ! -d infra/node_modules ]; then npm --prefix infra ci; fi
+	@$(call npm_install,infra)
 	cd infra && npx cdk synth --quiet -c stage=$(STAGE)
 
 .PHONY: deploy
@@ -112,5 +126,5 @@ deploy: ## Build and deploy Openbook-<stage> with your AWS_PROFILE (STAGE=dev by
 	  echo "error: set AWS_PROFILE (or AWS credentials) for the account to deploy to" >&2; exit 1; \
 	fi
 	$(MAKE) build-lambdas build-web
-	@if [ ! -d infra/node_modules ]; then npm --prefix infra ci; fi
+	@$(call npm_install,infra)
 	cd infra && npx cdk deploy Openbook-$(STAGE) -c stage=$(STAGE)
