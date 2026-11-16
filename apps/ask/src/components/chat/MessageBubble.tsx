@@ -1,8 +1,9 @@
+import { useState } from 'react';
 import { clsx } from 'clsx';
 import { AlertCircle, CircleStop, Globe } from 'lucide-react';
 import { useModels } from '@/services/models/ModelsContext';
 import { MessageContent } from './MessageContent';
-import { SourceBadge } from './SourceBadge';
+import { SourcesList } from './SourceBadge';
 import type { ChatMessage } from './useChatController';
 
 export function MessageBubble({ message }: { message: ChatMessage }) {
@@ -10,6 +11,7 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
   const isUser = message.role === 'user';
   const modelInfo = message.model ? find(message.model) : undefined;
   const modelLabel = modelInfo?.label ?? message.model;
+  const [activeSource, setActiveSource] = useState<number | null>(null);
   const streaming = message.state === 'streaming';
   const waiting = streaming && message.content === '';
 
@@ -55,19 +57,20 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
                     ))}
                   </div>
                 ) : (
-                  <MessageContent content={message.content} sources={message.sources} className="text-text-primary" />
+                  <MessageContent
+                    content={message.content}
+                    sources={message.sources}
+                    activeSource={activeSource}
+                    onActiveSource={setActiveSource}
+                    className="text-text-primary"
+                  />
                 )}
                 {streaming && !waiting && <span className="stream-caret" aria-hidden="true" />}
               </div>
             )}
 
-            {!isUser && message.sources && message.sources.length > 0 && message.state !== 'streaming' && (
-              <div className="mt-3 flex flex-wrap items-center gap-x-1 gap-y-1.5 border-t border-border-subtle pt-2.5">
-                <span className="mr-1 text-xs text-text-muted">Sources</span>
-                {message.sources.map((source) => (
-                  <SourceBadge key={source.n} source={source} />
-                ))}
-              </div>
+            {!isUser && message.sources && message.sources.length > 0 && (
+              <SourcesList sources={message.sources} active={activeSource} onActive={setActiveSource} />
             )}
 
             {message.state === 'stopped' && (

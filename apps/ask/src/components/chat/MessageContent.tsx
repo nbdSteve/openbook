@@ -7,7 +7,7 @@ import 'katex/dist/katex.min.css';
 import type { Source } from '@/services/api/types';
 import { citationNumber, linkCitations, normalizeMath } from './citations';
 import { rehypeKeepMathTogether } from './rehypeKeepMathTogether';
-import { SourceBadge } from './SourceBadge';
+import { SourceButton } from './SourceBadge';
 
 const CodeBlock = lazy(() => import('./CodeBlock'));
 
@@ -18,10 +18,15 @@ const DISALLOWED = ['img'];
 interface MessageContentProps {
   content: string;
   sources?: Source[];
+  /** The highlighted source number, shared with the sources list under the answer. */
+  activeSource?: number | null;
+  onActiveSource?: (n: number | null) => void;
   className?: string;
 }
 
-export function MessageContent({ content, sources, className = '' }: MessageContentProps) {
+const noop = () => {};
+
+export function MessageContent({ content, sources, activeSource = null, onActiveSource = noop, className = '' }: MessageContentProps) {
   const text = useMemo(() => linkCitations(normalizeMath(content), sources), [content, sources]);
 
   const components = useMemo<Components>(
@@ -51,7 +56,9 @@ export function MessageContent({ content, sources, className = '' }: MessageCont
         const n = citationNumber(href);
         if (n !== null) {
           const source = sources?.find((s) => s.n === n);
-          if (source) return <SourceBadge source={source} label={String(n)} />;
+          if (source) return <SourceButton source={source} variant="badge" active={activeSource} onActive={onActiveSource} />;
+          // A number with no matching source is plain text, never a broken badge.
+          return <>[{n}]</>;
         }
         return (
           <a href={href} target="_blank" rel="noopener noreferrer" className="text-teal underline hover:text-teal-hover">
@@ -94,7 +101,7 @@ export function MessageContent({ content, sources, className = '' }: MessageCont
       hr: () => <hr className="my-6 border-border" />,
       strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
     }),
-    [sources],
+    [sources, activeSource, onActiveSource],
   );
 
   return (
