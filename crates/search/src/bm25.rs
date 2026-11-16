@@ -10,16 +10,165 @@ use aws_sdk_s3::Client as S3Client;
 use aws_smithy_types::error::display::DisplayErrorContext;
 use openbook_core::store::Store;
 use tantivy::collector::TopDocs;
-use tantivy::query::QueryParser;
+use tantivy::query::{BooleanQuery, Occur, Query, TermQuery};
 use tantivy::schema::{
     Field, IndexRecordOption, STORED, STRING, Schema, TextFieldIndexing, TextOptions, Value,
 };
 use tantivy::tokenizer::{
-    Language, LowerCaser, RemoveLongFilter, SimpleTokenizer, Stemmer, TextAnalyzer,
+    Language, LowerCaser, RemoveLongFilter, SimpleTokenizer, Stemmer, StopWordFilter, TextAnalyzer,
+    TokenStream,
 };
 use tantivy::{Index, IndexReader, IndexWriter, TantivyDocument, Term, doc};
 
 const TOKENIZER: &str = "en_stem";
+
+/// Common English words that search ignores (the NLTK list, which covers question words such as
+/// "what", "who", "how", and "does"; Tantivy's own English list is much shorter). A word that is a
+/// stop word and a real term in some course would not be found, but in a question it is almost never
+/// the word that matters.
+pub const ENGLISH_STOP_WORDS: &[&str] = &[
+    "i",
+    "me",
+    "my",
+    "myself",
+    "we",
+    "our",
+    "ours",
+    "ourselves",
+    "you",
+    "your",
+    "yours",
+    "yourself",
+    "yourselves",
+    "he",
+    "him",
+    "his",
+    "himself",
+    "she",
+    "her",
+    "hers",
+    "herself",
+    "it",
+    "its",
+    "itself",
+    "they",
+    "them",
+    "their",
+    "theirs",
+    "themselves",
+    "what",
+    "which",
+    "who",
+    "whom",
+    "this",
+    "that",
+    "these",
+    "those",
+    "am",
+    "is",
+    "are",
+    "was",
+    "were",
+    "be",
+    "been",
+    "being",
+    "have",
+    "has",
+    "had",
+    "having",
+    "do",
+    "does",
+    "did",
+    "doing",
+    "a",
+    "an",
+    "the",
+    "and",
+    "but",
+    "if",
+    "or",
+    "because",
+    "as",
+    "until",
+    "while",
+    "of",
+    "at",
+    "by",
+    "for",
+    "with",
+    "about",
+    "against",
+    "between",
+    "into",
+    "through",
+    "during",
+    "before",
+    "after",
+    "above",
+    "below",
+    "to",
+    "from",
+    "up",
+    "down",
+    "in",
+    "out",
+    "on",
+    "off",
+    "over",
+    "under",
+    "again",
+    "further",
+    "then",
+    "once",
+    "here",
+    "there",
+    "when",
+    "where",
+    "why",
+    "how",
+    "all",
+    "any",
+    "both",
+    "each",
+    "few",
+    "more",
+    "most",
+    "other",
+    "some",
+    "such",
+    "no",
+    "nor",
+    "not",
+    "only",
+    "own",
+    "same",
+    "so",
+    "than",
+    "too",
+    "very",
+    "s",
+    "t",
+    "can",
+    "will",
+    "just",
+    "don",
+    "should",
+    "now",
+    "ll",
+    "re",
+    "ve",
+    "ain",
+    "could",
+    "would",
+    "shall",
+    "may",
+    "might",
+    "must",
+    "please",
+    "tell",
+    "show",
+    "explain",
+];
 const WRITER_MEMORY: usize = 30_000_000;
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -112,6 +261,12 @@ fn register_tokenizer(index: &Index) {
     let analyzer = TextAnalyzer::builder(SimpleTokenizer::default())
         .filter(RemoveLongFilter::limit(40))
         .filter(LowerCaser)
+        // Stop words ("what", "the", "who") carry no meaning for search. Without them a question
+        // that has nothing to do with a course matches nothing, so the relevance gate can work.
+        // Blobs that were indexed before this filter stay readable: only the terms differ.
+        .filter(StopWordFilter::remove(
+            ENGLISH_STOP_WORDS.iter().map(|w| (*w).to_owned()),
+        ))
         .filter(Stemmer::new(Language::English))
         .build();
     index.tokenizers().register(TOKENIZER, analyzer);
@@ -211,11 +366,44 @@ impl Bm25Reader {
         self.reader.searcher().num_docs()
     }
 
-    /// The best `limit` chunks for a query, best first. The query is free text: bad syntax is handled.
+    /// The terms of a query, as the index analyzer makes them: lower case, no stop words, stemmed,
+    /// without duplicates. Math such as `x^2 - 5x + 6 = 0` gives `x`, `2`, `5x`, `6`, and `0`.
+    pub fn query_terms(&self, query: &str) -> Vec<String> {
+        let Some(mut analyzer) = self.index.tokenizers().get(TOKENIZER) else {
+            return Vec::new();
+        };
+        let mut stream = analyzer.token_stream(query);
+        let mut terms: Vec<String> = Vec::new();
+        while stream.advance() {
+            let term = stream.token().text.clone();
+            if !terms.contains(&term) {
+                terms.push(term);
+            }
+        }
+        terms
+    }
+
+    /// The best `limit` chunks for a query, best first.
+    ///
+    /// The query is free text. It is not parsed as query syntax: the index analyzer splits it into
+    /// terms, and the search is an OR of term queries over `text` and `heading`. So `^`, `-`, `+`,
+    /// `=`, `?`, `:`, quotes, and brackets in a question cannot break the search.
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<Bm25Hit>, Bm25Error> {
-        let parser =
-            QueryParser::for_index(&self.index, vec![self.fields.text, self.fields.heading]);
-        let (parsed, _errors) = parser.parse_query_lenient(query);
+        let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::new();
+        for term in self.query_terms(query) {
+            for field in [self.fields.text, self.fields.heading] {
+                let term = Term::from_field_text(field, &term);
+                clauses.push((
+                    Occur::Should,
+                    Box::new(TermQuery::new(term, IndexRecordOption::WithFreqs)),
+                ));
+            }
+        }
+        if clauses.is_empty() {
+            // Only stop words, or nothing at all.
+            return Ok(Vec::new());
+        }
+        let parsed = BooleanQuery::new(clauses);
         let searcher = self.reader.searcher();
         let top = searcher
             .search(&parsed, &TopDocs::with_limit(limit.max(1)).order_by_score())
@@ -833,6 +1021,168 @@ mod tests {
         let reader = Bm25Reader::open(&dir).unwrap();
         assert!(reader.search("delta", 5).unwrap().is_empty());
         assert_eq!(reader.chunk_count(), 1);
+    }
+
+    #[test]
+    fn math_in_a_question_does_not_break_the_search() {
+        let dir = temp_dir();
+        build(
+            &dir,
+            &[
+                chunk(
+                    "D",
+                    0,
+                    1,
+                    "Quadratics",
+                    "Worked example: x^2 - 5x + 6 = 0 factors as (x - 2)(x - 3) = 0, so x = 2 or x = 3.",
+                ),
+                chunk(
+                    "D",
+                    1,
+                    2,
+                    "Geometry",
+                    "The area of a circle is pi times the radius squared.",
+                ),
+            ],
+        );
+        let reader = Bm25Reader::open(&dir).unwrap();
+        let question = "How many real roots does x^2 - 5x + 6 = 0 have, and why?";
+        let hits = reader.search(question, 5).unwrap();
+        assert!(!hits.is_empty(), "the math question found nothing");
+        assert_eq!(hits[0].chunk_id, "D:0");
+        // Every query character that the query parser treats as syntax is plain text now.
+        for query in [
+            "x^2 - 5x + 6 = 0",
+            "roots: (x - 2)(x - 3)",
+            "\"unclosed",
+            "a AND b OR NOT c",
+            "title:foo",
+            "[1 TO 5]",
+            "x*y?",
+            "~fuzzy~2",
+            "\\",
+            "{}",
+            "-",
+            "+",
+            "!",
+            "&&",
+            "||",
+        ] {
+            assert!(reader.search(query, 5).is_ok(), "{query:?}");
+        }
+        assert_eq!(
+            reader.search("(x - 2)(x - 3)", 5).unwrap()[0].chunk_id,
+            "D:0"
+        );
+    }
+
+    #[test]
+    fn query_terms_follow_the_index_analyzer() {
+        let dir = temp_dir();
+        build(&dir, &[chunk("D", 0, 1, "", "text")]);
+        let reader = Bm25Reader::open(&dir).unwrap();
+        assert_eq!(
+            reader.query_terms("x^2 - 5x + 6 = 0"),
+            ["x", "2", "5x", "6", "0"]
+        );
+        assert_eq!(
+            reader.query_terms("Solving the EQUATIONS, solving!"),
+            ["solv", "equat"]
+        );
+        assert!(reader.query_terms("").is_empty());
+        assert!(reader.query_terms("?!- = ^").is_empty());
+    }
+
+    #[test]
+    fn stop_words_alone_match_nothing_and_unrelated_questions_find_nothing() {
+        let dir = temp_dir();
+        build(
+            &dir,
+            &[
+                chunk(
+                    "D",
+                    0,
+                    1,
+                    "Quadratics",
+                    "Worked example: x^2 - 5x + 6 = 0 has two real roots.",
+                ),
+                chunk(
+                    "D",
+                    1,
+                    2,
+                    "Quadratics",
+                    "The quadratic formula is what you use when the roots are not obvious.",
+                ),
+            ],
+        );
+        let reader = Bm25Reader::open(&dir).unwrap();
+        for question in [
+            "what is the",
+            "who was it of and to a",
+            "How do I do this?",
+            "Who painted the Mona Lisa?",
+        ] {
+            let hits = reader.search(question, 5).unwrap();
+            assert!(hits.is_empty(), "{question:?} matched {hits:?}");
+        }
+        // The same words still count when they come with a real term.
+        assert_eq!(
+            reader.search("who uses the quadratic formula", 5).unwrap()[0].chunk_id,
+            "D:1"
+        );
+    }
+
+    #[test]
+    fn math_variables_are_not_stop_words() {
+        let dir = temp_dir();
+        build(&dir, &[chunk("D", 0, 1, "", "text")]);
+        let reader = Bm25Reader::open(&dir).unwrap();
+        assert_eq!(
+            reader.query_terms("y = m x + o, d"),
+            ["y", "m", "x", "o", "d"]
+        );
+    }
+
+    #[test]
+    fn an_index_written_before_the_stop_word_filter_stays_readable() {
+        let dir = temp_dir();
+        // The old analyzer: no stop-word filter.
+        let (schema, fields) = schema();
+        let index = Index::create_in_dir(&*dir, schema).unwrap();
+        index.tokenizers().register(
+            TOKENIZER,
+            TextAnalyzer::builder(SimpleTokenizer::default())
+                .filter(RemoveLongFilter::limit(40))
+                .filter(LowerCaser)
+                .filter(Stemmer::new(Language::English))
+                .build(),
+        );
+        let mut writer: IndexWriter = index.writer_with_num_threads(1, WRITER_MEMORY).unwrap();
+        writer
+            .add_document(doc!(
+                fields.chunk_id => "OLD:0",
+                fields.document_id => "OLD",
+                fields.page => 3u64,
+                fields.heading => "History",
+                fields.text => "The Pythagorean theorem is what builders use.",
+            ))
+            .unwrap();
+        writer.commit().unwrap();
+        writer.wait_merging_threads().unwrap();
+        drop(index);
+        // The new code opens it, searches it, and can write to it.
+        let reader = Bm25Reader::open(&dir).unwrap();
+        let hits = reader.search("pythagorean theorem", 5).unwrap();
+        assert_eq!((hits[0].chunk_id.as_str(), hits[0].page), ("OLD:0", 3));
+        assert_eq!(reader.search("builders", 5).unwrap().len(), 1);
+        let mut writer = Bm25Writer::open(&dir).unwrap();
+        writer
+            .add_chunk(&chunk("NEW", 0, 1, "", "A new chunk about triangles"))
+            .unwrap();
+        writer.commit().unwrap();
+        let reader = Bm25Reader::open(&dir).unwrap();
+        assert_eq!(reader.chunk_count(), 2);
+        assert_eq!(reader.search("triangles", 5).unwrap()[0].chunk_id, "NEW:0");
     }
 
     #[test]

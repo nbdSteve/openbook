@@ -28,7 +28,9 @@ pub const FINAL_SOURCES: usize = 8;
 /// Most sources from one document.
 pub const MAX_PER_DOCUMENT: usize = 4;
 /// The gate: with no BM25 hit, a best dense cosine distance above this means no sources.
-pub const GATE_MAX_DISTANCE: f32 = 0.65;
+/// With Titan v2, a relevant passage had distances near 0.68 and an unrelated question near 0.94.
+/// Phase 4 tunes this number against the evaluation set.
+pub const GATE_MAX_DISTANCE: f32 = 0.85;
 /// The longest snippet in a `sources` event, in characters.
 pub const SNIPPET_CHARS: usize = 1200;
 /// Candidates per retriever in the trace.
@@ -679,9 +681,22 @@ mod tests {
     #[test]
     fn the_gate_needs_a_close_dense_result_or_a_bm25_hit() {
         assert!(passes_gate(Some(0.2), 0));
-        assert!(passes_gate(Some(0.65), 0), "the limit itself passes");
-        assert!(!passes_gate(Some(0.66), 0));
+        assert!(passes_gate(Some(0.85), 0), "the limit itself passes");
+        assert!(!passes_gate(Some(0.86), 0));
         assert!(passes_gate(Some(0.9), 1), "one BM25 hit is enough");
+        // Distances from real Titan v2 traces on a quadratics PDF.
+        assert!(
+            passes_gate(Some(0.678), 0),
+            "a relevant question with no BM25 hit passes"
+        );
+        assert!(passes_gate(Some(0.688), 0));
+        assert!(passes_gate(Some(0.455), 0));
+        assert!(
+            !passes_gate(Some(0.944), 0),
+            "an unrelated question with no BM25 hit is gated"
+        );
+        assert!(!passes_gate(Some(0.964), 0));
+        assert!(passes_gate(Some(0.944), 2), "BM25 hits keep the sources");
         assert!(passes_gate(None, 3));
         assert!(!passes_gate(None, 0));
     }
@@ -698,7 +713,7 @@ mod tests {
             ),
             (40, 40, 8, 4, 1200)
         );
-        assert_eq!((RRF_K, GATE_MAX_DISTANCE), (60.0, 0.65));
+        assert_eq!((RRF_K, GATE_MAX_DISTANCE), (60.0, 0.85));
         assert_eq!(
             (REWRITE_MAX_TOKENS, REWRITE_TIMEOUT),
             (100, Duration::from_secs(5))

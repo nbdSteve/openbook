@@ -39,7 +39,7 @@ tokio-stream = "0.1"
 tower = "0.5"
 tracing = "0.1"
 tar = "0.4"
-tantivy = { version = "0.27", default-features = false, features = ["mmap", "stemmer"] }
+tantivy = { version = "0.27", default-features = false, features = ["mmap", "stemmer", "stopwords"] }
 zstd = "0.14"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 ulid = "3"

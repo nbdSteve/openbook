@@ -1556,7 +1556,7 @@ async fn a_question_that_matches_nothing_hits_the_gate() {
     assert!(trace["lexical"].as_array().unwrap().is_empty());
     let best = trace["dense"][0]["value"].as_f64().unwrap();
     assert!(
-        best > 0.65,
+        best > 0.85,
         "the best dense distance {best} is above the gate"
     );
     let body = e
