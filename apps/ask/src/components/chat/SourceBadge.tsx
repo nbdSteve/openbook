@@ -10,6 +10,7 @@ interface Position {
   width: number;
   top?: number;
   bottom?: number;
+  maxHeight: number;
 }
 
 const POPOVER_WIDTH = 340;
@@ -42,8 +43,14 @@ export function SourceButton({ source, variant }: SourceButtonProps) {
     if (!rect) return;
     const width = Math.min(POPOVER_WIDTH, window.innerWidth - 16);
     const left = Math.min(Math.max(8, rect.left + rect.width / 2 - width / 2), window.innerWidth - width - 8);
-    const above = rect.top > 280;
-    setPosition(above ? { left, width, bottom: window.innerHeight - rect.top + 8 } : { left, width, top: rect.bottom + 8 });
+    // Open on the side with more room, and never taller than that room.
+    const roomAbove = rect.top - 16;
+    const roomBelow = window.innerHeight - rect.bottom - 16;
+    setPosition(
+      roomAbove > roomBelow
+        ? { left, width, bottom: window.innerHeight - rect.top + 8, maxHeight: roomAbove }
+        : { left, width, top: rect.bottom + 8, maxHeight: roomBelow },
+    );
   };
   const hide = () => {
     pinned.current = false;
@@ -79,15 +86,14 @@ export function SourceButton({ source, variant }: SourceButtonProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  const label = variant === 'badge' ? source.n : sourceLabel(source);
-
   const content: ReactNode =
     variant === 'badge' ? (
       source.n
     ) : (
       <>
         <span className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-md bg-teal-subtle px-1 text-[11px] font-bold text-teal">{source.n}</span>
-        <span className="min-w-0 truncate">{label}</span>
+        <span className="min-w-0 truncate">{source.documentName}</span>
+        {source.page !== undefined && <span className="shrink-0">, p. {source.page}</span>}
       </>
     );
 
@@ -113,7 +119,8 @@ export function SourceButton({ source, variant }: SourceButtonProps) {
         }}
         aria-expanded={open}
         aria-describedby={open ? popoverId : undefined}
-        aria-label={variant === 'badge' ? `Source ${source.n}: ${sourceLabel(source)}` : `Source ${source.n}: ${sourceLabel(source)}. Show the passage.`}
+        // The list entry's visible text (number and document) is its name. The badge says more than its number.
+        aria-label={variant === 'badge' ? `Source ${source.n}: ${sourceLabel(source)}` : undefined}
         className={cn(
           variant === 'badge'
             ? 'mx-0.5 inline-flex h-5 min-w-5 items-center justify-center rounded-md bg-teal-subtle px-1 align-baseline text-[11px] font-bold text-teal transition-colors hover:bg-teal-light'
@@ -128,15 +135,15 @@ export function SourceButton({ source, variant }: SourceButtonProps) {
           <div
             id={popoverId}
             role="tooltip"
-            style={{ position: 'fixed', left: position.left, width: position.width, top: position.top, bottom: position.bottom }}
-            className="z-[70] max-h-64 overflow-y-auto rounded-xl border border-border bg-surface p-3 text-left shadow-lg"
+            style={{ position: 'fixed', left: position.left, width: position.width, top: position.top, bottom: position.bottom, maxHeight: position.maxHeight }}
+            className="z-[70] overflow-hidden rounded-xl border border-border bg-surface p-3 text-left shadow-lg"
           >
             <p className="mb-1.5 break-words text-xs font-semibold text-teal">
               {source.documentName}
               {source.page !== undefined && <span className="font-normal text-text-muted"> · Page {source.page}</span>}
             </p>
             {/* Plain text: React escapes it, and `whitespace-pre-wrap` keeps the line breaks. */}
-            <p className="whitespace-pre-wrap break-words text-xs leading-relaxed text-text-secondary">{source.snippet}</p>
+            <p className="line-clamp-[16] whitespace-pre-wrap break-words text-xs leading-relaxed text-text-secondary">{source.snippet}</p>
           </div>,
           document.body,
         )}

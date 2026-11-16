@@ -11,6 +11,9 @@ import {
   MEMBERS,
   ME,
   MESSAGES,
+  MESSAGES_MANY_SOURCES,
+  MESSAGES_NO_SOURCES,
+  MESSAGES_ONE_SOURCE,
   MODELS,
   OWNER_COURSE,
   STUDENT_COURSE,
@@ -87,7 +90,9 @@ export async function mockBackend(page: Page, options: MockOptions = {}) {
     if (/\/api\/conversations\//.test(path)) {
       const id = path.split('/').pop();
       const conversation = CONVERSATIONS.find((c) => c.id === id) ?? CONVERSATIONS[0];
-      return json(route, { conversation, messages: MESSAGES });
+      const messages =
+        id === CONVERSATIONS[1].id ? MESSAGES_MANY_SOURCES : id === CONVERSATIONS[2].id ? MESSAGES_ONE_SOURCE : id === 'NOSOURCES' ? MESSAGES_NO_SOURCES : MESSAGES;
+      return json(route, { conversation, messages });
     }
     if (path.endsWith('/documents')) {
       // Students see only ready documents (docs/api.md).
