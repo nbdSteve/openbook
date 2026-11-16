@@ -10,7 +10,7 @@ Think of it as an open-book exam for the model: it answers from the course mater
 1. **Pay per use only.** No component may have a baseline monthly cost. Do not add OpenSearch, NAT gateways, RDS or Aurora, ElastiCache, always-on containers, WAF web ACLs, Secrets Manager secrets, or customer-managed KMS keys. An idle stack must cost cents.
 2. **The server owns the prompt.** Clients send a course ID, a conversation ID, and the student's message. The server picks the model, the system prompt, the token limits, and the sources.
 3. **Tenancy is the course.** Every read and write of course data checks membership first. A non-member gets `404`, never `403`.
-4. **Data stays in Australia.** Use the `ap-southeast-2` Region and Bedrock `au.` inference profiles. Do not use `global.` or other Regions' profiles.
+4. **Data stays in Australia.** Use the `ap-southeast-2` Region, Bedrock `au.` inference profiles, and models that run on demand in Sydney. Do not use `global.` or other Regions' profiles.
 5. **Same code locally and in Lambda.** The API is one axum router. Lambda runs it through `lambda_http`; locally it runs on a TCP listener. Local runs use AWS Emulator for AWS services.
 6. **Fail closed.** If the API runs in Lambda with local-only settings (stage `local`, the fake model provider, `AWS_ENDPOINT_URL`, `OPENBOOK_COGNITO_JWKS_URL`, `OPENBOOK_CA_BUNDLE`, `OPENBOOK_PRESIGN_ENDPOINT`, or `OPENBOOK_BEDROCK_PROFILE`), it must refuse to start.
 
@@ -40,8 +40,9 @@ openbook-ingest (phase 2) ◄─ SQS FIFO (one message group per course, so each
 | Auth | Cognito user pool (Lite plan), ID token in `x-auth-token` | Free up to 10,000 monthly active users; OAC owns the `Authorization` header |
 | Data | DynamoDB on-demand, single table | Pay per request, no capacity planning |
 | Files | S3 with presigned PUT | The browser uploads directly; the API never streams file bytes |
-| Chat model | Bedrock `au.anthropic.claude-sonnet-5-5` | Best Australian-resident model for tutoring quality |
-| Fast model | Bedrock `au.anthropic.claude-haiku-5-5` | Query rewrite and page transcription (phase 2 and 3) |
+| Chat model | Bedrock `au.anthropic.claude-sonnet-4-6` | Best Australian-resident Claude model this account can use (the 5.x models need account access first) |
+| Fast model | Bedrock `au.anthropic.claude-haiku-4-5-20251001-v1:0` | Query rewrite and page transcription (phase 2 and 3) |
+| Embeddings | Bedrock `amazon.titan-embed-text-v2:0`, 1024 dimensions (phase 2) | On-demand in Sydney. Cohere Embed v4 exists only as a `global.` profile, which breaks the data residency rule |
 | Dense retrieval | S3 Vectors, one index per course (phase 3) | Query cost grows with index size, so small per-course indexes keep queries cheap and isolate tenants |
 | Lexical retrieval | Tantivy BM25, one index per course in S3 (phase 3) | Native Rust, no server; Bedrock Knowledge Bases do only semantic search on S3 Vectors |
 | Fusion | Reciprocal rank fusion, k = 60 (phase 3) | BM25 and cosine scores do not need a common scale |
@@ -95,8 +96,8 @@ The API reads only environment variables. Names and defaults:
 | `OPENBOOK_COGNITO_REGION` | `AWS_REGION` | Used to build the issuer `https://cognito-idp.<region>.amazonaws.com/<poolId>` |
 | `OPENBOOK_COGNITO_JWKS_URL` | `<issuer>/.well-known/jwks.json` | Local only (AWS Emulator serves JWKS at `https://127.0.0.1:<port>/<poolId>/.well-known/jwks.json`) |
 | `OPENBOOK_MODEL_PROVIDER` | `bedrock` | `bedrock` or `fake` (local only) |
-| `OPENBOOK_CHAT_MODEL_ID` | `au.anthropic.claude-sonnet-5-5` | |
-| `OPENBOOK_FAST_MODEL_ID` | `au.anthropic.claude-haiku-5-5` | |
+| `OPENBOOK_CHAT_MODEL_ID` | `au.anthropic.claude-sonnet-4-6` | |
+| `OPENBOOK_FAST_MODEL_ID` | `au.anthropic.claude-haiku-4-5-20251001-v1:0` | |
 | `OPENBOOK_BEDROCK_PROFILE` | (unset) | Local only: use real Bedrock with this AWS profile from `~/.aws`, while every other service uses the emulator |
 | `OPENBOOK_CA_BUNDLE` | (unset) | Local only: a PEM file (the emulator's `ca.pem`) that the AWS SDK and JWKS clients trust in addition to the system roots |
 | `OPENBOOK_PRESIGN_ENDPOINT` | (unset) | Local only: base URL for presigned S3 URLs that the browser can reach, for example `http://localhost:5173/__aws` |
