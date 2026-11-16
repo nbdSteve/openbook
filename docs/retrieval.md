@@ -4,39 +4,47 @@ Draft design. Phase 4 evaluation decides the numbers marked "tune".
 
 ## Ingestion (phase 2)
 
-`openbook-ingest` is a Rust Lambda (arm64) on the SQS FIFO queue `Openbook-<stage>-ingest.fifo`, batch size 1, with a dead-letter queue after 3 receives.
-`MessageGroupId` is the course ID, so one course's indexes have one writer at a time, and different courses run in parallel.
-`MessageDeduplicationId` is `<documentId>:<action>:<requestId>`.
+`openbook-ingest` is a Rust Lambda (arm64, 3008 MB, 900 s timeout, 4096 MB of `/tmp`, reserved concurrency dev 2 and prod 5) on the SQS FIFO queue `Openbook-<stage>-ingest.fifo` (visibility timeout 960 s, retention 4 days), batch size 1, with the dead-letter queue `Openbook-<stage>-ingest-dlq.fifo` after 3 receives.
+`MessageGroupId` is the course ID, so one course has one writer at a time and different courses run in parallel.
+`MessageDeduplicationId` is `<documentId>:<action>:<ULID>`.
 
 Messages:
 
 ```json
-{ "action": "ingest", "courseId": "...", "documentId": "...", "s3Key": "courses/.../source.pdf" }
+{ "action": "ingest", "courseId": "...", "documentId": "..." }
 { "action": "delete", "courseId": "...", "documentId": "..." }
 ```
 
-The API sends `ingest` from `POST .../documents/{id}/complete`. Document deletion also goes through the queue (the API sets the status to `deleting`, the worker removes vectors, BM25 entries, and S3 objects, then the record), because only the worker may write a course's indexes. Course deletion deletes the vector index and the S3 prefix directly; the worker drops messages for a course that no longer exists.
+The API sends `ingest` from `POST .../documents/{id}/complete` and `delete` from `DELETE .../documents/{id}`. Only the worker writes a course's vector index and BM25 index. Course deletion deletes the vector index and the course S3 prefix directly; the worker acknowledges and drops messages for a course or document that no longer exists.
 
-Steps for `ingest`:
+Locally, the same handler runs as a poller: `openbook-ingest --poll` long-polls the queue in AWS Emulator.
 
-1. Set the status from `queued` to `processing` with a conditional update. If the condition fails, the message is a duplicate: stop.
-2. Download the PDF. Open it with pdfium (`pdfium-render`, with the `libpdfium.so` build for linux arm64 in the Lambda package). Refuse more than 500 pages (`failed`, with a clear error).
-3. For each page, read the text layer. Send the page to the fast model (`OPENBOOK_FAST_MODEL`, residency `au`) as a rendered PNG (about 150 DPI) when the text layer looks poor: little text, private-use or replacement characters, many isolated symbols, or math glyphs. The prompt asks for a faithful Markdown transcription with LaTeX for math, `[Figure: short description]` for figures, and no added content. Otherwise use the text layer. Run at most 8 pages at once. Write each page to `pages/<nnnn>.md`; skip pages that already exist, so a retry resumes.
-4. Chunk the page Markdown by structure: split at headings, then pack paragraphs to about 400 tokens (tune) with one or two sentences of overlap. Never split inside a LaTeX block, a table, or a list item. Each chunk keeps its first and last page, its heading path, and its index.
-5. Prepend a context line to the text that is embedded and indexed (not to the text shown to students): `<document title> > <heading path>`. Phase 4 tests full contextual retrieval (a short LLM-written context per chunk) against this cheap version.
-6. Embed with Titan Text Embeddings v2 (`amazon.titan-embed-text-v2:0`, 1024 dimensions, normalized, tune), on demand in Sydney. It takes one text per call, so run calls in parallel with a limit. Cohere Embed v4 is available only through a `global.` profile, which breaks the data residency rule; phase 4 can compare it only if that changes.
-7. Write vectors to S3 Vectors: index `c-<courseId in lower case>` in the stage's vector bucket (create it on first use: 1024 dimensions, cosine; non-filterable metadata `text`, `heading`; filterable `documentId`, `page`). Key `<documentId>:<chunkIndex>`. Batches of 500.
-8. Update the course's Tantivy index (below).
-9. Set the status to `ready` with `pageCount` and `chunkCount`. On any failure after retries, set `failed` with an error that is safe to show to the owner.
+### Steps for `ingest`
 
-## BM25 index (Tantivy, phase 2 writes, phase 3 reads)
+1. Load the document. If its status is not `queued`, the message is a duplicate or stale: acknowledge and stop. Otherwise set `processing` with a conditional update.
+2. Download `source.pdf` to `/tmp` and open it with pdfium (`pdfium-render`, with the `chromium/8152` build of `libpdfium` from `bblanchon/pdfium-binaries`, pinned by SHA-256 in `scripts/fetch-pdfium.sh`; Lambda loads `libpdfium.so` from the package directory, local runs and tests from `OPENBOOK_PDFIUM_PATH`).
+3. Refuse with a clear, owner-safe error (status `failed`): a PDF that pdfium cannot open, a password-protected PDF, or more than `OPENBOOK_LIMIT_PAGES_PER_DOCUMENT` pages (default 500).
+4. For each page, read the text layer. A page needs transcription when the text layer looks poor: fewer than 200 characters on a page that has images, more than 5% replacement or private-use characters, or at least 3 mathematical symbols or many isolated one-character tokens. Such a page is rendered (longest side at most 2000 px) and sent to the transcription model (`OPENBOOK_TRANSCRIBE_MODEL`, a catalog ID with residency `au` that accepts images; default the fast model) with a prompt that asks for a faithful Markdown transcription, LaTeX for math (`$...$` and `$$...$$`), `[Figure: short description]` for figures, and no added content. Other pages use the text layer.
+5. Transcription spends model tokens, so it has two daily caps, reserved one page at a time like chat messages: `OPENBOOK_LIMIT_DAILY_TRANSCRIBED_PAGES_PER_USER` (default 300, counted for the document owner) and `OPENBOOK_LIMIT_DAILY_TRANSCRIBED_PAGES_GLOBAL` (default 1000). When a cap is reached, the rest of the document uses the text layer, and the document gets a warning that the owner can see.
+6. Run at most 8 pages at once. Write each page to `courses/<courseId>/documents/<documentId>/pages/<nnnn>.md` (1-based, 4 digits); skip pages that already exist, so a retry resumes.
+7. Chunk the page Markdown by structure: split at headings, then pack paragraphs to about 400 tokens (1 token is about 4 characters; at most 600 tokens) with one or two sentences of overlap. Never split inside a `$$...$$` block, a fenced code block, a table, or a list item. Each chunk keeps its index (0-based), its first and last page, and its heading path.
+8. The text that is embedded and indexed is `<document title> > <heading path>` on the first line, then the chunk text. Students see only the chunk text.
+9. Embed with `OPENBOOK_EMBEDDING_MODEL_ID` (default `amazon.titan-embed-text-v2:0`, 1024 dimensions, normalized; on demand in Sydney), at most 8 calls at once. Locally, a fake embedder hashes the words into 1024 dimensions and L2-normalizes them, so retrieval tests are deterministic.
+10. Write vectors to the stage's vector bucket (`OPENBOOK_VECTOR_BUCKET`), index `c-<courseId in lower case>`. Create the index on first use: float32, 1024 dimensions, cosine, non-filterable metadata keys `text` and `heading`. Key `<documentId>:<chunkIndex>`. Metadata: `documentId` and `page` (filterable), `text` and `heading` (non-filterable). Batches of 500.
+11. Update the course BM25 index (below).
+12. Set `ready` with `pageCount`, `chunkCount`, `transcribedPages`, and `warnings`. A permanent error sets `failed` with an owner-safe message and acknowledges the message. A transient error (throttling, timeouts) fails the invocation so SQS retries; on the last attempt (`ApproximateReceiveCount` is 3) the worker sets `failed` with "Processing failed. Delete the document and upload it again."
 
-One Tantivy index per course, stored in the docs bucket under `courses/<courseId>/bm25/`.
-Schema: `chunkId` (string, stored), `documentId` (string, indexed, stored), `page` (u64, stored), `heading` (text, stored), `text` (text with the English stemmer, stored).
+### Steps for `delete`
 
-- Segment files are immutable. `manifest.json` lists the files of one version. The course `META` item holds `bm25Version`.
-- The worker keeps a copy in `/tmp`, downloads only missing files, deletes the document's terms (re-ingest and delete), adds the new chunks, commits, uploads the new files and the new manifest, and then moves `bm25Version` forward with a conditional update on the old value.
-- The API reads `bm25Version` from the course item it already loads for the membership check, downloads the files of that version into `/tmp` on a cache miss, and opens a reader. A warm Lambda reuses it.
+The API sets the status to `deleting`. The worker deletes the vectors by key (`<documentId>:0` to `<documentId>:<chunkCount - 1>`), removes the document from the BM25 index, deletes the document's S3 prefix, and deletes the record and gives back the course document slot in one transaction.
+
+## BM25 index (Tantivy; phase 2 writes, phase 3 reads)
+
+One Tantivy index per course. Schema: `chunkId` (string, stored), `documentId` (string, indexed, stored), `page` (u64, stored), `heading` (text, stored), `text` (text with the English stemmer, stored).
+
+- Storage: the whole index directory as one `tar.zst` blob per version, `courses/<courseId>/bm25/v<version>.tar.zst`. The course `META` item holds `bm25Version` (a number; absent means no index yet). Course indexes are small (tens of MB at the document limit), so a whole-blob download on a version change is fast and much simpler than syncing segment files.
+- The worker downloads the current version into `/tmp`, deletes the document's terms (re-ingest and delete), adds the new chunks, commits, uploads `v<version + 1>.tar.zst`, moves `bm25Version` forward with a conditional update on the old value, and deletes blobs older than the previous version.
+- The API (phase 3) reads `bm25Version` from the course item it already loads for the membership check, downloads that version into `/tmp` on a cache miss, and keeps the opened reader for warm invocations.
 
 ## Retrieval for a chat turn (phase 3)
 

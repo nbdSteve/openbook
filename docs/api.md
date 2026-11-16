@@ -51,7 +51,7 @@ The web app signs in with the `USER_PASSWORD_AUTH` flow in every stage (the pass
 ```ts
 type Role = 'owner' | 'student';
 type TutoringStyle = 'socratic' | 'hints' | 'step_by_step' | 'concepts' | 'direct';
-type DocumentStatus = 'uploading' | 'queued' | 'processing' | 'ready' | 'failed';
+type DocumentStatus = 'uploading' | 'queued' | 'processing' | 'ready' | 'failed' | 'deleting';
 
 interface User { id: string /* Cognito sub */; email: string }
 
@@ -93,7 +93,10 @@ interface Document {
   sizeBytes: number;
   status: DocumentStatus;
   error?: string;          // only when status === 'failed'; safe to show to the owner
-  pageCount?: number;      // set by ingestion (phase 2)
+  pageCount?: number;      // set by ingestion when ready
+  chunkCount?: number;     // set by ingestion when ready
+  transcribedPages?: number; // pages that went through the transcription model
+  warnings?: string[];     // owner-safe notes, for example when the daily transcription cap was reached
   createdAt: string;
   updatedAt: string;
 }
@@ -191,10 +194,11 @@ The document starts in `uploading`. The client must `PUT` the file bytes to `upl
 `413 too_large` above `maxUploadBytes`; `409 limit_reached` at `maxDocumentsPerCourse`.
 
 `POST /api/courses/{courseId}/documents/{documentId}/complete` (owner, empty body) → `200 { "document": Document }`.
-The API checks that the object exists in S3 and that its size matches `sizeBytes`, then sets the status to `queued` (phase 2 also sends the ingestion message).
+The API checks that the object exists in S3 and that its size matches `sizeBytes`, sets the status to `queued`, and sends the `ingest` message (see `docs/retrieval.md`). If the message cannot be sent, the status goes back to `uploading` and the API returns `503 unavailable`, so the client can call `complete` again.
 Missing object → `409 conflict`. Calling it again on a document that is not `uploading` returns the document unchanged.
+The worker then moves the document to `processing` and to `ready` or `failed`.
 
-`DELETE /api/courses/{courseId}/documents/{documentId}` (owner) → `204`. Deletes the S3 objects and the record (phase 2 also deletes its vectors and BM25 entries).
+`DELETE /api/courses/{courseId}/documents/{documentId}` (owner) → `202 { "document": Document }` with status `deleting`. The worker deletes the vectors, the BM25 entries, the S3 objects, and the record. Owners see `deleting` until the document disappears. Deleting a document that is already `deleting` returns it unchanged. A document in `processing` can be deleted: the worker finishes or stops, and the delete runs after it.
 
 ### Conversations
 

@@ -45,7 +45,9 @@ openbook-ingest (phase 2) ◄─ SQS FIFO (one message group per course, so each
 | Dense retrieval | S3 Vectors, one index per course (phase 3) | Query cost grows with index size, so small per-course indexes keep queries cheap and isolate tenants |
 | Lexical retrieval | Tantivy BM25, one index per course in S3 (phase 3) | Native Rust, no server; Bedrock Knowledge Bases do only semantic search on S3 Vectors |
 | Fusion | Reciprocal rank fusion, k = 60 (phase 3) | BM25 and cosine scores do not need a common scale |
-| Ingest queue | SQS FIFO (phase 2) | Serial writes per course index, parallel across courses |
+| Ingest queue | SQS FIFO with a dead-letter queue | Serial writes per course index, parallel across courses |
+| Ingest worker | Rust Lambda `openbook-ingest` (arm64), pdfium for PDFs | See `docs/retrieval.md` |
+| Vector store | S3 Vectors bucket per stage, one index per course | Pay per use; created by CDK (bucket) and the worker (indexes) |
 
 ## DynamoDB table
 
@@ -57,16 +59,16 @@ Every item has a `type` attribute. Other attributes are camelCase.
 | Profile | `USER#<userId>` | `PROFILE` | | | `email`, `createdAt` |
 | Counters (user) | `USER#<userId>` | `COUNTERS` | | | `courses` (courses owned; changed only inside the create and delete transactions, with a condition on the limit) |
 | Failed joins | `USER#<userId>` | `JOINFAIL#D#<yyyy-mm-dd>` | | | `attempts`, `ttl` (40 days) |
-| Course | `COURSE#<courseId>` | `META` | | | `name`, `description`, `tutoringStyle`, `model`, `ownerId`, `inviteCode`, `docCount`, `createdAt`, `updatedAt` |
+| Course | `COURSE#<courseId>` | `META` | | | `name`, `description`, `tutoringStyle`, `model`, `ownerId`, `inviteCode`, `docCount`, `bm25Version`, `createdAt`, `updatedAt` |
 | Membership | `COURSE#<courseId>` | `MEMBER#<userId>` | `USER#<userId>` | `COURSE#<joinedAt>#<courseId>` | `courseId`, `userId`, `email`, `role`, `joinedAt` |
 | Invite code | `INVITE#<code>` | `INVITE` | | | `courseId`, `createdAt` |
-| Document | `COURSE#<courseId>` | `DOC#<documentId>` | | | `filename`, `sizeBytes`, `s3Key`, `status`, `error`, `pageCount`, `createdAt`, `updatedAt` |
+| Document | `COURSE#<courseId>` | `DOC#<documentId>` | | | `filename`, `sizeBytes`, `s3Key`, `status`, `error`, `pageCount`, `chunkCount`, `transcribedPages`, `warnings`, `createdAt`, `updatedAt` |
 | Conversation | `USER#<userId>` | `CONV#<conversationId>` | `CONVS#<userId>#<courseId>` | `<updatedAt>#<conversationId>` | `courseId`, `title`, `model`, `createdAt`, `updatedAt` (each chat message updates `model`, `updatedAt`, and `gsi1sk`) |
 | Message | `CONV#<conversationId>` | `MSG#<messageId>` | | | `role`, `content`, `sources`, `model`, `inputTokens`, `outputTokens`, `createdAt` |
 | Question | `COURSE#<courseId>` | `Q#<questionId>` | | | `userId`, `email`, `question`, `conversationId`, `createdAt`, `ttl` (180 days) |
-| Daily usage (user) | `USER#<userId>` | `USAGE#D#<yyyy-mm-dd>` | | | `messages`, `inputTokens`, `outputTokens`, `ttl` (40 days) |
+| Daily usage (user) | `USER#<userId>` | `USAGE#D#<yyyy-mm-dd>` | | | `messages`, `inputTokens`, `outputTokens`, `transcribedPages`, `ttl` (40 days) |
 | Monthly usage (user) | `USER#<userId>` | `USAGE#M#<yyyy-mm>` | | | `messages`, `inputTokens`, `outputTokens` (kept for billing later) |
-| Daily usage (global) | `GLOBAL` | `USAGE#D#<yyyy-mm-dd>` | | | `messages`, `inputTokens`, `outputTokens`, `ttl` (40 days) |
+| Daily usage (global) | `GLOBAL` | `USAGE#D#<yyyy-mm-dd>` | | | `messages`, `inputTokens`, `outputTokens`, `transcribedPages`, `ttl` (40 days) |
 
 Rules:
 
@@ -81,7 +83,8 @@ Rules:
 Docs bucket (private, SSE-S3, TLS only, CORS allows `PUT` from the site origin):
 
 - `courses/<courseId>/documents/<documentId>/source.pdf`: the uploaded file.
-- Phase 2 adds `courses/<courseId>/documents/<documentId>/pages/<nnnn>.md` and `courses/<courseId>/bm25/...`.
+- `courses/<courseId>/documents/<documentId>/pages/<nnnn>.md`: one Markdown file per page, written by the worker.
+- `courses/<courseId>/bm25/v<version>.tar.zst`: the course BM25 index (see `docs/retrieval.md`).
 
 Web bucket (private, read by CloudFront OAC): the built `apps/ask/dist` plus `config.json`.
 
@@ -106,6 +109,14 @@ The API reads only environment variables. Names and defaults:
 | `OPENBOOK_PRESIGN_ENDPOINT` | (unset) | Local only: base URL for presigned S3 URLs that the browser can reach, for example `http://localhost:5173/__aws` |
 | `OPENBOOK_LIMIT_DAILY_MESSAGES_PER_USER` | `50` | |
 | `OPENBOOK_LIMIT_DAILY_MESSAGES_GLOBAL` | `500` | The kill switch for model spend. Until the public launch, `cdk.json` sets 300 (prod) and 100 (dev) |
+| `OPENBOOK_INGEST_QUEUE_URL` | (required) | The ingest FIFO queue (API sends, worker receives) |
+| `OPENBOOK_VECTOR_BUCKET` | (required) | The stage's S3 Vectors bucket |
+| `OPENBOOK_EMBEDDING_MODEL_ID` | `amazon.titan-embed-text-v2:0` | A Bedrock embedding model that runs on demand in Sydney, or `fake` locally |
+| `OPENBOOK_TRANSCRIBE_MODEL` | the fast model | A catalog ID with residency `au` that accepts images |
+| `OPENBOOK_PDFIUM_PATH` | the executable's directory | Where `libpdfium` is; local runs and tests point it at `.local/pdfium/<platform>/lib` |
+| `OPENBOOK_LIMIT_PAGES_PER_DOCUMENT` | `500` | |
+| `OPENBOOK_LIMIT_DAILY_TRANSCRIBED_PAGES_PER_USER` | `300` | Counted for the document owner |
+| `OPENBOOK_LIMIT_DAILY_TRANSCRIBED_PAGES_GLOBAL` | `1000` | Until the public launch, `cdk.json` sets 300 (prod) and 100 (dev) |
 | `OPENBOOK_LIMIT_DAILY_TOKENS_GLOBAL` | `3000000` | Second spend guard: no new chat once today's global input plus output tokens reach it. Until the public launch, `cdk.json` sets 300000 (prod) and 100000 (dev): at Sonnet list prices that is at most about US$4.50 a day per stack even if every token were output |
 | `OPENBOOK_LIMIT_FAILED_JOINS_PER_DAY` | `20` | Per user; slows down guessing invite codes |
 | `OPENBOOK_LIMIT_COURSES_OWNED` | `10` | |
@@ -151,6 +162,7 @@ Locally, the catalog has one entry `{ "id": "fake", "provider": "fake", ... }` u
 ## Cost guards
 
 - Per-user daily message quota, a global daily message cap, and a global daily token cap (above).
+- Per-user and global daily caps on transcribed pages (about US$0.005 a page with Claude Haiku), a page limit per document, and the 50-document limit per course.
 - Reserved concurrency on the API function (dev 5, prod 25).
 - Server-fixed `maxTokens` (2,000 for chat) and a 20-message history window.
 - The account already has a US$20 monthly AWS Budget with alerts at 85% and 100% actual and 100% forecast.
@@ -158,9 +170,9 @@ Locally, the catalog has one entry `{ "id": "fake", "provider": "fake", ... }` u
 
 ## Phases
 
-0. Monorepo, CI, deployment role, dev stack. (current)
-1. Rust API with the routes in `docs/api.md` (no retrieval yet), quotas, the web app on the new API, local end-to-end tests on AWS Emulator. (current)
-2. Ingestion: PDF pages to Markdown with LaTeX (Claude for pages with math or poor text), chunks split by heading with page numbers, embeddings, S3 Vectors and Tantivy writes.
+0. Monorepo, CI, deployment role, dev stack. (done)
+1. Rust API with the routes in `docs/api.md` (no retrieval yet), quotas, the web app on the new API, local end-to-end tests on AWS Emulator. (done)
+2. (current) Ingestion: PDF pages to Markdown with LaTeX (Claude for pages with math or poor text), chunks split by heading with page numbers, embeddings, S3 Vectors and Tantivy writes.
 3. Hybrid retrieval with reciprocal rank fusion, citations with page numbers, rewrites of follow-up questions.
 4. Retrieval evaluation in CI (Recall@k, nDCG@10, citation accuracy) and tuning against those numbers.
 5. Public sign-up at ask.steve.gg, and removal of the old `SteveStack` and the old portal site.
