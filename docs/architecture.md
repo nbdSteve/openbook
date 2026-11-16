@@ -102,6 +102,8 @@ The API reads only environment variables. Names and defaults:
 | `OPENBOOK_PRESIGN_ENDPOINT` | (unset) | Local only: base URL for presigned S3 URLs that the browser can reach, for example `http://localhost:5173/__aws` |
 | `OPENBOOK_LIMIT_DAILY_MESSAGES_PER_USER` | `50` | |
 | `OPENBOOK_LIMIT_DAILY_MESSAGES_GLOBAL` | `500` | The kill switch for model spend |
+| `OPENBOOK_LIMIT_DAILY_TOKENS_GLOBAL` | `3000000` | Second spend guard: no new chat once today's global input plus output tokens reach it |
+| `OPENBOOK_LIMIT_FAILED_JOINS_PER_DAY` | `20` | Per user; slows down guessing invite codes |
 | `OPENBOOK_LIMIT_COURSES_OWNED` | `10` | |
 | `OPENBOOK_LIMIT_DOCUMENTS_PER_COURSE` | `50` | |
 | `OPENBOOK_LIMIT_UPLOAD_BYTES` | `26214400` | 25 MiB |
@@ -124,7 +126,7 @@ The API reads only environment variables. Names and defaults:
 | `label`, `vendor` | Display only |
 | `provider` | `bedrock` (Converse and ConverseStream), or `fake` (local only; the API refuses it in Lambda) |
 | `modelId` | The Bedrock model or inference profile ID |
-| `residency` | `au` or `global`. It must match `modelId`: `au.` prefix or no prefix (an on-demand model in Sydney) is `au`; `global.` prefix is `global`; any other prefix is refused |
+| `residency` | `au` or `global`. It must match `modelId`, which must have one of three shapes (an allowlist; anything else is refused): `au.<vendor>.<model>` is `au`; `<vendor>.<model>` (an on-demand model in Sydney) is `au`; `global.<vendor>.<model>` is `global`. `<vendor>` must be one of `anthropic`, `openai`, `amazon`, `meta`, `mistral`, `cohere`, `deepseek`, `qwen`. The API and the CDK app use the same rule and the same vendor list. Entries with provider `fake` (local only, refused in Lambda) skip the shape rule and keep the residency they declare, so local tests can have an `au` and a `global` fake model |
 | `maxOutputTokens` | Server-fixed output limit (default 2000) |
 | `temperature` | Optional. Leave it out for models that reject it |
 
@@ -144,7 +146,7 @@ Locally, the catalog has one entry `{ "id": "fake", "provider": "fake", ... }` u
 
 ## Cost guards
 
-- Per-user daily message quota and a global daily message cap (above).
+- Per-user daily message quota, a global daily message cap, and a global daily token cap (above).
 - Reserved concurrency on the API function (dev 5, prod 25).
 - Server-fixed `maxTokens` (2,000 for chat) and a 20-message history window.
 - The account already has a US$20 monthly AWS Budget with alerts at 85% and 100% actual and 100% forecast.
