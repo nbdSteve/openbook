@@ -39,6 +39,14 @@ name: deploy
 on:
   push:
     branches: [main]
+    # A push that changes only these files has nothing to deploy and nothing to check, so it
+    # saves the Actions minutes. A push that changes anything else runs the whole pipeline.
+    # `workflow_dispatch` stays, so a deploy can always be started by hand.
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - 'evals/results/**'
+      - 'LICENSE'
   workflow_dispatch:
 
 permissions:
