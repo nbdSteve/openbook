@@ -43,6 +43,7 @@ OPENBOOK_BEDROCK_PROFILE="" scripts/bootstrap-local.sh \
   --stack-dir "$stack_dir" --daily-messages-per-user 8
 
 stack_start api stack_run_api "${stack_dir}/api.env"
+stack_start ingest stack_run_ingest "${stack_dir}/api.env"
 stack_start web stack_run_web "$emulator_port" "$api_port" "$web_port" "${repo_root}/${stack_dir}/web-config.json"
 
 stack_wait_url "API" "http://127.0.0.1:${api_port}/api/health" 900

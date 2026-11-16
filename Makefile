@@ -98,9 +98,8 @@ e2e-local: ## Run the Playwright flows against a fresh, isolated local stack
 	scripts/e2e-local.sh
 
 .PHONY: build-lambdas
-build-lambdas: ## Build the API Lambda for arm64 (target/lambda/openbook-api/bootstrap)
-	@command -v cargo-lambda > /dev/null || { echo "error: cargo-lambda is not installed (see https://www.cargo-lambda.info)" >&2; exit 1; }
-	cargo lambda build --release --arm64 -p openbook-api
+build-lambdas: ## Build the API and ingest Lambdas for arm64, with libpdfium.so next to the ingest bootstrap
+	scripts/build-lambdas.sh
 
 .PHONY: build-web
 build-web: ## Build the web app (apps/ask/dist)
