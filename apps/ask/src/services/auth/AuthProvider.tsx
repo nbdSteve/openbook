@@ -6,11 +6,13 @@ import * as cognito from './cognito';
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<AuthContextValue['status']>('loading');
   const [user, setUser] = useState<cognito.SessionUser | null>(null);
+  const [endedBy, setEndedBy] = useState<AuthContextValue['endedBy']>(null);
   const timer = useRef<number | undefined>(undefined);
 
-  const applySignedOut = useCallback(() => {
+  const applySignedOut = useCallback((by: 'user' | 'expired' = 'expired') => {
     window.clearTimeout(timer.current);
     setUser(null);
+    setEndedBy(by);
     setStatus('signedOut');
   }, []);
 
@@ -23,7 +25,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       timer.current = window.setTimeout(async () => {
         const restored = await cognito.restoreSession();
         if (restored) schedule.current(restored.expiresAt);
-        else applySignedOut();
+        else applySignedOut('expired');
       }, seconds * 1000);
     };
   }, [applySignedOut]);
@@ -74,6 +76,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const signedIn = await cognito.signIn(email, password);
       const restored = await cognito.restoreSession();
       setUser(signedIn);
+      setEndedBy(null);
       setStatus('signedIn');
       if (restored) scheduleRefresh(restored.expiresAt);
     },
@@ -82,9 +85,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signOut = useCallback(async () => {
     await cognito.signOut();
-    applySignedOut();
+    applySignedOut('user');
   }, [applySignedOut]);
 
-  const value = useMemo(() => ({ status, user, signIn, signOut }), [status, user, signIn, signOut]);
+  const value = useMemo(() => ({ status, user, endedBy, signIn, signOut }), [status, user, endedBy, signIn, signOut]);
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

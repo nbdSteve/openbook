@@ -157,7 +157,7 @@ function CourseShell({ course, setCourse, conversationId }: CourseShellProps) {
         onDeleteConversation={setToDelete}
         onLeave={() => setLeaving(true)}
         onSignOut={() => {
-          void signOut().then(() => navigate('/', { replace: true }));
+          void signOut();
         }}
       />
       <div className="flex min-w-0 flex-1 flex-col">
