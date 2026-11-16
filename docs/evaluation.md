@@ -16,12 +16,14 @@ A chunk is relevant when its page range includes a labeled page. Every metric is
 
 - `evals/corpus/`: an excerpt of an openly licensed mathematics textbook (OpenStax, CC BY 4.0), about 40 pages that cover quadratics, functions, and exponents, with an `ATTRIBUTION.md` that names the source, the licence, and the changes (page selection only). The excerpt has real textbook layout: headings, worked examples, exercises, figures, and display math.
 - `evals/golden.jsonl`: one question per line: `{ "id", "question", "relevantPages": [n], "kind" }`. `kind` is one of `lookup` (close to the book's words), `paraphrase` (different words), `notation` (written in math notation, for example `x^2 - 5x + 6 = 0`), `followup` (needs the previous question, given in `context`), and `not_covered` (answerable, but not from this corpus). At least 80 questions, at least 10 of each kind. Draft questions may come from a model, but every question is checked by hand against the page before it goes in.
+- `evals/corpus/sections.json`: splits the excerpt into five sections. The evaluation treats each section as one document, so the per-document cap works as it does in a course with several PDFs. (A course with one big PDF gets at most 4 sources per question, because of that cap.)
+- `evals/cache-dev/`: a development cache (PDF text layer and fake embeddings) that shows the harness works. It is never used for the baseline, and `--check` refuses it.
 - `evals/cache/`: the inputs that make the offline mode deterministic: the page Markdown that real ingestion produced for the corpus (Claude transcription included), and the embeddings of every chunk and every question (keyed by embedding model and the SHA-256 of the exact embedded text, stored as compressed 16-bit floats).
 
 ## Modes
 
 - **Offline** (`make eval`): chunk the cached pages with the real chunker, build the real BM25 index and an in-memory dense index from the cached embeddings, run the real retrieval and fusion code for every golden question, and print the metrics table. No AWS, no network, deterministic, a few seconds. A missing cache entry is an error, not a silent skip.
-- **Live** (`make eval-live` with `AWS_PROFILE`): ingest the corpus PDF through the real worker code with real Bedrock transcription and Titan embeddings, query real S3 Vectors in the dev stack, measure latency, and refresh `evals/cache/` (the diff is reviewed and committed like code).
+- **Live** (`make eval-live` with `AWS_PROFILE`): ingest the corpus PDF through the real worker code with real Bedrock transcription and Titan embeddings, query real S3 Vectors in the dev stack, measure latency, and refresh `evals/cache/` (the diff is reviewed and committed like code). The first version of the refresh runs the pipeline on this machine and does not query S3 Vectors: it records the time of the Titan query embedding calls, and the S3 Vectors and BM25 latency measurement is still to do.
 
 ## Protection in CI
 
