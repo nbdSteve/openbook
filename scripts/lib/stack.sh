@@ -8,6 +8,11 @@ set -m
 
 stack_pids=()
 
+# Each started program also writes its raw output (no prefix) to $STACK_LOG_DIR/<label>.log,
+# so that a script can wait for a line of the log (see stack_wait_log).
+STACK_LOG_DIR="${STACK_LOG_DIR:-${TMPDIR:-/tmp}/openbook-stack-$$}"
+mkdir -p "$STACK_LOG_DIR"
+
 stack_log() { printf '[stack] %s\n' "$*"; }
 
 # stack_start <label> <command...>: run a command in the background with every output line
@@ -17,7 +22,8 @@ stack_start() {
   shift
   # Job control gives a background job the terminal. A program that reads stdin (Vite does)
   # would then get SIGTTIN and freeze when the user presses a key. Give it /dev/null instead.
-  { "$@" < /dev/null 2>&1 | awk -v p="[${label}] " '{ print p $0; fflush() }'; } &
+  : > "${STACK_LOG_DIR}/${label}.log"
+  { "$@" < /dev/null 2>&1 | tee -a "${STACK_LOG_DIR}/${label}.log" | awk -v p="[${label}] " '{ print p $0; fflush() }'; } &
   stack_pids+=("$!")
 }
 
@@ -85,34 +91,46 @@ stack_wait_url() {
   return 1
 }
 
-# stack_run_rust <env-file> <cargo args...>: run `cargo run --quiet <args>` with only the
-# variables of the env file plus a short allowlist that cargo needs. Nothing else of the
-# caller's environment gets through, so an exported OPENBOOK_LIMIT_* value, an AWS profile, or
-# a real credential cannot change the local API or worker.
-stack_run_rust() {
-  local env_file="$1" entry name
-  shift
+# stack_binary <name>: the path of a binary that stack_build made. It reads the target folder
+# from cargo, so CARGO_TARGET_DIR and build.target-dir are respected.
+stack_binary() {
+  local target
+  target="$(cargo metadata --format-version 1 --no-deps | jq -r .target_directory)"
+  echo "${target}/debug/$1"
+}
+
+# stack_run_bin <env-file> <binary> [args...]: run a built binary with only the variables of
+# the env file plus a short allowlist. Nothing else of the caller's environment gets through,
+# so an exported OPENBOOK_LIMIT_* value, an AWS profile, or a real credential cannot change
+# the local API or worker.
+#
+# It runs the binary that `stack_build` made, never `cargo run`. `cargo build -p a -p b` builds
+# both programs with one set of unified features, and `cargo run -p a` alone would use another
+# set, so it would compile again, silently, while the scripts wait.
+stack_run_bin() {
+  local env_file="$1" binary="$2" entry name
+  shift 2
   local allowed=()
   while IFS= read -r -d '' entry; do
     name="${entry%%=*}"
     case "$name" in
-      PATH | HOME | USER | LOGNAME | TERM | TMPDIR | LANG | LC_* | CARGO_* | RUSTUP_* | RUSTFLAGS | RUSTC | RUSTC_* | RUSTDOC | SDKROOT | DEVELOPER_DIR | CC | CXX | CFLAGS | LDFLAGS | XDG_*)
+      PATH | HOME | USER | LOGNAME | TERM | TMPDIR | LANG | LC_* | XDG_*)
         allowed+=("$entry")
         ;;
     esac
   done < <(env -0)
   # shellcheck disable=SC2016 # $1 and $@ are for the inner bash
-  exec env -i ${allowed[@]+"${allowed[@]}"} bash -c 'set -a; . "$1"; set +a; shift; exec cargo run --quiet "$@"' _ "$env_file" "$@"
+  exec env -i ${allowed[@]+"${allowed[@]}"} bash -c 'set -a; . "$1"; set +a; shift; exec "$@"' _ "$env_file" "$binary" "$@"
 }
 
 # stack_run_api <env-file>: the API.
 stack_run_api() {
-  stack_run_rust "$1" -p openbook-api
+  stack_run_bin "$1" "$(stack_binary openbook-api)"
 }
 
 # stack_run_ingest <env-file>: the ingest worker, polling the local queue.
 stack_run_ingest() {
-  stack_run_rust "$1" -p openbook-ingest -- --poll
+  stack_run_bin "$1" "$(stack_binary openbook-ingest)" --poll
 }
 
 # stack_run_web <emulator-port> <api-port> <web-port> <web-config-file>: run the Vite dev server.
@@ -127,4 +145,33 @@ stack_run_web() {
     export OPENBOOK_WEB_CONFIG="$web_config"
     exec npm --prefix apps/ask run dev
   )
+}
+
+# stack_build: build the API and the worker before anything starts. The first build of a cold
+# cache compiles hundreds of crates. Without this step, `cargo run --quiet` compiles them
+# silently while the scripts wait, and the wait times out. The output stays visible, so a CI
+# log shows the progress. After it, the scripts start the built binaries directly.
+stack_build() {
+  stack_log "building openbook-api and openbook-ingest"
+  cargo build -p openbook-api -p openbook-ingest
+}
+
+# stack_wait_log <label> <text> <timeout-seconds>: wait until the log of a started program
+# has a line that contains the text. Stops early (and fails) when a started job has exited.
+stack_wait_log() {
+  local label="$1" text="$2" timeout="$3" waited=0
+  while [ "$waited" -lt "$timeout" ]; do
+    if grep -qF -- "$text" "${STACK_LOG_DIR}/${label}.log" 2> /dev/null; then
+      stack_log "${label} is ready: \"${text}\""
+      return 0
+    fi
+    if ! stack_alive; then
+      echo "error: a process exited while waiting for ${label}" >&2
+      return 1
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  echo "error: ${label} did not log \"${text}\" within ${timeout}s" >&2
+  return 1
 }

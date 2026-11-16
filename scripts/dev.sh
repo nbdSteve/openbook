@@ -35,6 +35,9 @@ trap 'exit 143' TERM
 stack_port_free "$api_port" "API"
 stack_port_free "$web_port" "web"
 
+# Build first, with visible output, so that the waits below measure only the start-up.
+stack_build
+
 if scripts/emulator.sh status "$emulator_port" > /dev/null 2>&1; then
   stack_log "using the emulator that is already running on port ${emulator_port}"
 else
@@ -57,8 +60,8 @@ stack_start api stack_run_api "${stack_dir}/api.env"
 stack_start ingest stack_run_ingest "${stack_dir}/api.env"
 stack_start web stack_run_web "$emulator_port" "$api_port" "$web_port" "${repo_root}/${stack_dir}/web-config.json"
 
-# The first API start compiles the Rust workspace, which can take a few minutes.
-stack_wait_url "API" "http://127.0.0.1:${api_port}/api/health" 900
+stack_wait_url "API" "http://127.0.0.1:${api_port}/api/health" 120
+stack_wait_log ingest "polling the ingest queue" 120
 stack_wait_url "web" "http://localhost:${web_port}/config.json" 120
 
 stack_log "ready: http://localhost:${web_port}  (sign in as teacher@openbook.test or student@openbook.test, password Openbook-local-1)"

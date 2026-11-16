@@ -33,6 +33,10 @@ trap 'exit 143' TERM
 stack_port_free "$api_port" "API"
 stack_port_free "$web_port" "web"
 
+# Build first, with visible output (a cold cache compiles for minutes), so that the waits
+# below measure only the start-up of programs that are already built.
+stack_build
+
 # A fresh emulator every time, so no test depends on an earlier run.
 scripts/emulator.sh down "$emulator_port"
 scripts/emulator.sh up "$emulator_port"
@@ -46,7 +50,9 @@ stack_start api stack_run_api "${stack_dir}/api.env"
 stack_start ingest stack_run_ingest "${stack_dir}/api.env"
 stack_start web stack_run_web "$emulator_port" "$api_port" "$web_port" "${repo_root}/${stack_dir}/web-config.json"
 
-stack_wait_url "API" "http://127.0.0.1:${api_port}/api/health" 900
+stack_wait_url "API" "http://127.0.0.1:${api_port}/api/health" 120
+# The worker has no health endpoint. It logs this line when it starts to poll the queue.
+stack_wait_log ingest "polling the ingest queue" 120
 stack_wait_url "web" "http://localhost:${web_port}/config.json" 120
 stack_wait_url "web proxy to the API" "http://localhost:${web_port}/api/health" 30
 

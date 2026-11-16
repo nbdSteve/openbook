@@ -42,6 +42,8 @@ jobs:
       - name: install the pinned toolchain
         run: rustup show
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          cache-on-failure: true
       # The ingest tests open PDFs with pdfium. The script downloads the pinned build and prints
       # where the library is.
       - name: fetch pdfium for the tests
@@ -59,6 +61,8 @@ jobs:
           persist-credentials: false
       - run: rustup show
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          cache-on-failure: true
       # pip installs cargo-lambda with the Zig linker it needs to cross-compile for arm64.
       - name: install cargo-lambda
         run: pip3 install "cargo-lambda==${CARGO_LAMBDA_VERSION}" "ziglang==${ZIGLANG_VERSION}"
@@ -78,6 +82,8 @@ jobs:
           persist-credentials: false
       - run: rustup show
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          cache-on-failure: true
       - name: fetch pdfium for the tests
         run: echo "OPENBOOK_PDFIUM_PATH=$(scripts/fetch-pdfium.sh linux-x64)" >> "$GITHUB_ENV"
       # Build from the latest RPM, never from a cached layer. `make test-integration` then
@@ -160,7 +166,10 @@ jobs:
         with:
           persist-credentials: false
       - run: rustup show
+      # Save the cache even if a later step fails, so that a retry does not compile again.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          cache-on-failure: true
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
