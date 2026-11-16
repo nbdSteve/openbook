@@ -121,9 +121,24 @@ describe.each([
       Runtime: 'provided.al2023',
       Architectures: ['arm64'],
       Handler: 'bootstrap',
-      MemorySize: 512,
+      MemorySize: 1024,
       Timeout: 120,
+      EphemeralStorage: { Size: 2048 },
     });
+  });
+
+  test('only the API function changed size: the worker keeps 3008 MB and 4096 MB of /tmp', () => {
+    s.template.hasResourceProperties('AWS::Lambda::Function', {
+      Handler: 'bootstrap',
+      MemorySize: 3008,
+      Timeout: 900,
+      EphemeralStorage: { Size: 4096 },
+    });
+    const sizes = Object.values(s.json.Resources)
+      .filter((r) => r.Type === 'AWS::Lambda::Function' && r.Properties?.Handler === 'bootstrap')
+      .map((r) => [r.Properties?.MemorySize, (r.Properties?.EphemeralStorage as { Size: number }).Size])
+      .sort();
+    expect(sizes).toEqual([[1024, 2048], [3008, 4096]]);
   });
 
   test('the function environment has no local-only variable and uses Bedrock', () => {
