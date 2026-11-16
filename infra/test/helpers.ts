@@ -86,3 +86,21 @@ export function asArray<T>(value: T | T[] | undefined): T[] {
   if (value === undefined) return [];
   return Array.isArray(value) ? value : [value];
 }
+
+/**
+ * Synthesizes the prod stack the way the CI build job does (no account) and copies the cloud
+ * assembly to `target`. The layer zip is emptied, because validators only check that it exists.
+ */
+export function copyAgnosticAssembly(target: string): void {
+  const app = newApp({ ...cdkJsonContext, stage: 'prod', apiAssetDir: fixtures.api, webAssetDir: fixtures.web });
+  const config = resolveConfig(app.node);
+  new OpenbookStack(app, 'Openbook-prod', {
+    config,
+    env: { region: 'ap-southeast-2' },
+    synthesizer: deploymentSynthesizer(config.stage),
+  });
+  fs.cpSync(app.synth().directory, target, { recursive: true });
+  for (const file of fs.readdirSync(target)) {
+    if (file.endsWith('.zip')) fs.writeFileSync(path.join(target, file), '');
+  }
+}
