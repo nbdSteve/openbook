@@ -101,8 +101,10 @@ jobs:
         working-directory: apps/ask
       - run: npm ci
         working-directory: infra
-      - name: build the API Lambda
-        run: cargo lambda build --release --arm64 -p openbook-api
+      # Builds the API and the ingest worker for arm64, and copies libpdfium.so (pinned by
+      # SHA-256 in scripts/fetch-pdfium.sh) next to the worker's bootstrap.
+      - name: build the Lambda functions
+        run: make build-lambdas
       - name: build the web app
         run: npm run build
         working-directory: apps/ask
@@ -221,9 +223,22 @@ jobs:
             exit 1
           fi
           tar -C infra -xf assembly/cdk-assembly.tar
-          bootstrap="$(find infra/cdk.out -type f -name bootstrap)"
-          if [ "$(echo "$bootstrap" | grep -c .)" -ne 1 ] || [ ! -x "$bootstrap" ]; then
-            echo "::error::the Lambda bootstrap binary is missing or is not executable"
+          # Two Lambda binaries (the API and the ingest worker), both executable. The worker
+          # also needs libpdfium.so beside its bootstrap.
+          bootstraps="$(find infra/cdk.out -type f -name bootstrap)"
+          if [ "$(echo "$bootstraps" | grep -c .)" -ne 2 ]; then
+            echo "::error::expected exactly two Lambda bootstrap binaries"
+            exit 1
+          fi
+          for bootstrap in $bootstraps; do
+            if [ ! -x "$bootstrap" ]; then
+              echo "::error::a Lambda bootstrap binary is not executable"
+              exit 1
+            fi
+          done
+          pdfium="$(find infra/cdk.out -type f -name libpdfium.so)"
+          if [ "$(echo "$pdfium" | grep -c .)" -ne 1 ] || [ ! -x "$(dirname "$pdfium")/bootstrap" ]; then
+            echo "::error::libpdfium.so is missing, or is not beside the ingest bootstrap"
             exit 1
           fi
           node infra/scripts/validate-assembly.js infra/cdk.out

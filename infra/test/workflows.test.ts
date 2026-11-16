@@ -179,7 +179,7 @@ describe('the deploy workflow', () => {
     expect(build.steps[0].name).toBe('require main');
     expect(deploy.text).toContain('refs/heads/main');
     const runs = build.steps.map((s) => s.run ?? '').join('\n');
-    expect(runs).toContain('cargo lambda build --release --arm64 -p openbook-api');
+    expect(runs).toContain('make build-lambdas');
     expect(runs).toContain('npm run build');
     expect(runs).toContain('npm test');
     expect(runs).toContain('npx cdk synth --quiet -c stage=prod');
@@ -344,6 +344,29 @@ describe('the verify, unpack, and validate step', () => {
     const result = runStep({ prepare: (cdkOut) => fs.chmodSync(bootstrapOf(cdkOut), 0o644) });
     expect(result.status).not.toBe(0);
     expect(result.output).toContain('not executable');
+  });
+
+  test('refuses an assembly without libpdfium.so beside the ingest bootstrap', () => {
+    const result = runStep({
+      prepare: (cdkOut) => {
+        for (const dir of fs.readdirSync(cdkOut)) {
+          if (fs.statSync(path.join(cdkOut, dir)).isDirectory()) fs.rmSync(path.join(cdkOut, dir, 'libpdfium.so'), { force: true });
+        }
+      },
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.output).toContain('libpdfium.so is missing');
+  });
+
+  test('refuses an assembly with only one Lambda binary', () => {
+    const result = runStep({
+      prepare: (cdkOut) => {
+        const dirs = fs.readdirSync(cdkOut).filter((d) => fs.existsSync(path.join(cdkOut, d, 'bootstrap')));
+        fs.rmSync(path.join(cdkOut, dirs[0], 'bootstrap'));
+      },
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.output).toContain('exactly two Lambda bootstrap binaries');
   });
 
   test('refuses a tar whose hash is not the one that the build job recorded', () => {
