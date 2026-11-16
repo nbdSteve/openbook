@@ -17,7 +17,7 @@ The evaluation runs the same retrieval code as the API (`openbook_search::retrie
 
 ## Commands
 
-Run all commands from the repository root.
+Run all commands from the repository root. The `make` targets are short forms: `make eval-dev` is `offline --dev-cache`, `make eval` is `offline --check`, and `AWS_PROFILE=<profile> make eval-live` (with `YES=1` to start) is the live refresh.
 
 ### Offline (no network, no AWS)
 
