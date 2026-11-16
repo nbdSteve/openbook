@@ -119,7 +119,7 @@ The API reads only environment variables. Names and defaults:
 | `OPENBOOK_LIMIT_PAGES_PER_DOCUMENT` | `500` | |
 | `OPENBOOK_LIMIT_DAILY_TRANSCRIBED_PAGES_PER_USER` | `300` | Counted for the document owner |
 | `OPENBOOK_LIMIT_DAILY_TRANSCRIBED_PAGES_GLOBAL` | `1000` | Until the public launch, `cdk.json` sets 300 (prod) and 100 (dev) |
-| `OPENBOOK_LIMIT_DAILY_TOKENS_GLOBAL` | `3000000` | Second spend guard: no new chat once today's global input plus output tokens reach it. Until the public launch, `cdk.json` sets 300000 (prod) and 100000 (dev): at Sonnet list prices that is at most about US$4.50 a day per stack even if every token were output |
+| `OPENBOOK_LIMIT_DAILY_TOKENS_GLOBAL` | `3000000` | Second spend guard: no new chat once today's global input plus output tokens reach it. Until the public launch, `cdk.json` sets 1500000 (prod) and 500000 (dev). A chat turn with retrieval sends about 5,000 input tokens (the sources) plus the answer, so the message caps (300 and 100) stay the binding limit and the token cap is the backstop. Worst case at Sonnet list prices (US$3 per million input tokens, US$15 per million output tokens), for prod: about US$7 a day at a realistic mix (85% input, 15% output), and at most about US$22 a day if every token were output. Dev is a third of that |
 | `OPENBOOK_LIMIT_FAILED_JOINS_PER_DAY` | `20` | Per user; slows down guessing invite codes |
 | `OPENBOOK_LIMIT_COURSES_OWNED` | `10` | |
 | `OPENBOOK_LIMIT_DOCUMENTS_PER_COURSE` | `50` | |
@@ -164,7 +164,7 @@ Locally, the catalog has one entry `{ "id": "fake", "provider": "fake", ... }` u
 
 ## Cost guards
 
-- Per-user daily message quota, a global daily message cap, and a global daily token cap (above).
+- Per-user daily message quota, a global daily message cap, and a global daily token cap (above). Until the public launch the prod caps are 300 messages and 1,500,000 tokens a day, which cost at most about US$7 a day at a realistic input-to-output mix, and about US$22 if every token were output (Sonnet list prices). The monthly budget alerts below are the second line.
 - Per-user and global daily caps on transcribed pages (about US$0.005 a page with Claude Haiku), a page limit per document, and the 50-document limit per course.
 - Reserved concurrency on the API function (dev 5, prod 25).
 - Server-fixed `maxTokens` (2,000 for chat) and a 20-message history window.

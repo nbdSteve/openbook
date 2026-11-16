@@ -158,7 +158,7 @@ describe.each([
     expect(env.OPENBOOK_LIMIT_DAILY_MESSAGES_PER_USER).toBe('50');
     // The spend caps until the public launch (stageLimits in cdk.json), well below the API defaults.
     expect(env.OPENBOOK_LIMIT_DAILY_MESSAGES_GLOBAL).toBe(_stage === 'prod' ? '300' : '100');
-    expect(env.OPENBOOK_LIMIT_DAILY_TOKENS_GLOBAL).toBe(_stage === 'prod' ? '300000' : '100000');
+    expect(env.OPENBOOK_LIMIT_DAILY_TOKENS_GLOBAL).toBe(_stage === 'prod' ? '1500000' : '500000');
     expect(env.OPENBOOK_LIMIT_FAILED_JOINS_PER_DAY).toBe('20');
     expect(env.OPENBOOK_LIMIT_COURSES_OWNED).toBe('10');
     expect(env.OPENBOOK_LIMIT_DOCUMENTS_PER_COURSE).toBe('50');
