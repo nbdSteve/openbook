@@ -7,30 +7,22 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use async_trait::async_trait;
 use futures::StreamExt;
 use openbook_core::domain::{CourseRecord, Document, DocumentStatus, MessageRole, Source};
 use openbook_core::model::{ChatModel, ChatRequest, ChatTurn, ModelEvent, TokenUsage};
 use openbook_core::prompt::{REWRITE_SYSTEM_PROMPT, SourceContext, SourceMode, rewrite_user_text};
 use openbook_search::bm25::Bm25ReaderCache;
 use openbook_search::embed::Embedder;
+pub use openbook_search::retrieval::{
+    DENSE_TOP_K, FINAL_SOURCES, Fused, GATE_MAX_DISTANCE, Hit, LEXICAL_TOP_K, MAX_PER_DOCUMENT,
+    MAX_QUERY_CHARS, Outcome, Passage, RETRIEVER_TIMEOUT, RRF_K, clean_query, clip, fuse,
+    passes_gate,
+};
+use openbook_search::retrieval::{DenseResult, DenseSearch, LexicalSearch, decide, search_both};
 use openbook_search::vectors::{VectorStore, index_name};
 use serde::Serialize;
 
-// ---- The numbers. They are tuned in phase 4. Keep them here.
-/// Candidates from the dense search.
-pub const DENSE_TOP_K: u32 = 40;
-/// Candidates from BM25.
-pub const LEXICAL_TOP_K: usize = 40;
-/// Reciprocal rank fusion: `score = sum over lists of 1 / (RRF_K + rank)`, with rank from 1.
-pub const RRF_K: f64 = 60.0;
-/// Sources that go to the model and the student.
-pub const FINAL_SOURCES: usize = 8;
-/// Most sources from one document.
-pub const MAX_PER_DOCUMENT: usize = 4;
-/// The gate: with no BM25 hit, a best dense cosine distance above this means no sources.
-/// With Titan v2, a relevant passage had distances near 0.68 and an unrelated question near 0.94.
-/// Phase 4 tunes this number against the evaluation set.
-pub const GATE_MAX_DISTANCE: f32 = 0.85;
 /// The longest snippet in a `sources` event, in characters. It is the whole chunk: the chunker's
 /// limit is `MAX_CHARS` (2400), and a table or a formula that cannot be split is cut here. The model
 /// gets the same clipped text, so it sees exactly what the student can read.
@@ -43,112 +35,6 @@ pub const TRACE_MAX_BYTES: usize = 32 * 1024;
 pub const REWRITE_TIMEOUT: Duration = Duration::from_secs(5);
 pub const REWRITE_MAX_TOKENS: i32 = 100;
 pub const REWRITE_HISTORY: usize = 6;
-/// A search query is cut to this many characters.
-pub const MAX_QUERY_CHARS: usize = 500;
-/// Each retriever gets this long. A slow one counts as failed.
-pub const RETRIEVER_TIMEOUT: Duration = Duration::from_secs(3);
-
-/// A passage that a retriever found.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Passage {
-    /// `<documentId>:<chunkIndex>`.
-    pub key: String,
-    pub document_id: String,
-    pub page: u32,
-    pub heading: String,
-    pub text: String,
-}
-
-/// A candidate from one retriever. `value` is the cosine distance (dense, smaller is closer) or the
-/// BM25 score (lexical, larger is better). The list order is the rank.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Hit {
-    pub passage: Passage,
-    pub value: f32,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Fused {
-    pub passage: Passage,
-    pub score: f64,
-    pub dense_rank: Option<usize>,
-    pub lexical_rank: Option<usize>,
-}
-
-/// Fuses two ranked lists with reciprocal rank fusion. Ranks start at 1 in list order. The result
-/// is in fused order, at most `FINAL_SOURCES` long, and has at most `MAX_PER_DOCUMENT` per document.
-pub fn fuse(dense: &[Hit], lexical: &[Hit]) -> Vec<Fused> {
-    let mut by_key: HashMap<&str, Fused> = HashMap::new();
-    let mut order: Vec<&str> = Vec::new();
-    for (list, is_dense) in [(dense, true), (lexical, false)] {
-        for (index, hit) in list.iter().enumerate() {
-            let rank = index + 1;
-            let entry = by_key.entry(hit.passage.key.as_str()).or_insert_with(|| {
-                order.push(hit.passage.key.as_str());
-                Fused {
-                    passage: hit.passage.clone(),
-                    score: 0.0,
-                    dense_rank: None,
-                    lexical_rank: None,
-                }
-            });
-            // A key can repeat inside one list. Only its first place counts.
-            let slot = if is_dense {
-                &mut entry.dense_rank
-            } else {
-                &mut entry.lexical_rank
-            };
-            if slot.is_none() {
-                *slot = Some(rank);
-                entry.score += 1.0 / (RRF_K + rank as f64);
-            }
-        }
-    }
-    let mut all: Vec<Fused> = order.iter().filter_map(|k| by_key.remove(k)).collect();
-    // Best score first. Ties go to the better rank in either list, then to the key, so the order is stable.
-    all.sort_by(|a, b| {
-        b.score
-            .total_cmp(&a.score)
-            .then_with(|| best_rank(a).cmp(&best_rank(b)))
-            .then_with(|| a.passage.key.cmp(&b.passage.key))
-    });
-    let mut per_document: HashMap<String, usize> = HashMap::new();
-    let mut kept = Vec::new();
-    for candidate in all {
-        let count = per_document
-            .entry(candidate.passage.document_id.clone())
-            .or_insert(0);
-        if *count >= MAX_PER_DOCUMENT {
-            continue;
-        }
-        *count += 1;
-        kept.push(candidate);
-        if kept.len() == FINAL_SOURCES {
-            break;
-        }
-    }
-    kept
-}
-
-fn best_rank(f: &Fused) -> usize {
-    [f.dense_rank, f.lexical_rank]
-        .into_iter()
-        .flatten()
-        .min()
-        .unwrap_or(usize::MAX)
-}
-
-/// The relevance gate. With no BM25 hit, a best dense distance above `GATE_MAX_DISTANCE` (or no dense
-/// result at all) gives no sources.
-pub fn passes_gate(best_dense_distance: Option<f32>, lexical_hits: usize) -> bool {
-    let dense_is_close = best_dense_distance.is_some_and(|d| d <= GATE_MAX_DISTANCE);
-    dense_is_close || lexical_hits > 0
-}
-
-/// Cuts text to `max` characters (never inside a character).
-pub fn clip(text: &str, max: usize) -> String {
-    text.chars().take(max).collect()
-}
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -247,16 +133,6 @@ fn trace_hits(hits: &[Hit]) -> Vec<TraceHit> {
         .collect()
 }
 
-/// How retrieval ended for a turn.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Outcome {
-    /// Retrieval did not run (no ready documents) or both retrievers failed.
-    NotUsed,
-    Found,
-    /// The gate found nothing.
-    NotCovered,
-}
-
 /// The result for one turn.
 #[derive(Debug, Clone)]
 pub struct TurnResult {
@@ -298,27 +174,25 @@ pub struct Retrieval {
     pub bm25: Bm25ReaderCache,
 }
 
-/// A retriever result: `None` when it failed.
-struct Searched {
-    /// Input tokens of the query embedding.
-    embed_tokens: u64,
-    dense: Option<Vec<Hit>>,
-    lexical: Option<Vec<Hit>>,
-    dense_ms: Option<u64>,
-    lexical_ms: Option<u64>,
-    errors: Vec<String>,
+/// The dense backend for one course: Titan embeddings and S3 Vectors.
+struct CourseDense<'a> {
+    retrieval: &'a Retrieval,
+    course_id: &'a str,
 }
 
-impl Retrieval {
-    async fn dense(&self, course_id: &str, query: &str) -> Result<(Vec<Hit>, u64), String> {
+#[async_trait]
+impl DenseSearch for CourseDense<'_> {
+    async fn search(&self, query: &str) -> Result<DenseResult, String> {
         let (embedding, tokens) = self
+            .retrieval
             .embedder
             .embed_counted(query)
             .await
             .map_err(|e| format!("embedding: {e}"))?;
         let hits = self
+            .retrieval
             .vectors
-            .query_existing(&index_name(course_id), &embedding, DENSE_TOP_K, None)
+            .query_existing(&index_name(self.course_id), &embedding, DENSE_TOP_K, None)
             .await
             .map_err(|e| e.to_string())?
             .ok_or_else(|| "the vector index was not found".to_owned())?;
@@ -335,16 +209,29 @@ impl Retrieval {
                 },
             })
             .collect();
-        Ok((hits, tokens))
+        Ok(DenseResult {
+            hits,
+            embed_tokens: tokens,
+        })
     }
+}
 
-    async fn lexical(&self, course: &CourseRecord, query: &str) -> Result<Vec<Hit>, String> {
-        let Some(key) = &course.bm25_key else {
+/// The lexical backend for one course: the BM25 index from S3.
+struct CourseLexical<'a> {
+    retrieval: &'a Retrieval,
+    course: &'a CourseRecord,
+}
+
+#[async_trait]
+impl LexicalSearch for CourseLexical<'_> {
+    async fn search(&self, query: &str) -> Result<Vec<Hit>, String> {
+        let Some(key) = &self.course.bm25_key else {
             return Ok(Vec::new());
         };
         let reader = self
+            .retrieval
             .bm25
-            .reader(&course.id, key)
+            .reader(&self.course.id, key)
             .await
             .map_err(|e| e.to_string())?;
         let query = query.to_owned();
@@ -366,46 +253,23 @@ impl Retrieval {
             })
             .collect())
     }
+}
 
-    async fn search(&self, course: &CourseRecord, query: &str) -> Searched {
-        async fn timed<T>(
-            future: impl std::future::Future<Output = Result<T, String>>,
-        ) -> (Result<T, String>, u64) {
-            let started = Instant::now();
-            let result = match tokio::time::timeout(RETRIEVER_TIMEOUT, future).await {
-                Ok(result) => result,
-                Err(_) => Err("timed out".to_owned()),
-            };
-            (result, started.elapsed().as_millis() as u64)
-        }
-        let ((dense, dense_ms), (lexical, lexical_ms)) = tokio::join!(
-            timed(self.dense(&course.id, query)),
-            timed(self.lexical(course, query))
-        );
-        let mut errors = Vec::new();
-        let mut embed_tokens = 0;
-        let dense = dense.map(|(hits, tokens)| {
-            embed_tokens = tokens;
-            hits
-        });
-        let mut keep = |name: &str, result: Result<Vec<Hit>, String>| match result {
-            Ok(hits) => Some(hits),
-            Err(error) => {
-                tracing::warn!(retriever = name, %error, "retriever failed");
-                errors.push(format!("{name} failed"));
-                None
-            }
+impl Retrieval {
+    async fn search(
+        &self,
+        course: &CourseRecord,
+        query: &str,
+    ) -> openbook_search::retrieval::Searched {
+        let dense = CourseDense {
+            retrieval: self,
+            course_id: &course.id,
         };
-        let dense = keep("dense", dense);
-        let lexical = keep("lexical", lexical);
-        Searched {
-            embed_tokens,
-            dense,
-            lexical,
-            dense_ms: Some(dense_ms),
-            lexical_ms: Some(lexical_ms),
-            errors,
-        }
+        let lexical = CourseLexical {
+            retrieval: self,
+            course,
+        };
+        search_both(&dense, &lexical, query, RETRIEVER_TIMEOUT).await
     }
 }
 
@@ -450,15 +314,6 @@ pub async fn rewrite_query(
         .flatten();
     let used = usage.lock().map(|u| *u).unwrap_or_default();
     (text.and_then(|t| clean_query(&t)), used)
-}
-
-/// One line, no quotes, one space between words, at most `MAX_QUERY_CHARS`. `None` when empty.
-pub fn clean_query(text: &str) -> Option<String> {
-    let line = text.lines().map(str::trim).find(|l| !l.is_empty())?;
-    let unquoted = line.trim_matches(|c| matches!(c, '"' | '\'' | '`' | '“' | '”'));
-    let words = unquoted.split_whitespace().collect::<Vec<_>>().join(" ");
-    let clipped = clip(&words, MAX_QUERY_CHARS);
-    (!clipped.is_empty()).then_some(clipped)
 }
 
 /// Runs retrieval for one turn. It never fails: a problem gives `NotUsed` or a smaller result.
@@ -522,7 +377,10 @@ pub async fn run_turn(
         })
     };
     let (dense, lexical) = (only_ready(searched.dense), only_ready(searched.lexical));
-    if dense.is_none() && lexical.as_ref().is_none_or(Vec::is_empty) {
+    let fuse_at = Instant::now();
+    let decision = decide(dense, lexical);
+    timings.fuse_ms = fuse_at.elapsed().as_millis() as u64;
+    if decision.outcome == Outcome::NotUsed {
         // Dense search failed and BM25 found nothing (or failed too). The relevance gate cannot judge
         // without the dense result, so this is not "the materials do not cover it": answer without
         // sources and without the notice, and keep the trace.
@@ -533,19 +391,9 @@ pub async fn run_turn(
             ..TurnResult::not_used()
         };
     }
-    let (dense, lexical) = (dense.unwrap_or_default(), lexical.unwrap_or_default());
-    trace.dense = trace_hits(&dense);
-    trace.lexical = trace_hits(&lexical);
-
-    let fuse_at = Instant::now();
-    let best_dense = dense.first().map(|h| h.value);
-    let gate = passes_gate(best_dense, lexical.len());
-    let fused = if gate {
-        fuse(&dense, &lexical)
-    } else {
-        Vec::new()
-    };
-    timings.fuse_ms = fuse_at.elapsed().as_millis() as u64;
+    trace.dense = trace_hits(&decision.dense);
+    trace.lexical = trace_hits(&decision.lexical);
+    let fused = decision.fused;
     trace.gated = fused.is_empty();
     trace.fused = fused
         .iter()
@@ -614,128 +462,6 @@ pub async fn run_turn(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn hit(doc: &str, n: u32, value: f32) -> Hit {
-        Hit {
-            passage: Passage {
-                key: format!("{doc}:{n}"),
-                document_id: doc.to_owned(),
-                page: n + 1,
-                heading: String::new(),
-                text: format!("text of {doc} {n}"),
-            },
-            value,
-        }
-    }
-
-    fn keys(fused: &[Fused]) -> Vec<&str> {
-        fused.iter().map(|f| f.passage.key.as_str()).collect()
-    }
-
-    #[test]
-    fn rrf_adds_one_over_sixty_plus_rank_for_each_list() {
-        let dense = [hit("A", 0, 0.1), hit("B", 0, 0.2)];
-        let lexical = [hit("B", 0, 9.0), hit("C", 0, 5.0)];
-        let fused = fuse(&dense, &lexical);
-        // B is rank 2 in dense and rank 1 in lexical: it wins over A (rank 1 in one list only).
-        assert_eq!(keys(&fused), ["B:0", "A:0", "C:0"]);
-        let b = &fused[0];
-        assert!((b.score - (1.0 / 62.0 + 1.0 / 61.0)).abs() < 1e-12);
-        assert_eq!((b.dense_rank, b.lexical_rank), (Some(2), Some(1)));
-        let a = &fused[1];
-        assert!((a.score - 1.0 / 61.0).abs() < 1e-12);
-        assert_eq!((a.dense_rank, a.lexical_rank), (Some(1), None));
-        assert_eq!(fused[2].lexical_rank, Some(2));
-    }
-
-    #[test]
-    fn ties_are_broken_by_the_better_rank_then_by_key() {
-        // A:0 is first in dense, B:0 is first in lexical: equal scores, equal best rank, so the key decides.
-        let fused = fuse(&[hit("A", 0, 0.1)], &[hit("B", 0, 9.0)]);
-        assert_eq!(keys(&fused), ["A:0", "B:0"]);
-        // The same score again, with the keys the other way round: the key still decides.
-        let fused = fuse(&[hit("Z", 0, 0.1)], &[hit("Y", 0, 9.0), hit("X", 0, 8.0)]);
-        assert_eq!(keys(&fused), ["Y:0", "Z:0", "X:0"]);
-        // The result does not depend on the order of the inputs inside a tie.
-        let again = fuse(&[hit("Z", 0, 0.1)], &[hit("Y", 0, 9.0), hit("X", 0, 8.0)]);
-        assert_eq!(keys(&fused), keys(&again));
-    }
-
-    #[test]
-    fn at_most_eight_sources_and_four_per_document() {
-        let dense: Vec<Hit> = (0..40)
-            .map(|i| hit("A", i, 0.1 + i as f32 * 0.001))
-            .collect();
-        let lexical: Vec<Hit> = (0..40)
-            .map(|i| hit("A", i, 9.0 - i as f32 * 0.01))
-            .collect();
-        let fused = fuse(&dense, &lexical);
-        assert_eq!(
-            fused.len(),
-            MAX_PER_DOCUMENT,
-            "one document gives at most four"
-        );
-        // Other documents fill the rest, in fused order.
-        let more: Vec<Hit> = (0..10)
-            .map(|i| hit(&format!("D{}", i % 5), i, 0.5))
-            .collect();
-        let mixed = fuse(&[dense.clone(), more.clone()].concat(), &lexical);
-        assert_eq!(mixed.len(), FINAL_SOURCES);
-        let mut per: HashMap<&str, usize> = HashMap::new();
-        for f in &mixed {
-            *per.entry(f.passage.document_id.as_str()).or_default() += 1;
-        }
-        assert!(per.values().all(|n| *n <= MAX_PER_DOCUMENT), "{per:?}");
-        assert!(
-            mixed.windows(2).all(|w| w[0].score >= w[1].score),
-            "fused order"
-        );
-    }
-
-    #[test]
-    fn the_cap_skips_the_extra_chunks_of_a_busy_document_and_keeps_going() {
-        let dense = [
-            hit("A", 0, 0.1),
-            hit("A", 1, 0.1),
-            hit("A", 2, 0.1),
-            hit("A", 3, 0.1),
-            hit("A", 4, 0.1),
-            hit("B", 0, 0.1),
-        ];
-        let fused = fuse(&dense, &[]);
-        assert_eq!(keys(&fused), ["A:0", "A:1", "A:2", "A:3", "B:0"]);
-    }
-
-    #[test]
-    fn repeated_keys_in_one_list_count_once_and_empty_lists_work() {
-        let fused = fuse(&[hit("A", 0, 0.1), hit("A", 0, 0.2)], &[]);
-        assert_eq!(fused.len(), 1);
-        assert!((fused[0].score - 1.0 / 61.0).abs() < 1e-12);
-        assert!(fuse(&[], &[]).is_empty());
-    }
-
-    #[test]
-    fn the_gate_needs_a_close_dense_result_or_a_bm25_hit() {
-        assert!(passes_gate(Some(0.2), 0));
-        assert!(passes_gate(Some(0.85), 0), "the limit itself passes");
-        assert!(!passes_gate(Some(0.86), 0));
-        assert!(passes_gate(Some(0.9), 1), "one BM25 hit is enough");
-        // Distances from real Titan v2 traces on a quadratics PDF.
-        assert!(
-            passes_gate(Some(0.678), 0),
-            "a relevant question with no BM25 hit passes"
-        );
-        assert!(passes_gate(Some(0.688), 0));
-        assert!(passes_gate(Some(0.455), 0));
-        assert!(
-            !passes_gate(Some(0.944), 0),
-            "an unrelated question with no BM25 hit is gated"
-        );
-        assert!(!passes_gate(Some(0.964), 0));
-        assert!(passes_gate(Some(0.944), 2), "BM25 hits keep the sources");
-        assert!(passes_gate(None, 3));
-        assert!(!passes_gate(None, 0));
-    }
 
     #[test]
     fn the_numbers_are_the_documented_ones() {
@@ -838,24 +564,6 @@ mod tests {
         }
         assert_eq!(value["dense"][0]["rank"], 1);
         assert!(value["timings"].get("retrieveMs").is_some());
-    }
-
-    #[test]
-    fn queries_are_cleaned() {
-        assert_eq!(
-            clean_query("  \"pythagorean theorem  proof\"\nextra line"),
-            Some("pythagorean theorem proof".into())
-        );
-        assert_eq!(clean_query("`code`"), Some("code".into()));
-        assert_eq!(clean_query(" \n  "), None);
-        assert_eq!(clean_query("\"\""), None);
-        assert!(clean_query(&"w ".repeat(1000)).unwrap().chars().count() <= MAX_QUERY_CHARS);
-    }
-
-    #[test]
-    fn clip_never_cuts_inside_a_character() {
-        assert_eq!(clip("éééé", 2), "éé");
-        assert_eq!(clip("short", 100), "short");
     }
 
     #[test]

@@ -4,6 +4,7 @@
 pub mod chunker;
 pub mod embed;
 pub mod quality;
+pub mod retrieval;
 pub mod vectors;
 
 #[cfg(feature = "bm25")]
