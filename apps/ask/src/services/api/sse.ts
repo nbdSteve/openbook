@@ -66,10 +66,15 @@ export class SseParser {
 }
 
 /** Turn a decoded SSE message into a typed chat event. Unknown events return null. */
+const KNOWN_EVENTS = new Set(['meta', 'sources', 'delta', 'done', 'error']);
+
 export function toChatEvent(message: SseMessage): ChatEvent | null {
+  // An event the app does not know is ignored, whatever its data looks like.
+  if (!KNOWN_EVENTS.has(message.event)) return null;
   let payload: Record<string, unknown>;
   try {
-    payload = JSON.parse(message.data) as Record<string, unknown>;
+    const parsed: unknown = JSON.parse(message.data);
+    payload = parsed !== null && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {};
   } catch {
     return { type: 'error', code: 'internal', message: 'The server sent an event the app could not read.' };
   }
@@ -115,14 +120,21 @@ export async function* readChatEvents(body: ReadableStream<Uint8Array>): AsyncGe
       if (done) break;
       for (const message of parser.push(decoder.decode(value, { stream: true }))) {
         const event = toChatEvent(message);
-        if (event) yield event;
+        if (!event) continue;
+        yield event;
+        // `done` and `error` end the stream. Ignore anything after them.
+        if (event.type === 'done' || event.type === 'error') return;
       }
     }
     for (const message of parser.push(decoder.decode())) {
       const event = toChatEvent(message);
-      if (event) yield event;
+      if (event) {
+        yield event;
+        if (event.type === 'done' || event.type === 'error') return;
+      }
     }
   } finally {
+    await reader.cancel().catch(() => undefined);
     reader.releaseLock();
   }
 }

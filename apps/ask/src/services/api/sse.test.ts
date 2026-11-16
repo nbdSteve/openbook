@@ -106,7 +106,22 @@ describe('readChatEvents', () => {
     expect(toChatEvent({ event: 'delta', data: 'not json' })).toMatchObject({ type: 'error' });
   });
 
-  it('ignores event names it does not know', () => {
+  it('ignores event names it does not know, even with data that is not JSON', () => {
     expect(toChatEvent({ event: 'future', data: '{}' })).toBeNull();
+    expect(toChatEvent({ event: 'ping', data: 'plain text' })).toBeNull();
+  });
+
+  it('survives data that is JSON but not an object', () => {
+    expect(toChatEvent({ event: 'delta', data: 'null' })).toEqual({ type: 'delta', text: '' });
+  });
+
+  it('stops reading after the done event', async () => {
+    const events = await collect(
+      streamOf(
+        'event: done\ndata: {"usage":{"inputTokens":1,"outputTokens":1},"stopReason":"end_turn"}\n\n',
+        'event: delta\ndata: {"text":"late"}\n\n',
+      ),
+    );
+    expect(events.map((e) => e.type)).toEqual(['done']);
   });
 });

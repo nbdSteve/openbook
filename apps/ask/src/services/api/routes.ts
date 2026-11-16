@@ -16,9 +16,6 @@ import type {
 
 const enc = encodeURIComponent;
 
-export const getHealth = (signal?: AbortSignal) =>
-  apiJson<{ ok: boolean; stage: string; version: string }>('/api/health', { signal });
-
 export const getMe = (signal?: AbortSignal) => apiJson<Me>('/api/me', { signal });
 
 export const listModels = async (signal?: AbortSignal) =>

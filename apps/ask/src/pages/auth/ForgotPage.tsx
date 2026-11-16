@@ -3,10 +3,10 @@ import { Link, useNavigate } from 'react-router';
 import { Alert } from '@/components/ui/Alert';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Field';
-import { passwordLongEnough } from '@/lib/password';
+import { passwordValid } from '@/lib/password';
 import { confirmNewPassword, describeAuthError, forgotPassword } from '@/services/auth/cognito';
 import { AuthLayout } from './AuthLayout';
-import { authPath, useAuthParams } from './authParams';
+import { authPath, emailState, useAuthParams } from './authParams';
 import { PasswordRules } from './PasswordRules';
 
 export function ForgotPage() {
@@ -36,14 +36,14 @@ export function ForgotPage() {
   const reset = async (event: FormEvent) => {
     event.preventDefault();
     setError('');
-    if (!passwordLongEnough(password)) {
-      setError('Your new password is too short.');
+    if (!passwordValid(password)) {
+      setError('Your new password does not meet the rules.');
       return;
     }
     setBusy(true);
     try {
       await confirmNewPassword(email, code, password);
-      navigate(authPath('/login', { email: email.trim(), next, notice: 'reset' }), { replace: true });
+      navigate(authPath('/login', { next, notice: 'reset' }), { replace: true, state: emailState(email) });
     } catch (err) {
       setError(describeAuthError(err));
       setBusy(false);
@@ -55,7 +55,7 @@ export function ForgotPage() {
       title="Reset your password"
       subtitle={step === 'request' ? 'Enter your email. We send you a code to set a new password.' : `We sent a code to ${email.trim()}.`}
       footer={
-        <Link className="font-medium text-accent underline" to={authPath('/login', { email, next })}>
+        <Link className="font-medium text-accent underline" to={authPath('/login', { next })} state={emailState(email)}>
           Back to sign in
         </Link>
       }

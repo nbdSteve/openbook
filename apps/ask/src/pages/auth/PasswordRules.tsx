@@ -1,23 +1,17 @@
+import { useId } from 'react';
 import { Check, Circle } from 'lucide-react';
 import { clsx } from 'clsx';
-import { PASSWORD_MIN_LENGTH } from '@/lib/constants';
-
-const RULES = [
-  { id: 'length', label: `At least ${PASSWORD_MIN_LENGTH} characters`, test: (p: string) => p.length >= PASSWORD_MIN_LENGTH },
-  { id: 'lower', label: 'A lower case letter', test: (p: string) => /[a-z]/.test(p) },
-  { id: 'upper', label: 'An upper case letter', test: (p: string) => /[A-Z]/.test(p) },
-  { id: 'number', label: 'A number', test: (p: string) => /\d/.test(p) },
-  { id: 'symbol', label: 'A symbol, such as - or !', test: (p: string) => /[^A-Za-z0-9\s]/.test(p) },
-];
+import { PASSWORD_RULES } from '@/lib/password';
 
 export function PasswordRules({ password }: { password: string }) {
+  const titleId = useId();
   return (
     <div className="rounded-xl bg-bg-secondary px-4 py-3 text-sm">
-      <p className="mb-2 font-medium text-text-primary" id="password-rules-title">
+      <p className="mb-2 font-medium text-text-primary" id={titleId}>
         Your password needs
       </p>
-      <ul aria-labelledby="password-rules-title" className="grid gap-1.5 sm:grid-cols-2">
-        {RULES.map((rule) => {
+      <ul aria-labelledby={titleId} className="grid gap-1.5 sm:grid-cols-2">
+        {PASSWORD_RULES.map((rule) => {
           const met = rule.test(password);
           return (
             <li key={rule.id} className={clsx('flex items-center gap-2', met ? 'text-success' : 'text-text-secondary')}>

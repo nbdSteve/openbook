@@ -1,14 +1,42 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
+import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import type { Plugin } from 'vite';
 
 const webPort = Number(process.env.OPENBOOK_WEB_PORT ?? 5173);
 const apiPort = process.env.OPENBOOK_API_PORT ?? '8787';
 const emulatorPort = process.env.OPENBOOK_EMULATOR_PORT ?? '9297';
 
+/**
+ * Serve /config.json from the file named by OPENBOOK_WEB_CONFIG. Each local stack (make dev,
+ * make e2e-local) has its own file, so both can run at once. Without the variable, Vite serves
+ * public/config.json as usual.
+ */
+function webConfigPlugin(): Plugin {
+  return {
+    name: 'openbook-web-config',
+    configureServer(server) {
+      const file = process.env.OPENBOOK_WEB_CONFIG;
+      if (!file) return;
+      server.middlewares.use('/config.json', async (_req, res) => {
+        try {
+          const body = await readFile(file);
+          res.setHeader('content-type', 'application/json');
+          res.setHeader('cache-control', 'no-store');
+          res.end(body);
+        } catch {
+          res.statusCode = 404;
+          res.end('config file not found');
+        }
+      });
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), webConfigPlugin()],
   define: {
     // amazon-cognito-identity-js expects a Node-style `global`.
     global: 'globalThis',
@@ -17,10 +45,6 @@ export default defineConfig({
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
-  },
-  build: {
-    // The syntax highlighter chunk is large but loads only when an answer has a code block.
-    chunkSizeWarningLimit: 700,
   },
   server: {
     port: webPort,

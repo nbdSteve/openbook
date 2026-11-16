@@ -11,6 +11,8 @@ export class ApiError extends Error {
   }
 }
 
+// Used only when the body is not the contract shape (for example a gateway page). A bare 429 or
+// 503 does not say which limit was hit, so it gets a neutral code instead of a misleading one.
 const FALLBACK_CODES: Record<number, string> = {
   400: 'invalid_request',
   401: 'unauthenticated',
@@ -18,8 +20,8 @@ const FALLBACK_CODES: Record<number, string> = {
   404: 'not_found',
   409: 'conflict',
   413: 'too_large',
-  429: 'quota_exceeded',
-  503: 'model_unavailable',
+  429: 'rate_limited',
+  503: 'unavailable',
 };
 
 /** Build an ApiError from a failed response. Tolerates bodies that are not the contract shape. */
@@ -48,6 +50,9 @@ export async function parseApiError(response: Response): Promise<ApiError> {
 
 /** Lowercase hex SHA-256 of the exact bytes. */
 export async function sha256Hex(bytes: BufferSource): Promise<string> {
+  if (!globalThis.crypto?.subtle) {
+    throw new Error('This page needs a secure connection (HTTPS, or localhost) to sign its requests.');
+  }
   const digest = await crypto.subtle.digest('SHA-256', bytes);
   return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
 }
@@ -102,7 +107,8 @@ export async function apiRequest(path: string, options: RequestOptions = {}): Pr
   const response = await fetch(path, { method, headers, body, signal: options.signal });
   if (!response.ok) {
     const error = await parseApiError(response);
-    if (error.status === 401 && token) unauthenticatedHandler();
+    // Every route except health needs a token, so a 401 always means the session is gone.
+    if (error.status === 401 && !path.startsWith('/api/health')) unauthenticatedHandler();
     throw error;
   }
   return response;

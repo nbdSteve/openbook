@@ -6,7 +6,7 @@ import { Input } from '@/components/ui/Field';
 import { useAuth } from '@/services/auth/AuthContext';
 import { authErrorName, describeAuthError } from '@/services/auth/cognito';
 import { AuthLayout } from './AuthLayout';
-import { authPath, useAuthParams } from './authParams';
+import { authPath, emailState, useAuthParams } from './authParams';
 
 export function LoginPage() {
   const { signIn } = useAuth();
@@ -26,7 +26,7 @@ export function LoginPage() {
       navigate(safeNext, { replace: true });
     } catch (err) {
       if (authErrorName(err) === 'UserNotConfirmedException') {
-        navigate(authPath('/verify', { email, next, notice: 'unconfirmed' }), { replace: true });
+        navigate(authPath('/verify', { next, notice: 'unconfirmed' }), { replace: true, state: emailState(email) });
         return;
       }
       setError(describeAuthError(err));
@@ -54,7 +54,7 @@ export function LoginPage() {
         <Input label="Email" type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
         <Input label="Password" type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} />
         <div className="text-right text-sm">
-          <Link className="text-accent underline" to={authPath('/forgot', { email, next })}>
+          <Link className="text-accent underline" to={authPath('/forgot', { next })} state={emailState(email)}>
             Forgot your password?
           </Link>
         </div>

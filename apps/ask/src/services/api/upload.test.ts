@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { checkUploadFile, uploadDocument, type UploadDeps } from './upload';
+import { checkUploadFile, putFile, uploadDocument, type UploadDeps } from './upload';
 import type { CourseDocument, UploadTarget } from './types';
 
 const doc = (status: CourseDocument['status']): CourseDocument => ({
@@ -90,5 +90,17 @@ describe('checkUploadFile', () => {
     expect(checkUploadFile({ name: 'a.pdf', size: 0 }, max)).toBe('empty');
     expect(checkUploadFile({ name: 'a.pdf', size: max + 1 }, max)).toBe('too_large');
     expect(checkUploadFile({ name: `${'x'.repeat(200)}.pdf`, size: 10 }, max)).toBe('name_too_long');
+  });
+});
+
+describe('putFile', () => {
+  it('rejects at once when the signal is already aborted, and sends nothing', async () => {
+    const send = vi.fn();
+    vi.stubGlobal('XMLHttpRequest', class { open = vi.fn(); send = send; });
+    const controller = new AbortController();
+    controller.abort();
+    await expect(putFile(target, file, () => {}, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
+    expect(send).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
   });
 });

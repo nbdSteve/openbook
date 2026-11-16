@@ -87,7 +87,7 @@ describe('API error mapping', () => {
   it('falls back to a code from the status when the body is not the contract shape', async () => {
     fetchMock.mockResolvedValueOnce(new Response('<html>Bad gateway</html>', { status: 503 }));
     const error = (await getMe().catch((e: unknown) => e)) as ApiError;
-    expect(error).toMatchObject({ status: 503, code: 'model_unavailable' });
+    expect(error).toMatchObject({ status: 503, code: 'unavailable' });
     fetchMock.mockResolvedValueOnce(new Response('oops', { status: 500 }));
     expect(((await getMe().catch((e: unknown) => e)) as ApiError).code).toBe('internal');
   });

@@ -9,6 +9,10 @@ export function putFile(
   signal?: AbortSignal,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException('Upload cancelled', 'AbortError'));
+      return;
+    }
     const xhr = new XMLHttpRequest();
     xhr.open(target.method, target.url);
     for (const [name, value] of Object.entries(target.headers)) xhr.setRequestHeader(name, value);

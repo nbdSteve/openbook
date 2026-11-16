@@ -17,13 +17,18 @@ export const REFRESH_MARGIN_SECONDS = 300;
 
 let pool: CognitoUserPool | null = null;
 
+/** A relative endpoint such as "/__aws/" is resolved against the page origin, so the file does not depend on the port. */
+export function resolveEndpoint(endpoint: string, origin: string = window.location.origin): string {
+  return new URL(endpoint, origin).toString();
+}
+
 function getPool(): CognitoUserPool {
   if (!pool) {
     const { cognito } = getConfig();
     pool = new CognitoUserPool({
       UserPoolId: cognito.userPoolId,
       ClientId: cognito.clientId,
-      ...(cognito.endpoint ? { endpoint: cognito.endpoint } : {}),
+      ...(cognito.endpoint ? { endpoint: resolveEndpoint(cognito.endpoint) } : {}),
     });
   }
   return pool;
@@ -73,6 +78,8 @@ export function resendConfirmationCode(email: string): Promise<void> {
 
 export function signIn(email: string, password: string): Promise<SessionUser> {
   const user = userFor(email);
+  // The emulator does not implement SRP, so every stage uses USER_PASSWORD_AUTH (docs/api.md, "Accounts").
+  user.setAuthenticationFlowType('USER_PASSWORD_AUTH');
   const details = new AuthenticationDetails({ Username: email.trim(), Password: password });
   return new Promise((resolve, reject) => {
     user.authenticateUser(details, {
@@ -105,8 +112,20 @@ export function confirmNewPassword(email: string, code: string, newPassword: str
   });
 }
 
-export function signOut(): void {
+/** Remove the session from this browser without calling the service. */
+export function clearSession(): void {
   getPool().getCurrentUser()?.signOut();
+}
+
+/** Revoke the refresh token at the service (best effort, 3 s at most), then clear the local session. */
+export async function signOut(): Promise<void> {
+  const user = getPool().getCurrentUser();
+  if (!user) return;
+  await Promise.race([
+    new Promise<void>((resolve) => user.signOut(() => resolve())),
+    new Promise<void>((resolve) => setTimeout(resolve, 3000)),
+  ]);
+  user.signOut();
 }
 
 function getSession(user: CognitoUser): Promise<CognitoUserSession | null> {
@@ -170,10 +189,10 @@ export function describeAuthError(error: unknown): string {
     case 'UsernameExistsException':
       return 'An account with this email already exists. Sign in instead.';
     case 'InvalidPasswordException':
-      return 'That password does not meet the rules. Use at least 8 characters with upper case, lower case, a number, and a symbol.';
+      return 'That password does not meet the rules. Use at least 8 characters with a lower case letter, an upper case letter, and a number.';
     case 'InvalidParameterException':
       return error instanceof Error && /password/i.test(error.message)
-        ? 'That password does not meet the rules. Use at least 8 characters with upper case, lower case, a number, and a symbol.'
+        ? 'That password does not meet the rules. Use at least 8 characters with a lower case letter, an upper case letter, and a number.'
         : 'Check the details you entered and try again.';
     case 'CodeMismatchException':
       return 'That code is not correct. Check the code in your email and try again.';
@@ -182,7 +201,8 @@ export function describeAuthError(error: unknown): string {
     case 'NotAuthorizedException':
       return 'The email or password is not correct.';
     case 'UserNotFoundException':
-      return 'No account uses this email.';
+      // Same text as a wrong password, so the form does not reveal which emails have accounts.
+      return 'The email or password is not correct.';
     case 'UserNotConfirmedException':
       return 'This email is not confirmed yet. Enter the code from your email.';
     case 'LimitExceededException':

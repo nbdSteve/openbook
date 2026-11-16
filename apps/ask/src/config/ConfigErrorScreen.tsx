@@ -6,9 +6,11 @@ export function ConfigErrorScreen({ message }: { message: string }) {
       <p role="alert" className="mt-3 max-w-md text-text-secondary">
         {message}
       </p>
-      <p className="mt-2 max-w-md text-sm text-text-tertiary">
-        If you run Ask locally, start the stack with <code className="rounded bg-bg-tertiary px-1.5 py-0.5">make dev</code>. It writes the configuration file.
-      </p>
+      {import.meta.env.DEV && (
+        <p className="mt-2 max-w-md text-sm text-text-tertiary">
+          If you run Ask locally, start the stack with <code className="rounded bg-bg-tertiary px-1.5 py-0.5">make dev</code>. It writes the configuration file.
+        </p>
+      )}
       <button
         type="button"
         onClick={() => window.location.reload()}

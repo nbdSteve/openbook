@@ -1,11 +1,6 @@
+import { formatBytes } from '@/lib/format';
 import { ApiError } from './client';
 import type { Limits } from './types';
-
-export function formatBytes(bytes: number): string {
-  if (bytes >= 1024 * 1024) return `${Math.round((bytes / (1024 * 1024)) * 10) / 10} MB`;
-  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
-  return `${bytes} B`;
-}
 
 /** A short, specific message for the user. `limits` makes the text more exact when known. */
 export function describeApiError(error: unknown, limits?: Limits): string {
@@ -28,6 +23,10 @@ export function describeApiError(error: unknown, limits?: Limits): string {
       return limits
         ? `That file is too large. The limit is ${formatBytes(limits.maxUploadBytes)}.`
         : 'That file is too large.';
+    case 'rate_limited':
+      return 'Too many requests. Wait a moment and try again.';
+    case 'unavailable':
+      return 'The service is busy right now. Wait a moment and try again.';
     case 'unauthenticated':
       return 'Your session ended. Sign in again.';
     case 'forbidden':

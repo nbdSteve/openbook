@@ -3,10 +3,10 @@ import { Link, useNavigate } from 'react-router';
 import { Alert } from '@/components/ui/Alert';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Field';
-import { passwordLongEnough } from '@/lib/password';
+import { passwordValid } from '@/lib/password';
 import { describeAuthError, signUp } from '@/services/auth/cognito';
 import { AuthLayout } from './AuthLayout';
-import { authPath, useAuthParams } from './authParams';
+import { authPath, emailState, useAuthParams } from './authParams';
 import { PasswordRules } from './PasswordRules';
 
 export function SignupPage() {
@@ -20,15 +20,16 @@ export function SignupPage() {
   const onSubmit = async (event: FormEvent) => {
     event.preventDefault();
     setError('');
-    if (!passwordLongEnough(password)) {
-      setError('Your password is too short.');
+    if (!passwordValid(password)) {
+      setError('Your password does not meet the rules below.');
       return;
     }
     setBusy(true);
     try {
       const { confirmed } = await signUp(email, password);
-      navigate(authPath(confirmed ? '/login' : '/verify', { email: email.trim(), next, notice: confirmed ? 'verified' : undefined }), {
+      navigate(authPath(confirmed ? '/login' : '/verify', { next, notice: confirmed ? 'verified' : undefined }), {
         replace: true,
+        state: emailState(email),
       });
     } catch (err) {
       setError(describeAuthError(err));

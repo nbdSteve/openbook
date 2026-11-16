@@ -32,7 +32,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     setTokenProvider(cognito.getIdToken);
     setUnauthenticatedHandler(() => {
-      cognito.signOut();
+      cognito.clearSession();
       applySignedOut();
     });
     let cancelled = false;
@@ -46,9 +46,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setStatus('signedOut');
       }
     });
+
+    // Another tab signed in or out: follow it.
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== null && !event.key.startsWith('CognitoIdentityServiceProvider.')) return;
+      cognito.restoreSession().then((restored) => {
+        if (cancelled) return;
+        if (restored) {
+          setUser(restored.user);
+          setStatus('signedIn');
+          scheduleRefresh(restored.expiresAt);
+        } else {
+          applySignedOut();
+        }
+      });
+    };
+    window.addEventListener('storage', onStorage);
     return () => {
       cancelled = true;
       window.clearTimeout(timer.current);
+      window.removeEventListener('storage', onStorage);
     };
   }, [applySignedOut, scheduleRefresh]);
 
@@ -63,8 +80,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [scheduleRefresh],
   );
 
-  const signOut = useCallback(() => {
-    cognito.signOut();
+  const signOut = useCallback(async () => {
+    await cognito.signOut();
     applySignedOut();
   }, [applySignedOut]);
 
