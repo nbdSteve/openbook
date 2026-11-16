@@ -73,6 +73,18 @@ check: ## Run every formatter check, linter, type check, and unit test
 fmt: ## Format the Rust code
 	$(call part,rust fmt,Cargo.toml,cargo fmt --all)
 
+.PHONY: eval
+eval: ## Offline retrieval evaluation against the committed baseline (no AWS, no network)
+	$(call part,retrieval evaluation,crates/eval,cargo run --release -p openbook-eval -- offline --check)
+
+.PHONY: eval-live
+eval-live: ## Refresh the evaluation cache with real Bedrock and S3 Vectors (needs AWS_PROFILE; costs money)
+	@if [ -z "$${AWS_PROFILE:-}" ]; then \
+	  echo "error: set AWS_PROFILE. 'make eval-live' calls Bedrock (transcription and embeddings) and S3 Vectors in that account." >&2; exit 1; \
+	fi
+	@echo "make eval-live calls Bedrock and S3 Vectors with AWS profile '$${AWS_PROFILE}'. This costs money."
+	cargo run --release -p openbook-eval -- refresh
+
 .PHONY: test-integration
 test-integration: ## Rust integration tests against AWS Emulator (port 9320)
 	$(call part,rust integration tests,Cargo.toml,scripts/test-integration.sh)

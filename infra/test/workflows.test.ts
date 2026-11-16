@@ -84,6 +84,7 @@ describe('the checks workflow', () => {
   test('has the seven jobs of the documented gate', () => {
     expect(Object.keys(checks.wf.jobs).sort()).toEqual([
       'e2e-local',
+      'eval',
       'infra',
       'lambda',
       'rust',
@@ -152,7 +153,19 @@ describe('the deploy workflow', () => {
 
   test('runs on pushes to main and manual dispatch only', () => {
     expect(Object.keys(deploy.wf.on).sort()).toEqual(['push', 'workflow_dispatch']);
-    expect(deploy.wf.on.push).toEqual({ branches: ['main'] });
+    expect(deploy.wf.on.push).toMatchObject({ branches: ['main'] });
+  });
+
+  test('a push that changes only docs, Markdown, evaluation results, or the licence skips the whole pipeline', () => {
+    const push = deploy.wf.on.push as { branches: string[]; 'paths-ignore'?: string[]; paths?: string[] };
+    expect(push['paths-ignore']).toEqual(['docs/**', '**/*.md', 'evals/results/**', 'LICENSE']);
+    // `paths` and `paths-ignore` cannot be mixed, and a manual run must stay possible.
+    expect(push.paths).toBeUndefined();
+    expect(Object.keys(deploy.wf.on)).toContain('workflow_dispatch');
+    // The ignore list names no code, workflow, script, infrastructure, or evaluation input.
+    for (const pattern of push['paths-ignore'] ?? []) {
+      expect(pattern).not.toMatch(/^(crates|apps|infra|scripts|\.github|evals\/(cache|corpus|golden|baseline))/);
+    }
   });
 
   test('never runs two deployments at once and never cancels one', () => {
@@ -435,5 +448,20 @@ describe('the phase 2 packaging', () => {
       expect(runs, job).toContain('OPENBOOK_PDFIUM_PATH=$(scripts/fetch-pdfium.sh linux-x64)');
       expect(runs, job).toContain('>> "$GITHUB_ENV"');
     }
+  });
+});
+
+describe('the retrieval evaluation', () => {
+  test('CI runs it offline, with no AWS and no secret', () => {
+    const job = checks.wf.jobs.eval;
+    expect(job.steps.map((s) => s.run)).toContain('make eval');
+    expect(JSON.stringify(job)).not.toMatch(/secrets\.|vars\.|aws-actions|id-token/);
+  });
+
+  test('make eval is the offline check, and make eval-live needs AWS_PROFILE and says that it calls Bedrock', () => {
+    const makefile = read('Makefile');
+    expect(makefile).toContain('cargo run --release -p openbook-eval -- offline --check');
+    expect(makefile).toMatch(/eval-live:[\s\S]*AWS_PROFILE[\s\S]*calls Bedrock[\s\S]*openbook-eval -- refresh/);
+    expect(makefile).toContain('make eval-live calls Bedrock');
   });
 });

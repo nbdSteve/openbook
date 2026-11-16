@@ -52,6 +52,22 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
 
+  # The offline retrieval evaluation (docs/evaluation.md): the real chunker, BM25, and fusion on
+  # cached pages and embeddings. No AWS and no network. It fails when a hybrid metric
+  # drops more than 0.01 below evals/baseline.json, or when gate accuracy drops at all.
+  eval:
+    name: retrieval evaluation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup show
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          cache-on-failure: true
+      - run: make eval
+
   lambda:
     name: arm64 Lambda build
     runs-on: ubuntu-latest
