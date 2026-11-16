@@ -1,0 +1,50 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+repository = "https://github.com/nbdSteve/openbook"
+publish = false
+
+[workspace.dependencies]
+openbook-core = { path = "crates/core" }
+
+async-trait = "0.1"
+aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio", "sso"] }
+aws-credential-types = "1"
+aws-sdk-bedrockruntime = { version = "1", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio"] }
+aws-sdk-dynamodb = { version = "1", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio"] }
+aws-sdk-s3 = { version = "1", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio", "http-1x"] }
+aws-smithy-http-client = { version = "1", features = ["rustls-aws-lc"] }
+aws-smithy-types = "1"
+axum = "0.8"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+futures = "0.3"
+http-body-util = "0.1"
+jsonwebtoken = { version = "12", default-features = false, features = ["aws_lc_rs"] }
+lambda_http = "1"
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
+serde = { version = "1", features = ["derive"] }
+serde_dynamo = { version = "4", features = ["aws-sdk-dynamodb+1"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "time", "sync"] }
+tokio-stream = "0.1"
+tower = "0.5"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+ulid = "3"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

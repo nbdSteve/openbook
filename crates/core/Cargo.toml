@@ -1,0 +1,39 @@
+[package]
+name = "openbook-core"
+description = "Openbook core: configuration, auth, domain types, store, quotas, prompts, model providers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+aws-config.workspace = true
+aws-credential-types.workspace = true
+aws-runtime = "1"
+aws-sdk-bedrockruntime.workspace = true
+aws-sdk-dynamodb.workspace = true
+aws-sdk-s3.workspace = true
+aws-smithy-http-client.workspace = true
+aws-smithy-types.workspace = true
+chrono.workspace = true
+futures.workspace = true
+jsonwebtoken.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_dynamo.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+ulid.workspace = true
+
+[dev-dependencies]
+base64 = "0.23"
+rand = { version = "0.10", features = ["sys_rng"] }
+rsa = "0.10"
+tokio = { workspace = true, features = ["test-util"] }
+aws-smithy-runtime-api = "1"
+
+[lints]
+workspace = true
