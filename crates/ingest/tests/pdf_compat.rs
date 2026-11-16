@@ -233,9 +233,31 @@ const CASES: &[Case] = &[
             ],
             NONE,
         ),
-        known_bug: Some(
-            "pdfium returns no text for a page with /Rotate 90, so the document fails with \"No text could be found in this PDF.\"",
+        known_bug: None,
+    },
+    Case {
+        file: "qpdf-rotated-180.pdf",
+        expect: ready(
+            1,
+            &[
+                "Cell Biology Notes",
+                "The nucleus stores the genetic material",
+            ],
+            NONE,
         ),
+        known_bug: None,
+    },
+    Case {
+        file: "qpdf-rotated-270.pdf",
+        expect: ready(
+            1,
+            &[
+                "Cell Biology Notes",
+                "The nucleus stores the genetic material",
+            ],
+            NONE,
+        ),
+        known_bug: None,
     },
     Case {
         file: "multipage-3.pdf",
@@ -254,9 +276,9 @@ const CASES: &[Case] = &[
     },
     Case {
         file: "greek-xelatex.pdf",
-        // Greek letters count as math symbols, so the heuristic sends this page to the transcriber.
+        // Greek words are not math symbols, so the text layer is enough and the page is not transcribed.
         // XeTeX writes the accents as combining marks (NFD), so the checks use unaccented stems.
-        expect: ready(1, &["Εισαγωγ", "Γεωμετρ", "Πυθαγ", "πλευρ"], (0, 1)),
+        expect: ready(1, &["Εισαγωγ", "Γεωμετρ", "Πυθαγ", "πλευρ"], NONE),
         known_bug: None,
     },
     Case {
@@ -588,4 +610,50 @@ fn every_fixture_file_has_a_case_and_every_case_has_a_file() {
     let mut listed: Vec<String> = CASES.iter().map(|c| c.file.to_owned()).collect();
     listed.sort();
     assert_eq!(on_disk, listed);
+}
+
+/// A rotated page reads the same text at every rotation, and it renders upright: the picture is
+/// landscape for 90 and 270 degrees, as the page looks in a viewer.
+#[test]
+#[ignore = "needs OPENBOOK_PDFIUM_PATH; run make test-integration"]
+fn rotated_pages_read_and_render_upright() {
+    let dir = match std::env::var("OPENBOOK_PDFIUM_PATH") {
+        Ok(path) if !path.trim().is_empty() => PathBuf::from(path),
+        _ => panic!("OPENBOOK_PDFIUM_PATH is not set. Run scripts/fetch-pdfium.sh."),
+    };
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pdf-compat");
+    let plain =
+        openbook_ingest::pdf::page_text(&dir, &fixtures.join("latex-plain.pdf"), 1).unwrap();
+    assert!(plain.contains("Cell Biology Notes"));
+    for (file, landscape) in [
+        ("latex-plain.pdf", false),
+        ("qpdf-rotated-90.pdf", true),
+        ("qpdf-rotated-180.pdf", false),
+        ("qpdf-rotated-270.pdf", true),
+    ] {
+        let path = fixtures.join(file);
+        let text = openbook_ingest::pdf::page_text(&dir, &path, 1).unwrap();
+        assert_eq!(
+            text, plain,
+            "{file}: the text layer differs from the unrotated page"
+        );
+        let jpeg = openbook_ingest::pdf::render_page(&dir, &path, 1)
+            .unwrap()
+            .expect("a rendering");
+        let image = image::load_from_memory(&jpeg).unwrap();
+        assert_eq!(
+            image.width() > image.height(),
+            landscape,
+            "{file}: rendered {}x{}",
+            image.width(),
+            image.height()
+        );
+        // A4 proportions, whatever the rotation.
+        let (long, short) = (
+            image.width().max(image.height()),
+            image.width().min(image.height()),
+        );
+        let ratio = long as f64 / short as f64;
+        assert!((ratio - 1.414).abs() < 0.02, "{file}: ratio {ratio}");
+    }
 }

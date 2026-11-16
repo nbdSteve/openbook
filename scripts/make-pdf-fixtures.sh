@@ -125,6 +125,8 @@ qpdf_run --object-streams=generate --compress-streams=y "$work/base.pdf" "$out/q
 qpdf_run --linearize "$work/base.pdf" "$out/qpdf-linearized.pdf"
 qpdf_run --force-version=2.0 "$work/base.pdf" "$out/qpdf-pdf20.pdf"
 qpdf_run --rotate=+90:1 "$work/base.pdf" "$out/qpdf-rotated-90.pdf"
+qpdf_run --rotate=+180:1 "$work/base.pdf" "$out/qpdf-rotated-180.pdf"
+qpdf_run --rotate=+270:1 "$work/base.pdf" "$out/qpdf-rotated-270.pdf"
 # Owner password only: the user password is empty, so any reader opens it.
 qpdf_run --encrypt "" "owner-secret" 256 -- "$work/base.pdf" "$out/qpdf-encrypted-owner-only.pdf"
 # User password: nobody can open it without "student-secret".

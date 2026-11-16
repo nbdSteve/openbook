@@ -129,15 +129,12 @@ pub fn extract_pages(
 ) -> Result<(), PdfError> {
     let pdfium = pdfium(dir)?;
     let document = open(pdfium, path)?;
-    for (index, page) in document.pages().iter().enumerate() {
+    for (index, mut page) in document.pages().iter().enumerate() {
         let number = u32::try_from(index + 1).unwrap_or(u32::MAX);
         if skip.contains(&number) {
             continue;
         }
-        let text = page
-            .text()
-            .map(|t| clean_text(&t.all()))
-            .unwrap_or_default();
+        let text = clean_text(&read_text(&mut page));
         let has_images = page
             .objects()
             .iter()
@@ -158,6 +155,62 @@ pub fn extract_pages(
         }
     }
     Ok(())
+}
+
+/// The text layer of a page, in reading order. The page ends as it was.
+///
+/// Two things go wrong with a page that has `/Rotate`:
+/// - `PdfPageText::all()` asks pdfium for the text inside `page.page_size()`. For `/Rotate 90` or
+///   `/Rotate 270` that size has width and height swapped, but pdfium looks for text in the
+///   unrotated page space, so the rectangle misses most of the page and the result is empty.
+/// - The characters of a rotated page come in an order that follows the rotated view, which is
+///   scrambled for `/Rotate 90` (the last line comes first).
+///
+/// So we read the text of the page with its rotation set to none, and put the rotation back for
+/// rendering. The text in the content is in the order the producer wrote it.
+pub fn read_text(page: &mut PdfPage<'_>) -> String {
+    let original = page.rotation().ok();
+    let rotated = matches!(original, Some(r) if r != PdfPageRenderRotation::None);
+    if rotated {
+        page.set_rotation(PdfPageRenderRotation::None);
+    }
+    let text = page
+        .text()
+        .map(|t| t.chars().iter().filter_map(|c| c.unicode_char()).collect())
+        .unwrap_or_default();
+    if let (true, Some(rotation)) = (rotated, original) {
+        page.set_rotation(rotation);
+    }
+    text
+}
+
+/// Renders page `number` (1-based) of a PDF the way `extract_pages` does for transcription:
+/// upright, as a viewer shows it (the page's `/Rotate` is applied). Returns the JPEG bytes.
+pub fn render_page(dir: &Path, path: &Path, number: u32) -> Result<Option<Vec<u8>>, PdfError> {
+    let pdfium = pdfium(dir)?;
+    let document = open(pdfium, path)?;
+    let index = usize::try_from(number.saturating_sub(1)).unwrap_or(0);
+    let mut page = document
+        .pages()
+        .iter()
+        .nth(index)
+        .ok_or(PdfError::Unreadable)?;
+    // Read the text first, as the worker does: reading must not change how the page renders.
+    let _ = read_text(&mut page);
+    Ok(render_image(&page))
+}
+
+/// The text layer of page `number` (1-based), cleaned like `extract_pages` does.
+pub fn page_text(dir: &Path, path: &Path, number: u32) -> Result<String, PdfError> {
+    let pdfium = pdfium(dir)?;
+    let document = open(pdfium, path)?;
+    let index = usize::try_from(number.saturating_sub(1)).unwrap_or(0);
+    let mut page = document
+        .pages()
+        .iter()
+        .nth(index)
+        .ok_or(PdfError::Unreadable)?;
+    Ok(clean_text(&read_text(&mut page)))
 }
 
 fn render_image(page: &PdfPage<'_>) -> Option<Vec<u8>> {
