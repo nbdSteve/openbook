@@ -1,6 +1,6 @@
 import { Match } from 'aws-cdk-lib/assertions';
 import { describe, expect, test } from 'vitest';
-import { synth, type Json } from './helpers';
+import { cdkJsonContext, synth, type Json } from './helpers';
 
 const dev = synth({ stage: 'dev' });
 const prod = synth({ stage: 'prod' });
@@ -146,14 +146,7 @@ describe.each([
     expect(env.OPENBOOK_FAST_MODEL).toBe('claude-haiku');
     // The catalog is the one in cdk.json, and every entry is a Bedrock entry (no fake provider).
     const catalog = JSON.parse(env.OPENBOOK_MODELS as string) as { id: string; provider: string }[];
-    expect(catalog.map((m) => m.id)).toEqual([
-      'claude-sonnet',
-      'claude-opus',
-      'claude-haiku',
-      'gpt-oss-120b',
-      'gpt-6-1-sol',
-      'gpt-6-1-terra',
-    ]);
+    expect(catalog).toEqual(cdkJsonContext.models);
     expect(new Set(catalog.map((m) => m.provider))).toEqual(new Set(['bedrock']));
     // Lambda allows 4 KB of environment variables in total.
     expect(JSON.stringify(env).length).toBeLessThan(4096);

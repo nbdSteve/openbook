@@ -79,16 +79,52 @@ describe('parseModelId', () => {
   });
 });
 
-describe('the Bedrock policy of the deployed catalog', () => {
-  const s = synth();
-  const bedrock = policyStatements(s.json).filter((st) =>
+const globalModels: Model[] = [
+  model({ id: 'g-sol', label: 'G Sol', vendor: 'openai', modelId: 'global.openai.gpt-6.1-sol', residency: 'global' }),
+  model({ id: 'g-terra', label: 'G Terra', vendor: 'openai', modelId: 'global.openai.gpt-6.1-terra', residency: 'global' }),
+];
+
+/** The Bedrock resources of a template, as plain strings with the partition filled in. */
+function bedrockOf(s: ReturnType<typeof synth>): { statements: Json[]; resources: string[] } {
+  const statements = policyStatements(s.json).filter((st) =>
     asArray(st.Action as string | string[]).some((a) => a.startsWith('bedrock:')),
   );
-  const resources = (st: Json): string[] => asArray(st.Resource as string | unknown[]).map((r) => JSON.stringify(r));
+  const resources = statements.flatMap((st) =>
+    asArray(st.Resource as string | unknown[]).map((r) => {
+      const parts = ((r as { 'Fn::Join'?: [string, unknown[]] })['Fn::Join'] ?? ['', [r]])[1];
+      return parts.map((p) => (typeof p === 'string' ? p : 'aws')).join('');
+    }),
+  );
+  return { statements, resources };
+}
+
+const profile = (id: string): string => `arn:aws:bedrock:ap-southeast-2:111111111111:inference-profile/${id}`;
+const fm = (region: string, id: string): string => `arn:aws:bedrock:${region}::foundation-model/${id}`;
+
+/** What the catalog rules say the policy must contain, written out independently of the code. */
+function expectedResources(models: Model[]): string[] {
+  const out: string[] = [];
+  for (const m of models) {
+    const id = m.modelId as string;
+    if (id.startsWith('au.')) {
+      const bare = id.slice(3);
+      out.push(profile(id), fm('ap-southeast-2', bare), fm('ap-southeast-4', bare));
+    } else if (id.startsWith('global.')) {
+      const bare = id.slice(7);
+      out.push(profile(id), fm('ap-southeast-2', bare), fm('', bare));
+    } else {
+      out.push(fm('ap-southeast-2', id));
+    }
+  }
+  return [...new Set(out)].sort();
+}
+
+describe('the Bedrock policy of the deployed catalog', () => {
+  const { statements, resources } = bedrockOf(synth());
 
   test('allows only InvokeModel and InvokeModelWithResponseStream, with Allow', () => {
-    expect(bedrock.length).toBeGreaterThan(0);
-    for (const st of bedrock) {
+    expect(statements.length).toBeGreaterThan(0);
+    for (const st of statements) {
       expect(st.Effect).toBe('Allow');
       expect(asArray(st.Action as string[]).sort()).toEqual([
         'bedrock:InvokeModel',
@@ -97,59 +133,54 @@ describe('the Bedrock policy of the deployed catalog', () => {
     }
   });
 
-  test('has no wildcard resource and no other Region or profile prefix', () => {
-    const text = bedrock.flatMap(resources).join('\n');
-    expect(text).not.toContain('"*"');
-    expect(text).not.toContain('foundation-model/*');
-    expect(text).not.toContain('foundation-model/anthropic.*');
-    for (const prefix of ['us.', 'eu.', 'apac.', 'jp.']) expect(text).not.toContain(`inference-profile/${prefix}`);
-    const regions = [...text.matchAll(/:bedrock:([a-z0-9-]*):/g)].map((m) => m[1]);
-    expect(new Set(regions)).toEqual(new Set(['ap-southeast-2', 'ap-southeast-4', '']));
+  test('the resources are exactly what the catalog derives', () => {
+    expect([...resources].sort()).toEqual(expectedResources(deployed));
   });
 
+  test('has no wildcard resource, no other profile prefix, and no Region but Sydney and Melbourne', () => {
+    const text = resources.join('\n');
+    expect(text).not.toContain('*');
+    for (const prefix of ['us.', 'eu.', 'apac.', 'jp.', 'global.']) {
+      expect(text).not.toContain(`inference-profile/${prefix}`);
+    }
+    const regions = [...text.matchAll(/:bedrock:([a-z0-9-]*):/g)].map((m) => m[1]);
+    expect(new Set(regions)).toEqual(new Set(['ap-southeast-2', 'ap-southeast-4']));
+  });
+});
+
+describe('the Bedrock policy of a catalog with global. models', () => {
+  const models = [model({ id: 'm' }), ...globalModels];
+  const s = synth({ models, defaultChatModel: 'm', fastModel: 'm' });
+  const { statements, resources } = bedrockOf(s);
+
   test('the resources are exactly what the catalog derives', () => {
-    const profile = (id: string): string =>
-      `arn:aws:bedrock:ap-southeast-2:111111111111:inference-profile/${id}`;
-    const fm = (region: string, id: string): string => `arn:aws:bedrock:${region}::foundation-model/${id}`;
-    const expected = [
-      // au. profiles: the profile and its foundation model in Sydney and Melbourne.
-      ...['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-haiku-5-5'].flatMap((n) => [
-        profile(`au.anthropic.${n}`),
-        fm('ap-southeast-2', `anthropic.${n}`),
-        fm('ap-southeast-4', `anthropic.${n}`),
-      ]),
-      // An unprefixed on-demand model: Sydney only.
-      fm('ap-southeast-2', 'openai.gpt-oss-120b-1:0'),
-      // global. profiles: the profile, the model in Sydney, and the Region-less model.
-      ...['gpt-6.1-sol', 'gpt-6.1-terra'].flatMap((n) => [
-        profile(`global.openai.${n}`),
-        fm('ap-southeast-2', `openai.${n}`),
-        fm('', `openai.${n}`),
-      ]),
-    ].sort();
-    const actual = bedrock
-      .flatMap(resources)
-      .map((r) => JSON.parse(r) as unknown)
-      .map((r) => {
-        // Flatten an Fn::Join of literal parts and AWS::Partition into a string.
-        const parts = ((r as { 'Fn::Join': [string, unknown[]] })['Fn::Join'] ?? ['', [r]])[1];
-        return parts.map((p) => (typeof p === 'string' ? p : 'aws')).join('');
-      })
-      .sort();
-    expect(actual).toEqual(expected);
+    expect([...resources].sort()).toEqual(expectedResources(models));
+  });
+
+  test('allows only the two invoke actions', () => {
+    for (const st of statements) {
+      expect(asArray(st.Action as string[]).sort()).toEqual([
+        'bedrock:InvokeModel',
+        'bedrock:InvokeModelWithResponseStream',
+      ]);
+    }
   });
 
   test('global models are reachable only through their own profile, as the Bedrock guide requires', () => {
     for (const n of ['gpt-6.1-sol', 'gpt-6.1-terra']) {
-      const routed = bedrock.find((st) => resources(st).join('').includes(`:bedrock:::foundation-model/openai.${n}`));
+      const routed = statements.find((st) =>
+        asArray(st.Resource as string).some((r) => JSON.stringify(r).includes(`:bedrock:::foundation-model/openai.${n}`)),
+      );
       expect(routed?.Condition).toEqual({
         StringEquals: {
           'aws:RequestedRegion': 'unspecified',
           'bedrock:InferenceProfileArn': expect.anything(),
         },
       });
-      const inRegion = bedrock.find((st) =>
-        resources(st).join('').includes(`:bedrock:ap-southeast-2::foundation-model/openai.${n}`),
+      const inRegion = statements.find((st) =>
+        asArray(st.Resource as string).some((r) =>
+          JSON.stringify(r).includes(`:bedrock:ap-southeast-2::foundation-model/openai.${n}`),
+        ),
       );
       expect(inRegion?.Condition).toEqual({
         StringEquals: {
@@ -158,10 +189,24 @@ describe('the Bedrock policy of the deployed catalog', () => {
         },
       });
     }
-    const profiles = bedrock.find((st) => resources(st).join('').includes('inference-profile/global.'));
+    const profiles = statements.find((st) => JSON.stringify(st.Resource).includes('inference-profile/global.'));
     expect(profiles?.Condition).toEqual({ StringEquals: { 'aws:RequestedRegion': 'ap-southeast-2' } });
   });
 
+  test('the environment carries the same catalog', () => {
+    const fn = Object.values(s.json.Resources).find(
+      (r) => r.Type === 'AWS::Lambda::Function' && r.Properties?.Handler === 'bootstrap',
+    );
+    const env = (fn?.Properties?.Environment as { Variables: Record<string, string> }).Variables;
+    expect(JSON.parse(env.OPENBOOK_MODELS) as unknown).toEqual(models);
+  });
+
+  test('a global default or fast model is still refused', () => {
+    expect(() => synth({ models, defaultChatModel: 'g-sol', fastModel: 'm' })).toThrow(/must have residency "au"/);
+  });
+});
+
+describe('catalog changes', () => {
   test('a catalog change updates the environment and the policy together', () => {
     const changed = synth({
       models: [model({ id: 'm', modelId: 'au.anthropic.claude-sonnet-9-9' })],

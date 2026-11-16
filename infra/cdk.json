@@ -21,28 +21,19 @@
     "models": [
       {
         "id": "claude-sonnet",
-        "label": "Claude Sonnet 5.5",
+        "label": "Claude Sonnet 4.6",
         "vendor": "anthropic",
         "provider": "bedrock",
-        "modelId": "au.anthropic.claude-sonnet-5-5",
-        "residency": "au",
-        "maxOutputTokens": 2000
-      },
-      {
-        "id": "claude-opus",
-        "label": "Claude Opus 5.5",
-        "vendor": "anthropic",
-        "provider": "bedrock",
-        "modelId": "au.anthropic.claude-opus-5-5",
+        "modelId": "au.anthropic.claude-sonnet-4-6",
         "residency": "au",
         "maxOutputTokens": 2000
       },
       {
         "id": "claude-haiku",
-        "label": "Claude Haiku 5.5",
+        "label": "Claude Haiku 4.5",
         "vendor": "anthropic",
         "provider": "bedrock",
-        "modelId": "au.anthropic.claude-haiku-5-5",
+        "modelId": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
         "residency": "au",
         "maxOutputTokens": 2000
       },
@@ -53,24 +44,6 @@
         "provider": "bedrock",
         "modelId": "openai.gpt-oss-120b-1:0",
         "residency": "au",
-        "maxOutputTokens": 2000
-      },
-      {
-        "id": "gpt-6-1-sol",
-        "label": "GPT-6.1 Sol",
-        "vendor": "openai",
-        "provider": "bedrock",
-        "modelId": "global.openai.gpt-6.1-sol",
-        "residency": "global",
-        "maxOutputTokens": 2000
-      },
-      {
-        "id": "gpt-6-1-terra",
-        "label": "GPT-6.1 Terra",
-        "vendor": "openai",
-        "provider": "bedrock",
-        "modelId": "global.openai.gpt-6.1-terra",
-        "residency": "global",
         "maxOutputTokens": 2000
       }
     ],
