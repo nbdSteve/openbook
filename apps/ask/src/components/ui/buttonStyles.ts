@@ -1,11 +1,11 @@
-import { clsx } from 'clsx';
+import { cn } from '@/lib/cn';
 
 export type ButtonVariant = 'primary' | 'secondary' | 'danger' | 'ghost';
 export type ButtonSize = 'sm' | 'md' | 'lg';
 
 /** Class names shared by <Button> and links that look like buttons. */
 export function buttonStyles(variant: ButtonVariant = 'primary', size: ButtonSize = 'md', className?: string) {
-  return clsx(
+  return cn(
     'inline-flex items-center justify-center gap-2 font-medium rounded-xl transition-colors duration-150 select-none',
     'disabled:opacity-50 disabled:cursor-not-allowed',
     {

@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { clsx } from 'clsx';
+import { cn } from '@/lib/cn';
 
 interface BadgeProps {
   tone?: 'neutral' | 'accent' | 'teal' | 'success' | 'warning' | 'danger';
@@ -10,7 +10,7 @@ interface BadgeProps {
 export function Badge({ tone = 'neutral', children, className }: BadgeProps) {
   return (
     <span
-      className={clsx(
+      className={cn(
         'inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-medium',
         tone === 'neutral' && 'bg-bg-tertiary text-text-secondary',
         tone === 'accent' && 'bg-accent-subtle text-accent',
