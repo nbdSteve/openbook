@@ -13,7 +13,7 @@ Think of it as an open-book exam for the model: it answers from the course mater
 4. **Data stays in Australia by default.** Use the `ap-southeast-2` Region. The default chat and fast models must have residency `au` (an `au.` inference profile, or a model that runs on demand in Sydney). A catalog may also offer `global.` models (for example the frontier GPT models, which Bedrock offers only through global profiles); they are marked `global`, and the web app tells the user who picks such a model that it may process data outside Australia. No other profile prefixes (`us.`, `apac.`, and so on).
 5. **Same code locally and in Lambda.** The API is one axum router. Lambda runs it through `lambda_http`; locally it runs on a TCP listener. Local runs use AWS Emulator for AWS services.
 7. **Known risk until the public launch: PDF parsing is not isolated.** pdfium (C++) parses untrusted PDFs in the ingest worker, which holds credentials for every course's files, the table, and every vector index. A pdfium memory-safety bug could therefore cross tenants. Before public sign-up (phase 5), PDF opening, text extraction, and page rendering move to a separate function with no data permissions (a presigned GET in, text and images out), and a scheduled check flags new pdfium releases.
-6. **Fail closed.** If the API runs in Lambda with local-only settings (stage `local`, a catalog entry with provider `fake`, `AWS_ENDPOINT_URL`, `OPENBOOK_COGNITO_JWKS_URL`, `OPENBOOK_CA_BUNDLE`, `OPENBOOK_PRESIGN_ENDPOINT`, or `OPENBOOK_BEDROCK_PROFILE`), it must refuse to start.
+6. **Fail closed.** If the API runs in Lambda with local-only settings (stage `local`, a catalog entry with provider `fake`, `AWS_ENDPOINT_URL`, `OPENBOOK_COGNITO_ISSUER`, `OPENBOOK_COGNITO_JWKS_URL`, `OPENBOOK_CA_BUNDLE`, `OPENBOOK_PRESIGN_ENDPOINT`, or `OPENBOOK_BEDROCK_PROFILE`), it must refuse to start.
 
 ## Components
 
@@ -101,6 +101,7 @@ The API reads only environment variables. Names and defaults:
 | `OPENBOOK_COGNITO_USER_POOL_ID` | (required) | |
 | `OPENBOOK_COGNITO_CLIENT_ID` | (required) | The token `aud` must equal this |
 | `OPENBOOK_COGNITO_REGION` | `AWS_REGION` | Used to build the issuer `https://cognito-idp.<region>.amazonaws.com/<poolId>` |
+| `OPENBOOK_COGNITO_ISSUER` | `https://cognito-idp.<region>.amazonaws.com/<poolId>` | Local only: the issuer that local tokens carry. AWS Emulator (since v1.0.471) issues `https://127.0.0.1:<port>/<poolId>` |
 | `OPENBOOK_COGNITO_JWKS_URL` | `<issuer>/.well-known/jwks.json` | Local only (AWS Emulator serves JWKS at `https://127.0.0.1:<port>/<poolId>/.well-known/jwks.json`) |
 | `OPENBOOK_MODELS` | (required) | The model catalog as a JSON array (see "Model catalog") |
 | `OPENBOOK_DEFAULT_CHAT_MODEL` | (required) | A catalog ID with residency `au` |
