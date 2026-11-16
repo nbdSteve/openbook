@@ -12,7 +12,7 @@ Locally, the Vite dev server proxies `/api/*` to the API process on `127.0.0.1:8
 Request rules:
 
 - Bodies are JSON (`content-type: application/json`) unless a route says otherwise.
-- Authenticated routes need the header `x-auth-token: <Cognito ID token>`.
+- Every route except `GET /api/health` is authenticated and needs the header `x-auth-token: <Cognito ID token>`.
   Do not use `Authorization`: CloudFront OAC replaces that header with its own SigV4 signature.
 - Every request that is not `GET` or `HEAD` must send `x-amz-content-sha256: <lowercase hex SHA-256 of the exact body bytes>`.
   For an empty body, send the hash of the empty string (`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`).
@@ -40,6 +40,10 @@ Error responses always have this shape and a matching status code:
 | 503 | `capacity_exhausted`, `model_unavailable` | The global daily cap is reached, or the model provider fails or throttles |
 | 500 | `internal` | Anything else (the message must not leak internals) |
 
+## Accounts
+
+The Cognito user pool uses email as the username. Passwords: at least 8 characters, with at least one lower-case letter, one upper-case letter, and one digit. Symbols are allowed but not required. The web app checks the same rules before it calls Cognito.
+
 ## Types
 
 ```ts
@@ -65,7 +69,7 @@ interface Course {
   tutoringStyle: TutoringStyle;
   model: string;           // the course default model, a ModelInfo.id from GET /api/models
   role: Role;              // the caller's role in this course
-  inviteCode?: string;     // only present when role === 'owner'
+  inviteCode?: string;     // present in every Course response when role === 'owner', never otherwise
   createdAt: string;
   updatedAt: string;
 }
