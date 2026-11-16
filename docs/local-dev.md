@@ -75,3 +75,25 @@ Phase 2 and 3 add deterministic fake embeddings (hashed bag of words, 1024 dimen
 
 The emulator sends no email. Local end-to-end tests sign up through the UI, then confirm the user with `AdminConfirmSignUp` through the emulator (a Playwright helper), then sign in.
 For manual use, sign in with a seed user.
+
+## Run the browser flows against a deployed stack
+
+The same flows in `apps/ask/e2e/flows` can run against a deployed stack, for example `Openbook-dev`.
+They need AWS credentials that can call `cognito-idp:AdminCreateUser`, `AdminSetUserPassword`, and `AdminDeleteUser` on that stack's user pool.
+
+```
+cd apps/ask
+npx playwright install chromium   # once
+AWS_PROFILE=<profile> E2E_BASE_URL=https://<stack>.cloudfront.net npm run e2e:deployed
+```
+
+What changes in deployed mode (`E2E_TARGET=deployed`):
+
+- The user pool ID and Region come from `<E2E_BASE_URL>/config.json`, and the AWS SDK uses the default credential chain with the real endpoint.
+- Users come from `AdminCreateUser` with `MessageAction: SUPPRESS` and `AdminSetUserPassword`, then sign in through the UI. The suite sends no email. The UI sign-up flow stays in local mode only.
+- The model flow switches to `claude-haiku` and expects no global note. The quota flow is skipped, because it needs the local limit of 8.
+- Answers come from a real model, so the flows check structure (streamed text, a rendered formula, the message after a reload), not exact text.
+- After the run, the suite deletes the course through the UI and every user it created (`AdminDeleteUser`), also when a test fails. Conversations of those users stay in the table until their time to live ends.
+- Every flow fails on a `securitypolicyviolation` event, a console error, or a page error. The deployed site sends the production Content-Security-Policy.
+
+Do not run this against production without a plan for the test users and courses it creates.
