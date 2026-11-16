@@ -50,8 +50,8 @@ export function ManagePage() {
     <div className="h-full overflow-y-auto">
       <div className="mx-auto max-w-3xl px-4 py-6 sm:px-6">
         <h2 className="text-xl font-bold text-text-primary">Manage course</h2>
-        <div className="-mx-4 mt-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
-          <div ref={list} role="tablist" aria-label="Manage course" onKeyDown={onKeyDown} className="flex min-w-max gap-1 border-b border-border">
+        <div className="mt-4">
+          <div ref={list} role="tablist" aria-label="Manage course" onKeyDown={onKeyDown} className="grid grid-cols-5 gap-0.5 border-b border-border sm:flex sm:gap-1">
             {TABS.map(({ id, label, icon: Icon }) => {
               const selected = id === active;
               return (
@@ -61,17 +61,17 @@ export function ManagePage() {
                   role="tab"
                   type="button"
                   aria-selected={selected}
-                  aria-controls={`panel-${id}`}
+                  aria-controls={selected ? `panel-${id}` : undefined}
                   tabIndex={selected ? 0 : -1}
                   onClick={() => select(id)}
                   className={clsx(
-                    '-mb-px flex min-h-11 items-center gap-2 border-b-2 px-3 text-sm font-medium transition-colors sm:px-4',
+                    '-mb-px flex min-h-14 whitespace-nowrap [overflow-wrap:normal] flex-col items-center justify-center gap-1 border-b-2 px-1 text-xs font-medium transition-colors sm:min-h-11 sm:flex-row sm:gap-2 sm:px-4 sm:text-sm',
                     selected
                       ? 'border-accent text-accent'
                       : 'border-transparent text-text-secondary hover:text-text-primary',
                   )}
                 >
-                  <Icon className="hidden h-4 w-4 sm:block" aria-hidden="true" />
+                  <Icon className="h-4 w-4" aria-hidden="true" />
                   {label}
                 </button>
               );

@@ -20,8 +20,7 @@ export function AppHeader() {
           <button
             type="button"
             onClick={() => {
-              signOut();
-              navigate('/', { replace: true });
+              void signOut().then(() => navigate('/', { replace: true }));
             }}
             className="inline-flex h-10 items-center gap-2 rounded-xl px-3 text-sm text-text-secondary hover:bg-surface-hover hover:text-text-primary"
           >

@@ -1,3 +1,4 @@
+import AxeBuilder from '@axe-core/playwright';
 import { expect, type Page, type Route } from '@playwright/test';
 import {
   CHAT_STREAM,
@@ -69,7 +70,7 @@ const json = (route: Route, body: unknown, status = 200) =>
 export async function mockBackend(page: Page, options: MockOptions = {}) {
   const courses = options.courses ?? COURSES;
   await page.route('**/config.json', (route) => json(route, CONFIG));
-  await page.route(/\/api\//, async (route) => {
+  await page.route((url) => url.pathname.startsWith('/api/'), async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
     const method = request.method();
@@ -115,7 +116,7 @@ export async function scrollThrough(page: Page) {
   }
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.waitForTimeout(700);
-  await page.getByRole('img', { name: 'Example conversation' }).scrollIntoViewIfNeeded().catch(() => undefined);
+  await page.getByLabel('Example conversation').scrollIntoViewIfNeeded().catch(() => undefined);
   await page.waitForTimeout(3500);
   await page.evaluate(() => window.scrollTo(0, 0));
 }
@@ -129,4 +130,12 @@ export async function expectNoHorizontalOverflow(page: Page) {
   expect(overflow.scrollWidth, `page is ${overflow.scrollWidth}px wide in a ${overflow.clientWidth}px viewport`).toBeLessThanOrEqual(
     overflow.clientWidth,
   );
+}
+
+/** Serious and critical accessibility problems (axe) fail the test. */
+export async function expectNoSeriousA11yViolations(page: Page) {
+  const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
+  const serious = results.violations.filter((v) => v.impact === 'serious' || v.impact === 'critical');
+  const summary = serious.map((v) => `${v.impact} ${v.id}: ${v.help} (${v.nodes.slice(0, 3).map((n) => n.target.join(' ')).join(' | ')})`);
+  expect(summary, 'axe violations').toEqual([]);
 }

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Outlet, useLocation, useNavigate, useParams } from 'react-router';
 import toast from 'react-hot-toast';
 import { Menu } from 'lucide-react';
@@ -10,6 +10,7 @@ import { CourseSidebar } from '@/components/layout/CourseSidebar';
 import { NotFoundScreen } from '@/components/layout/NotFoundScreen';
 import { useChatController } from '@/components/chat/useChatController';
 import { styleName } from '@/lib/constants';
+import { useMediaQuery } from '@/lib/useMediaQuery';
 import { useResource } from '@/lib/useResource';
 import { ApiError } from '@/services/api/client';
 import { describeApiError } from '@/services/api/errors';
@@ -77,6 +78,22 @@ function CourseShell({ course, setCourse, conversationId }: CourseShellProps) {
   const [busy, setBusy] = useState(false);
 
   const sidebarOpen = openAt === location.pathname;
+  const desktop = useMediaQuery('(min-width: 1024px)');
+  const menuButton = useRef<HTMLButtonElement>(null);
+
+  // On small screens the sidebar is a drawer: move focus in, let Escape close it, and move focus back.
+  useEffect(() => {
+    if (!sidebarOpen) return;
+    document.querySelector<HTMLElement>('[data-sidebar-close]')?.focus();
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setOpenAt(null);
+        menuButton.current?.focus();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [sidebarOpen]);
 
   const onConversationCreated = useCallback(
     (id: string) => navigate(`/app/c/${course.id}/chat/${id}`, { replace: true }),
@@ -97,18 +114,7 @@ function CourseShell({ course, setCourse, conversationId }: CourseShellProps) {
   });
 
   const list = conversations.data;
-  const context = useMemo<CourseContextValue>(
-    () => ({
-      course,
-      setCourse,
-      chat,
-      conversations: list ?? [],
-      refreshConversations: reloadConversations,
-    }),
-    // `setCourse` closes over a stable `update`, so it is safe to leave out.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [course, chat, list, reloadConversations],
-  );
+  const context: CourseContextValue = { course, setCourse, chat };
 
   const confirmDelete = async () => {
     if (!toDelete) return;
@@ -146,17 +152,18 @@ function CourseShell({ course, setCourse, conversationId }: CourseShellProps) {
         activeConversationId={conversationId}
         email={user?.email ?? me.user.email}
         open={sidebarOpen}
+        hidden={!desktop && !sidebarOpen}
         onClose={() => setOpenAt(null)}
         onDeleteConversation={setToDelete}
         onLeave={() => setLeaving(true)}
         onSignOut={() => {
-          signOut();
-          navigate('/', { replace: true });
+          void signOut().then(() => navigate('/', { replace: true }));
         }}
       />
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-14 shrink-0 items-center gap-2 border-b border-border bg-bg-secondary px-3 sm:px-4">
           <button
+            ref={menuButton}
             type="button"
             onClick={() => setOpenAt(location.pathname)}
             className="-ml-1 rounded-xl p-2.5 text-text-tertiary hover:bg-surface-hover hover:text-text-primary lg:hidden"

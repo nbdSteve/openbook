@@ -13,7 +13,7 @@ import {
   UserRound,
   Users,
 } from 'lucide-react';
-import { MessageContent } from '@/components/chat/MessageContent';
+import { SourceBadge } from '@/components/chat/SourceBadge';
 import { buttonStyles } from '@/components/ui/buttonStyles';
 import { Logo } from '@/components/ui/Logo';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
@@ -58,6 +58,27 @@ function SectionHeading({ title, subtitle }: { title: string; subtitle: string }
 }
 
 /* ---------- Chat demo ---------- */
+
+/** The demo answer needs only bold text and citation badges, so it skips the Markdown and KaTeX libraries. */
+function DemoText({ text: raw }: { text: string }) {
+  // While the text types out, hide a half-typed "**" or "[1" instead of showing it.
+  let text = raw.replace(/\[\d?$/, '');
+  if (((text.match(/\*\*/g) ?? []).length) % 2 === 1) text = text.replace(/\*\*(?!.*\*\*)/, '');
+  return (
+    <>
+      {text.split('\n\n').map((paragraph, i) => (
+        <p key={i} className="my-2 leading-relaxed first:mt-0 last:mb-0">
+          {paragraph.split(/(\*\*[^*]+\*\*|\[\d\])/).map((part, j) => {
+            if (part.startsWith('**')) return <strong key={j}>{part.slice(2, -2)}</strong>;
+            const n = /^\[(\d)\]$/.exec(part)?.[1];
+            const source = n ? DEMO_SOURCES.find((x) => x.n === Number(n)) : undefined;
+            return source ? <SourceBadge key={j} source={source} /> : part;
+          })}
+        </p>
+      ))}
+    </>
+  );
+}
 
 const DEMO_QUESTION = 'How does photosynthesis work, based on the lecture notes?';
 const DEMO_ANSWER =
@@ -111,25 +132,22 @@ function ChatDemo() {
           <span className="h-3 w-3 rounded-full bg-success/60" aria-hidden="true" />
           <span className="ml-2 text-sm font-medium text-text-secondary">Biology 101</span>
         </div>
-        {/* Fixed height, so the page does not jump while the answer types. */}
-        <div className="h-[26rem] space-y-4 p-4 sm:h-[24rem]" aria-label="Example conversation" role="img">
-          {shown >= 1 && (
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="flex justify-end">
-              <div className="max-w-[85%] rounded-2xl rounded-tr-md bg-accent px-4 py-2.5 text-sm text-on-accent">{DEMO_QUESTION}</div>
-            </motion.div>
-          )}
-          {shown >= 2 && (
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="flex justify-start">
-              <div className="max-w-[92%] rounded-2xl rounded-tl-md border border-border-subtle bg-bg-secondary px-4 py-3 text-sm text-text-primary">
-                <MessageContent content={DEMO_ANSWER.slice(0, typed)} sources={DEMO_SOURCES} className="!text-sm" />
-                {done && (
-                  <div className="mt-3 flex flex-wrap items-center gap-1 border-t border-border-subtle pt-2.5 text-xs text-text-muted">
-                    Hover or tap a number to read the passage.
-                  </div>
-                )}
+        {/* Both messages are always laid out (hidden until their turn), so the box never changes height. */}
+        <div className="space-y-4 p-4" role="group" aria-label="Example conversation">
+          <div className={`flex justify-end ${shown >= 1 ? '' : 'invisible'}`}>
+            <div className="max-w-[85%] rounded-2xl rounded-tr-md bg-accent px-4 py-2.5 text-sm text-on-accent">{DEMO_QUESTION}</div>
+          </div>
+          <div className={`flex justify-start ${shown >= 2 ? '' : 'invisible'}`}>
+            <div className="relative max-w-[92%] rounded-2xl rounded-tl-md border border-border-subtle bg-bg-secondary px-4 py-3 text-sm text-text-primary">
+              <div className="invisible" aria-hidden="true">
+                <DemoText text={DEMO_ANSWER} />
               </div>
-            </motion.div>
-          )}
+              <div className="absolute inset-x-4 top-3">
+                <DemoText text={DEMO_ANSWER.slice(0, typed)} />
+              </div>
+            </div>
+          </div>
+          <p className={`px-1 text-xs text-text-muted ${done ? '' : 'invisible'}`}>Hover or tap a number to read the passage.</p>
         </div>
       </div>
     </div>
@@ -232,8 +250,8 @@ export function LandingPage() {
                 {STEPS.map((item) => (
                   <motion.div key={item.step} variants={fadeUp} className="relative">
                     <div className="h-full rounded-2xl border border-border bg-surface p-6 transition-colors hover:border-accent/30">
-                      <span aria-hidden="true" className="absolute right-5 top-4 text-5xl font-bold text-accent/15">
-                        {item.step}
+                      <span className="absolute right-5 top-5 text-xs font-semibold uppercase tracking-wide text-accent">
+                        Step {Number(item.step)}
                       </span>
                       <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-accent-subtle">
                         <item.icon className="h-6 w-6 text-accent" aria-hidden="true" />
@@ -327,7 +345,7 @@ export function LandingPage() {
         </main>
 
         <footer className="border-t border-border-subtle px-5 py-8 sm:px-6">
-          <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-2 text-sm text-text-tertiary sm:flex-row">
+          <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-2 text-center text-sm text-text-tertiary sm:flex-row sm:text-left">
             <span>
               <span className="font-semibold text-accent">Ask</span> is the web app of Openbook, open source under the AGPL-3.0 licence.
             </span>

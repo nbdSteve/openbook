@@ -47,19 +47,20 @@ export function MembersTab() {
       </p>
       <ul className="divide-y divide-border overflow-hidden rounded-2xl border border-border bg-surface">
         {members.data.map((member) => (
-          <li key={member.userId} className="flex items-center gap-3 px-4 py-3">
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-medium text-text-primary" title={member.email}>
+          <li key={member.userId} className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3">
+            <div className="min-w-0 basis-full sm:basis-0 sm:flex-1">
+              <p className="break-all text-sm font-medium text-text-primary">
                 {member.email}
               </p>
               <p className="text-xs text-text-muted">Joined {formatDate(member.joinedAt)}</p>
             </div>
             <Badge tone={member.role === 'owner' ? 'teal' : 'neutral'}>{member.role === 'owner' ? 'Owner' : 'Student'}</Badge>
+            {member.role === 'owner' && <span className="-mr-1 w-10 shrink-0" aria-hidden="true" />}
             {member.role === 'student' && (
               <button
                 type="button"
                 onClick={() => setToRemove(member)}
-                className="-mr-1 rounded-lg p-2.5 text-text-tertiary hover:bg-danger-light hover:text-danger"
+                className="-mr-1 ml-auto rounded-lg p-2.5 text-text-tertiary hover:bg-danger-light hover:text-danger"
                 aria-label={`Remove ${member.email}`}
               >
                 <UserMinus className="h-4 w-4" aria-hidden="true" />

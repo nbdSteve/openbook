@@ -1,34 +1,45 @@
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { Alert } from '@/components/ui/Alert';
+import { Button } from '@/components/ui/Button';
 import { buttonStyles } from '@/components/ui/buttonStyles';
 import { Logo } from '@/components/ui/Logo';
-import { Spinner } from '@/components/ui/Spinner';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
+import { normalizeInviteCode } from '@/lib/format';
 import { ApiError } from '@/services/api/client';
 import { describeApiError } from '@/services/api/errors';
 import { joinCourse } from '@/services/api/routes';
+import { useAuth } from '@/services/auth/AuthContext';
 
-/** `/join/:inviteCode`. The sign-in guard has already run, so the user is signed in here. */
+/**
+ * `/join/:inviteCode`. The sign-in guard has already run, so the user is signed in here. Joining
+ * needs a click, because joining shows the user's email to the course owner and any web page can
+ * link to this address.
+ */
 export function JoinPage() {
   const { inviteCode = '' } = useParams();
+  const { user } = useAuth();
   const navigate = useNavigate();
   const [error, setError] = useState('');
-  const started = useRef(false);
+  const [busy, setBusy] = useState(false);
 
-  useEffect(() => {
-    if (started.current) return;
-    started.current = true;
-    joinCourse(inviteCode.trim().toUpperCase()).then(
-      (course) => navigate(`/app/c/${course.id}`, { replace: true }),
-      (err: unknown) =>
-        setError(
-          err instanceof ApiError && err.code === 'not_found'
-            ? 'This invite code does not match a course. It may have been replaced. Ask the teacher for the new link.'
-            : describeApiError(err),
-        ),
-    );
-  }, [inviteCode, navigate]);
+  const join = async () => {
+    setError('');
+    setBusy(true);
+    try {
+      const course = await joinCourse(normalizeInviteCode(inviteCode));
+      navigate(`/app/c/${course.id}`, { replace: true });
+    } catch (err) {
+      setBusy(false);
+      if (err instanceof ApiError && err.code === 'not_found') {
+        setError('This invite code does not match a course. It may have been replaced. Ask the teacher for the new link.');
+      } else if (err instanceof ApiError && err.code === 'quota_exceeded') {
+        setError('Too many wrong codes today. Try again tomorrow.');
+      } else {
+        setError(describeApiError(err));
+      }
+    }
+  };
 
   return (
     <div className="flex min-h-dvh flex-col bg-bg-primary">
@@ -36,24 +47,27 @@ export function JoinPage() {
         <Logo to="/app" />
         <ThemeToggle />
       </header>
-      <main className="flex flex-1 items-center justify-center px-4 pb-16">
-        <div className="w-full max-w-md rounded-2xl border border-border bg-surface p-8 text-center shadow-lg">
-          {error ? (
-            <>
-              <h1 className="text-xl font-semibold text-text-primary">We could not join this course</h1>
-              <Alert tone="error" className="mt-4 text-left">
-                {error}
-              </Alert>
-              <Link to="/app" className={buttonStyles('primary', 'md', 'mt-6')}>
-                Go to my courses
-              </Link>
-            </>
-          ) : (
-            <>
-              <h1 className="text-xl font-semibold text-text-primary">Joining the course</h1>
-              <Spinner label="Joining the course" />
-            </>
+      <main className="flex flex-1 items-start justify-center px-4 pb-16 pt-6 sm:items-center sm:pt-0">
+        <div className="w-full max-w-md rounded-2xl border border-border bg-surface p-6 text-center shadow-lg sm:p-8">
+          <h1 className="text-xl font-semibold text-text-primary">Join this course?</h1>
+          <p className="mt-3 text-sm text-text-secondary">
+            You were invited with the code{' '}
+            <span className="font-mono font-semibold tracking-widest text-text-primary">{normalizeInviteCode(inviteCode)}</span>.
+            The course owner will see your email address{user ? ` (${user.email})` : ''} in the member list.
+          </p>
+          {error && (
+            <Alert tone="error" className="mt-4 text-left">
+              {error}
+            </Alert>
           )}
+          <div className="mt-6 flex flex-col gap-2 sm:flex-row sm:justify-center">
+            <Link to="/app" className={buttonStyles('secondary', 'md')}>
+              Not now
+            </Link>
+            <Button onClick={join} isLoading={busy} autoFocus>
+              Join course
+            </Button>
+          </div>
         </div>
       </main>
     </div>

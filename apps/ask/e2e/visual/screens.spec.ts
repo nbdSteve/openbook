@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
 import { COURSE_ID, CONVERSATIONS, STUDENT_COURSE_ID } from './data';
-import { expectNoHorizontalOverflow, prepare, type MockOptions, scrollThrough, VIEWPORTS, type Theme } from './fixtures';
+import { expectNoHorizontalOverflow, expectNoSeriousA11yViolations, prepare, type MockOptions, scrollThrough, VIEWPORTS, type Theme } from './fixtures';
 
 // Screenshots go to an ignored folder. Read them to check the screens by eye.
 const OUT = path.join(import.meta.dirname, '..', '.screenshots');
@@ -31,6 +31,7 @@ const SCREENS: Screen[] = [
   { name: 'forgot', url: '/forgot', signedIn: false, ready: heading('Reset your password'), fullPage: true },
   { name: 'not-found', url: '/nowhere', signedIn: false, ready: heading('Page not found'), fullPage: true },
   { name: 'home', url: '/app', signedIn: true, ready: heading('Your courses'), fullPage: true },
+  { name: 'join', url: '/join/K7MQ-4XW2', signedIn: true, ready: heading('Join this course?'), fullPage: true },
   { name: 'home-empty', url: '/app', signedIn: true, ready: heading('You have no courses yet', 2), fullPage: true, mock: { courses: [] } },
   {
     name: 'home-create-dialog',
@@ -148,6 +149,7 @@ for (const theme of ['light', 'dark'] as Theme[]) {
           if (screen.act) await screen.act(page);
           await page.waitForTimeout(250);
           await expectNoHorizontalOverflow(page);
+          await expectNoSeriousA11yViolations(page);
           expect(await page.evaluate(() => document.documentElement.classList.contains('dark'))).toBe(theme === 'dark');
           await page.screenshot({
             path: path.join(OUT, `${theme}-${viewport.name}`, `${screen.name}.png`),

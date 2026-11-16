@@ -52,7 +52,6 @@ export function InviteTab() {
       <section className="rounded-2xl border border-border bg-surface p-5">
         <h3 className="text-sm font-medium text-text-secondary">Invite code</h3>
         <p
-          aria-label="Invite code"
           data-testid="invite-code"
           className="mt-2 break-all font-mono text-3xl font-bold tracking-[0.2em] text-text-primary sm:text-4xl"
         >

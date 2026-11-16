@@ -21,7 +21,7 @@ export default defineConfig([
     },
   },
   {
-    files: ['vite.config.ts', 'vitest.config.ts', 'playwright.config.ts', 'e2e/**/*.ts'],
+    files: ['vite.config.ts', 'vitest.config.ts', 'playwright.visual.config.ts', 'playwright.flows.config.ts', 'e2e/**/*.ts'],
     languageOptions: { globals: globals.node },
   },
 ]);

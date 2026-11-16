@@ -13,6 +13,8 @@ interface CourseSidebarProps {
   activeConversationId?: string;
   email: string;
   open: boolean;
+  /** True when the sidebar is off screen and must not take focus (small screens, menu closed). */
+  hidden: boolean;
   onClose: () => void;
   onDeleteConversation: (conversation: Conversation) => void;
   onLeave: () => void;
@@ -25,6 +27,7 @@ export function CourseSidebar({
   activeConversationId,
   email,
   open,
+  hidden,
   onClose,
   onDeleteConversation,
   onLeave,
@@ -34,6 +37,7 @@ export function CourseSidebar({
     <aside
       id="course-sidebar"
       aria-label="Course navigation"
+      inert={hidden}
       className={clsx(
         'fixed inset-y-0 left-0 z-40 flex w-72 max-w-[85vw] flex-col border-r border-border bg-bg-secondary transition-transform duration-200 ease-in-out lg:static lg:max-w-none lg:translate-x-0',
         open ? 'translate-x-0' : '-translate-x-full',
@@ -44,7 +48,8 @@ export function CourseSidebar({
         <button
           type="button"
           onClick={onClose}
-          className="rounded-lg p-2 text-text-tertiary hover:bg-surface-hover hover:text-text-primary lg:hidden"
+          data-sidebar-close
+          className="rounded-lg p-2.5 text-text-tertiary hover:bg-surface-hover hover:text-text-primary lg:hidden"
           aria-label="Close menu"
         >
           <X className="h-4 w-4" aria-hidden="true" />

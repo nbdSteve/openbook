@@ -4,6 +4,7 @@ import { Alert } from '@/components/ui/Alert';
 import { Button } from '@/components/ui/Button';
 import { Dialog } from '@/components/ui/Dialog';
 import { Input } from '@/components/ui/Field';
+import { normalizeInviteCode } from '@/lib/format';
 import { ApiError } from '@/services/api/client';
 import { describeApiError } from '@/services/api/errors';
 import { joinCourse } from '@/services/api/routes';
@@ -19,20 +20,22 @@ export function JoinCourseDialog({ open, onClose }: { open: boolean; onClose: ()
     setError('');
     setBusy(true);
     try {
-      const course = await joinCourse(code.trim().toUpperCase());
+      const course = await joinCourse(normalizeInviteCode(code));
       navigate(`/app/c/${course.id}`);
     } catch (err) {
       setError(
         err instanceof ApiError && err.code === 'not_found'
           ? 'No course uses that invite code. Check the code with your teacher.'
-          : describeApiError(err),
+          : err instanceof ApiError && err.code === 'quota_exceeded'
+            ? 'Too many wrong codes today. Try again tomorrow.'
+            : describeApiError(err),
       );
       setBusy(false);
     }
   };
 
   return (
-    <Dialog open={open} title="Join a course" onClose={onClose}>
+    <Dialog open={open} title="Join a course" onClose={onClose} locked={busy}>
       <form onSubmit={onSubmit} className="space-y-4">
         <p className="text-sm text-text-secondary">Enter the 8-character invite code from your teacher.</p>
         {error && <Alert tone="error">{error}</Alert>}
@@ -52,7 +55,7 @@ export function JoinCourseDialog({ open, onClose }: { open: boolean; onClose: ()
           <Button variant="secondary" onClick={onClose} disabled={busy}>
             Cancel
           </Button>
-          <Button type="submit" isLoading={busy} disabled={!code.trim()}>
+          <Button type="submit" isLoading={busy} disabled={!normalizeInviteCode(code)}>
             Join course
           </Button>
         </div>

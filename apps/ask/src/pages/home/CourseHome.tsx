@@ -28,7 +28,7 @@ function CourseCard({ course }: { course: Course }) {
         <p className="mt-2 line-clamp-2 min-h-10 text-sm text-text-secondary">
           {course.description || 'No description yet.'}
         </p>
-        <p className="mt-4 text-xs text-text-muted">Tutoring style: {styleName(course.tutoringStyle)}</p>
+        <p className="mt-auto pt-4 text-xs text-text-muted">Tutoring style: {styleName(course.tutoringStyle)}</p>
       </Link>
     </li>
   );
@@ -44,7 +44,7 @@ function EmptyState({ onCreate, onJoin }: { onCreate: () => void; onJoin: () => 
         </p>
       </div>
       <div className="grid gap-4 md:grid-cols-2">
-        <section className="rounded-2xl border border-border bg-surface p-6">
+        <section className="flex flex-col rounded-2xl border border-border bg-surface p-6">
           <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl bg-accent-subtle">
             <GraduationCap className="h-5 w-5 text-accent" aria-hidden="true" />
           </div>
@@ -52,12 +52,14 @@ function EmptyState({ onCreate, onJoin }: { onCreate: () => void; onJoin: () => 
           <p className="mt-2 text-sm leading-relaxed text-text-secondary">
             Create a course for your class. Upload your notes, slides, and readings as PDFs. Share the invite code so your students can ask questions and see answers that point back to your materials.
           </p>
-          <Button className="mt-5" onClick={onCreate}>
-            <Plus className="h-4 w-4" aria-hidden="true" />
-            Create a course
-          </Button>
+          <div className="mt-auto pt-5">
+            <Button onClick={onCreate}>
+              <Plus className="h-4 w-4" aria-hidden="true" />
+              Create a course
+            </Button>
+          </div>
         </section>
-        <section className="rounded-2xl border border-border bg-surface p-6">
+        <section className="flex flex-col rounded-2xl border border-border bg-surface p-6">
           <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl bg-teal-subtle">
             <UserRound className="h-5 w-5 text-teal" aria-hidden="true" />
           </div>
@@ -65,7 +67,7 @@ function EmptyState({ onCreate, onJoin }: { onCreate: () => void; onJoin: () => 
           <p className="mt-2 text-sm leading-relaxed text-text-secondary">
             Create a personal course and upload the books or notes you study from. You are the only member, and the tutor answers from your own materials. Did a teacher give you an invite code? Join their course instead.
           </p>
-          <div className="mt-5 flex flex-wrap gap-3">
+          <div className="mt-auto flex flex-wrap gap-3 pt-5">
             <Button onClick={onCreate}>
               <Plus className="h-4 w-4" aria-hidden="true" />
               Create a personal course
@@ -125,7 +127,7 @@ export function CourseHome() {
         )}
         {data && data.length > 0 && (
           <p className="mt-8 flex items-center gap-2 text-sm text-text-muted">
-            <BookOpen className="h-4 w-4" aria-hidden="true" />
+            <BookOpen className="h-4 w-4 shrink-0" aria-hidden="true" />
             Open a course to chat. Course owners also manage materials, members, and insights there.
           </p>
         )}

@@ -7,9 +7,9 @@ import { Badge } from '@/components/ui/Badge';
 import { ConfirmDialog } from '@/components/ui/Dialog';
 import { Spinner } from '@/components/ui/Spinner';
 import { DOCUMENT_STATUS_LABEL, POLL_INTERVAL_MS } from '@/lib/constants';
-import { formatDate } from '@/lib/format';
+import { formatBytes, formatDate } from '@/lib/format';
 import { useResource } from '@/lib/useResource';
-import { describeApiError, formatBytes } from '@/services/api/errors';
+import { describeApiError } from '@/services/api/errors';
 import { deleteDocument, listDocuments } from '@/services/api/routes';
 import type { CourseDocument, DocumentStatus } from '@/services/api/types';
 import { checkUploadFile, uploadDocument } from '@/services/api/upload';
@@ -68,13 +68,35 @@ export function DocumentsTab() {
   const input = useRef<HTMLInputElement>(null);
   const counter = useRef(0);
 
-  // Poll every 5 seconds while any document waits for ingestion.
+  // Poll every 5 seconds while a document waits for ingestion. Slow down when nothing changes or a
+  // poll fails, and pause while the tab is hidden.
   const waiting = docs.data?.some((d) => d.status === 'queued' || d.status === 'processing') ?? false;
+  const signature = docs.data?.map((d) => `${d.id}:${d.status}`).join(',') ?? '';
+  const rhythm = useRef({ signature: '', unchanged: 0, failures: 0 });
   useEffect(() => {
     if (!waiting) return;
-    const timer = window.setTimeout(reload, POLL_INTERVAL_MS);
-    return () => window.clearTimeout(timer);
-  }, [waiting, docs.data, reload]);
+    const r = rhythm.current;
+    r.failures = docs.error !== undefined ? r.failures + 1 : 0;
+    r.unchanged = signature === r.signature ? r.unchanged + 1 : 0;
+    r.signature = signature;
+    const delay = Math.min(POLL_INTERVAL_MS * 2 ** Math.min(r.unchanged, 3) * 2 ** Math.min(r.failures, 3), 60_000);
+    const poll = () => {
+      if (document.hidden) document.addEventListener('visibilitychange', poll, { once: true });
+      else reload();
+    };
+    const timer = window.setTimeout(poll, r.unchanged === 0 && r.failures === 0 ? POLL_INTERVAL_MS : delay);
+    return () => {
+      window.clearTimeout(timer);
+      document.removeEventListener('visibilitychange', poll);
+    };
+  }, [waiting, signature, docs.data, docs.error, reload]);
+
+  // Leaving the tab cancels uploads that are still running, so no file is left half sent.
+  const controllers = useRef(new Map<string, AbortController>());
+  useEffect(() => {
+    const running = controllers.current;
+    return () => running.forEach((c) => c.abort());
+  }, []);
 
   const patchUpload = (key: string, change: Partial<UploadItem>) =>
     setUploads((all) => all.map((u) => (u.key === key ? { ...u, ...change } : u)));
@@ -91,15 +113,22 @@ export function DocumentsTab() {
 
     for (const file of accepted) {
       const key = `upload-${counter.current++}`;
+      const controller = new AbortController();
+      controllers.current.set(key, controller);
       setUploads((all) => [...all, { key, name: file.name, progress: 0, phase: 'uploading' }]);
       try {
-        await uploadDocument(course.id, file, (fraction) => {
-          patchUpload(key, { progress: fraction, phase: fraction >= 1 ? 'finishing' : 'uploading' });
-        });
+        await uploadDocument(
+          course.id,
+          file,
+          (fraction) => patchUpload(key, { progress: fraction, phase: fraction >= 1 ? 'finishing' : 'uploading' }),
+          controller.signal,
+        );
         setUploads((all) => all.filter((u) => u.key !== key));
-        reload();
       } catch (error) {
-        patchUpload(key, { phase: 'failed', error: describeApiError(error, me.limits) });
+        if (controller.signal.aborted) setUploads((all) => all.filter((u) => u.key !== key));
+        else patchUpload(key, { phase: 'failed', error: describeApiError(error, me.limits) });
+      } finally {
+        controllers.current.delete(key);
         reload();
       }
     }
@@ -144,7 +173,7 @@ export function DocumentsTab() {
           <Upload className="mb-3 h-6 w-6 text-accent" aria-hidden="true" />
           <span className="text-sm font-semibold text-text-primary">Choose PDF files</span>
           <span className="mt-1 text-xs text-text-tertiary">
-            or drop them here. PDF only, up to {formatBytes(me.limits.maxUploadBytes)} each, {me.limits.maxDocumentsPerCourse} documents per course.
+            or drop them here. Keep this tab open while files upload. PDF only, up to {formatBytes(me.limits.maxUploadBytes)} each, {me.limits.maxDocumentsPerCourse} documents per course.
           </span>
           <input
             ref={input}
@@ -186,14 +215,24 @@ export function DocumentsTab() {
                     <X className="h-4 w-4" aria-hidden="true" />
                   </button>
                 ) : (
-                  <span className="shrink-0 text-xs text-text-muted">
+                  <span className="flex shrink-0 items-center gap-1 text-xs text-text-muted">
                     {u.phase === 'finishing' ? 'Finishing' : `${Math.round(u.progress * 100)}%`}
+                    {u.phase === 'uploading' && (
+                      <button
+                        type="button"
+                        className="rounded-lg p-2 text-text-tertiary hover:bg-surface-hover"
+                        aria-label={`Cancel upload of ${u.name}`}
+                        onClick={() => controllers.current.get(u.key)?.abort()}
+                      >
+                        <X className="h-4 w-4" aria-hidden="true" />
+                      </button>
+                    )}
                   </span>
                 )}
               </div>
               {u.phase === 'failed' ? (
                 <p role="alert" className="mt-1 text-sm text-danger">
-                  Upload failed. {u.error}
+                  Upload failed. {u.error} If the file shows as Uploading in the list below, delete it and try again.
                 </p>
               ) : (
                 <div

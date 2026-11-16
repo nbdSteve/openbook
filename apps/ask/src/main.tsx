@@ -15,7 +15,13 @@ async function start() {
     return;
   }
   // Load the app only after the config is set: the auth code reads it when it first runs.
-  const { default: App } = await import('./App');
+  let App: typeof import('./App').default;
+  try {
+    App = (await import('./App')).default;
+  } catch {
+    root.render(<ConfigErrorScreen message="The app files could not load. Reload the page. If it keeps happening, the site may have just been updated." />);
+    return;
+  }
   root.render(
     <StrictMode>
       <App />

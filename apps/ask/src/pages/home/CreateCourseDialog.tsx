@@ -37,7 +37,7 @@ export function CreateCourseDialog({ open, onClose }: { open: boolean; onClose: 
   };
 
   return (
-    <Dialog open={open} title="Create a course" onClose={onClose}>
+    <Dialog open={open} title="Create a course" onClose={onClose} locked={busy}>
       <form onSubmit={onSubmit} className="space-y-4">
         {error && <Alert tone="error">{error}</Alert>}
         <Input label="Course name" required maxLength={80} value={name} onChange={(e) => setName(e.target.value)} placeholder="Biology 101" />
