@@ -12,6 +12,7 @@ export default tseslint.config(
       sourceType: 'commonjs',
       globals: { require: 'readonly', module: 'writable', process: 'readonly', __dirname: 'readonly' },
     },
+    rules: { '@typescript-eslint/no-require-imports': 'off' },
   },
   {
     rules: {
