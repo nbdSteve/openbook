@@ -10,10 +10,13 @@ import { createCourse } from '@/services/api/routes';
 import type { TutoringStyle } from '@/services/api/types';
 import { useMe } from '@/services/me/MeContext';
 
-export function CreateCourseDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+export type CourseMode = 'class' | 'personal';
+
+/** Both modes create the same kind of course. The personal one presets a name and talks to a single learner. */
+export function CreateCourseDialog({ open, mode, onClose }: { open: boolean; mode: CourseMode; onClose: () => void }) {
   const navigate = useNavigate();
   const { me } = useMe();
-  const [name, setName] = useState('');
+  const [name, setName] = useState(mode === 'personal' ? 'My study course' : '');
   const [description, setDescription] = useState('');
   const [style, setStyle] = useState<TutoringStyle>('socratic');
   const [error, setError] = useState('');
@@ -29,7 +32,7 @@ export function CreateCourseDialog({ open, onClose }: { open: boolean; onClose: 
         ...(description.trim() ? { description: description.trim() } : {}),
         tutoringStyle: style,
       });
-      navigate(`/app/c/${course.id}/manage`);
+      navigate(`/app/c/${course.id}/manage?tab=documents`, { state: { first: mode } });
     } catch (err) {
       setError(describeApiError(err, me.limits));
       setBusy(false);
@@ -37,12 +40,17 @@ export function CreateCourseDialog({ open, onClose }: { open: boolean; onClose: 
   };
 
   return (
-    <Dialog open={open} title="Create a course" onClose={onClose} locked={busy}>
+    <Dialog open={open} title={mode === 'personal' ? 'Study on your own' : 'Create a course for a class'} onClose={onClose} locked={busy}>
       <form onSubmit={onSubmit} className="space-y-4">
+        <p className="text-sm text-text-secondary">
+          {mode === 'personal'
+            ? 'A personal course is just for you. Upload the books or notes you study from, then ask questions about them.'
+            : 'Upload your class materials, then share an invite code so your students can ask questions.'}
+        </p>
         {error && <Alert tone="error">{error}</Alert>}
-        <Input label="Course name" required maxLength={80} value={name} onChange={(e) => setName(e.target.value)} placeholder="Biology 101" />
+        <Input label="Course name" required maxLength={80} value={name} onChange={(e) => setName(e.target.value)} placeholder={mode === 'personal' ? 'My study course' : 'Biology 101'} />
         <Textarea
-          label="Description (optional)"
+          label={mode === 'personal' ? 'What are you studying? (optional)' : 'Description (optional)'}
           maxLength={500}
           rows={3}
           value={description}
@@ -66,7 +74,7 @@ export function CreateCourseDialog({ open, onClose }: { open: boolean; onClose: 
             Cancel
           </Button>
           <Button type="submit" isLoading={busy} disabled={!name.trim()}>
-            Create course
+            {mode === 'personal' ? 'Start studying' : 'Create course'}
           </Button>
         </div>
       </form>

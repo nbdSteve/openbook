@@ -27,6 +27,9 @@ test.describe.configure({ mode: 'serial' });
 // Real models answer differently each time, so deployed mode asks for a formula and checks structure.
 const QUESTION = DEPLOYED ? 'Write the quadratic formula in LaTeX.' : 'What is the Pythagorean theorem?';
 const COURSE_NAME = 'E2E Geometry';
+// The ingest worker reads the PDF in the background. Locally it uses fake transcription and embeddings.
+const READY_TIMEOUT = DEPLOYED ? 180_000 : 60_000;
+const SAMPLE_PDF = path.join(import.meta.dirname, '..', 'fixtures', 'sample.pdf');
 
 let teacherContext: BrowserContext;
 let studentContext: BrowserContext;
@@ -145,13 +148,35 @@ test('a student signs in from the invite link and joins the course after a click
   await expect(student).toHaveURL(new RegExp(`/app/c/${courseId}$`));
 });
 
-test('the teacher uploads a PDF and sees it reach the queue', async () => {
+test('the teacher uploads a PDF and sees it become ready with its page count', async () => {
+  test.setTimeout(READY_TIMEOUT + 60_000);
   await teacher.goto(`/app/c/${courseId}/manage?tab=documents`);
-  await teacher.getByLabel('Choose PDF files').setInputFiles(path.join(import.meta.dirname, '..', 'fixtures', 'sample.pdf'));
+  await teacher.getByLabel('Choose PDF files').setInputFiles(SAMPLE_PDF);
   const row = teacher.getByRole('listitem').filter({ hasText: 'sample.pdf' });
   await expect(row).toBeVisible();
-  // Phase 1 stops at `queued`. Later phases move on to processing and ready.
-  await expect(row.getByText(/^(Queued|Processing|Ready)$/)).toBeVisible();
+  // queued, then processing, then ready. The list polls by itself.
+  await expect(row.getByText('Ready', { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+  await expect(row.getByText('1 page', { exact: true })).toBeVisible();
+});
+
+test('a student sees how many documents the course has', async () => {
+  await student.goto(`/app/c/${courseId}`);
+  await expect(student.getByTestId('materials')).toContainText('1 document');
+});
+
+test('the teacher deletes the document, sees it deleting, and it disappears', async () => {
+  test.setTimeout(READY_TIMEOUT + 60_000);
+  await teacher.goto(`/app/c/${courseId}/manage?tab=documents`);
+  const row = teacher.getByRole('listitem').filter({ hasText: 'sample.pdf' });
+  await row.getByRole('button', { name: 'Delete sample.pdf' }).click();
+  await teacher.getByRole('dialog').getByRole('button', { name: 'Delete document' }).click();
+  // The delete answers 202 with the document in `deleting`. The row has no actions while the worker works.
+  await expect(row.getByText('Deleting', { exact: true })).toBeVisible();
+  await expect(row.getByRole('button', { name: 'Delete sample.pdf' })).toHaveCount(0);
+  await expect(row).toHaveCount(0, { timeout: READY_TIMEOUT });
+
+  await student.goto(`/app/c/${courseId}`);
+  await expect(student.getByTestId('materials')).toContainText('has not added any documents yet');
 });
 
 test('the teacher is told when a file is not a PDF', async () => {
@@ -249,6 +274,37 @@ test('a removed student loses access', async () => {
 
   await student.goto(`/app/c/${courseId}`);
   await expect(student.getByRole('heading', { name: 'Course not found' })).toBeVisible();
+});
+
+test('a learner studies on their own: create a personal course, upload, and ask', async ({ browser }) => {
+  test.setTimeout(READY_TIMEOUT + 120_000);
+  const { page, context } = await newUserPage(browser, 'solo');
+  await expect(page.getByRole('heading', { name: 'You have no courses yet' })).toBeVisible();
+  await page.getByRole('button', { name: 'Study on your own' }).first().click();
+  // The name is preset, and the copy talks to one learner.
+  await expect(page.getByLabel('Course name')).toHaveValue('My study course');
+  await page.getByRole('button', { name: 'Start studying' }).click();
+
+  await expect(page).toHaveURL(/\/app\/c\/[0-9A-Z]{26}\/manage/);
+  const id = courseIdFromUrl(page.url());
+  await expect(page.getByText('Your study course is ready')).toBeVisible();
+  await expect(page.getByText(/invite code/i).first()).toBeHidden();
+
+  await page.getByLabel('Choose PDF files').setInputFiles(SAMPLE_PDF);
+  const row = page.getByRole('listitem').filter({ hasText: 'sample.pdf' });
+  await expect(row.getByText('Ready', { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+
+  await page.goto(`/app/c/${id}`);
+  await expect(page.getByTestId('materials')).toContainText('1 document');
+  // A single learner sees no note about a teacher reading their questions.
+  await expect(page.getByTestId('composer-note')).toHaveCount(0);
+  await page.getByLabel('Message to Ask').fill(DEPLOYED ? 'What does my document say about photosynthesis?' : QUESTION);
+  await page.getByRole('button', { name: 'Send message' }).click();
+  await expect(page.getByRole('button', { name: 'Stop answer' })).toHaveCount(0, { timeout: CHAT_TIMEOUT });
+  await expect(page.getByTestId('assistant-message').last()).toContainText(/\S/);
+
+  if (DEPLOYED) await deleteCourseInUi(page, id, 'My study course');
+  await context.close();
 });
 
 test('the daily quota stops chat with a clear message', async ({ browser }) => {

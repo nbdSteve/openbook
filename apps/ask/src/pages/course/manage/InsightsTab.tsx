@@ -35,7 +35,7 @@ export function InsightsTab() {
         </h3>
         {questions.length === 0 ? (
           <div className="rounded-2xl border border-border bg-surface px-4 py-8 text-center text-sm text-text-secondary">
-            No student questions yet. They show here when students start chatting.
+            No student questions yet. Questions from students who join this course show here. Your own questions are not listed.
           </div>
         ) : (
           <ul className="space-y-2">

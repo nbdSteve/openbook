@@ -13,16 +13,38 @@ import { useCourse } from './CourseContext';
 
 const NEAR_BOTTOM_PX = 120;
 
-/** Owners with no documents yet get a nudge. Owners with documents see nothing. */
-function AddMaterialsHint({ courseId }: { courseId: string }) {
+function documentsCount(n: number): string {
+  return `${n} ${n === 1 ? 'document' : 'documents'}`;
+}
+
+/** Tell the reader what the tutor can use: how many ready documents the course has. */
+function CourseMaterials({ courseId, role }: { courseId: string; role: 'owner' | 'student' }) {
   const docs = useResource(`documents:${courseId}`, (signal) => listDocuments(courseId, signal));
-  if (!docs.data || docs.data.length > 0) return null;
+  if (!docs.data) return null;
+  const ready = docs.data.filter((d) => d.status === 'ready').length;
+  const preparing = docs.data.filter((d) => d.status === 'queued' || d.status === 'processing' || d.status === 'uploading').length;
+  const cls = 'mx-auto mt-3 max-w-md text-sm text-text-tertiary';
+  if (role === 'student') {
+    return (
+      <p className={cls} data-testid="materials">
+        {ready > 0 ? `This course has ${documentsCount(ready)} that the tutor can use.` : 'The course owner has not added any documents yet. Answers will not use course materials until they do.'}
+      </p>
+    );
+  }
+  if (ready === 0 && preparing === 0) {
+    return (
+      <p className={cls} data-testid="materials">
+        This course has no documents yet.{' '}
+        <Link to={`/app/c/${courseId}/manage`} className="font-medium text-accent underline">
+          Add PDFs
+        </Link>
+      </p>
+    );
+  }
   return (
-    <p className="mx-auto mt-3 max-w-md text-sm text-text-tertiary">
-      This course has no materials yet.{' '}
-      <Link to={`/app/c/${courseId}/manage`} className="font-medium text-accent underline">
-        Add PDFs
-      </Link>
+    <p className={cls} data-testid="materials">
+      {ready > 0 ? `The tutor can use ${documentsCount(ready)}.` : 'Your documents are still being prepared.'}
+      {ready > 0 && preparing > 0 ? ` ${preparing} more ${preparing === 1 ? 'is' : 'are'} still being prepared.` : ''}
     </p>
   );
 }
@@ -92,7 +114,7 @@ export function ChatPage() {
               <p className="mx-auto mt-3 max-w-md text-text-secondary">
                 Ask anything about {course.name}. The tutor uses the {styleName(course.tutoringStyle)} style.
               </p>
-              {course.role === 'owner' && <AddMaterialsHint courseId={course.id} />}
+              <CourseMaterials courseId={course.id} role={course.role} />
             </div>
           )}
           <div className="space-y-4">

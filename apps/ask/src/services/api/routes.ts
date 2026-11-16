@@ -65,8 +65,9 @@ export const completeDocument = async (courseId: string, documentId: string) =>
     )
   ).document;
 
-export const deleteDocument = (courseId: string, documentId: string) =>
-  apiJson<void>(`/api/courses/${enc(courseId)}/documents/${enc(documentId)}`, { method: 'DELETE' });
+/** Returns the document in `deleting`. The worker removes it a little later. */
+export const deleteDocument = async (courseId: string, documentId: string) =>
+  (await apiJson<{ document: CourseDocument }>(`/api/courses/${enc(courseId)}/documents/${enc(documentId)}`, { method: 'DELETE' })).document;
 
 export const listConversations = async (courseId: string, signal?: AbortSignal) =>
   (await apiJson<{ conversations: Conversation[] }>(`/api/courses/${enc(courseId)}/conversations`, { signal }))

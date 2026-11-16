@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { checkUploadFile, putFile, uploadDocument, type UploadDeps } from './upload';
+import { ApiError } from './client';
+import { checkUploadFile, putFile, UploadIncompleteError, uploadDocument, type UploadDeps } from './upload';
 import type { CourseDocument, UploadTarget } from './types';
 
 const doc = (status: CourseDocument['status']): CourseDocument => ({
@@ -76,6 +77,23 @@ describe('uploadDocument', () => {
     const d = deps(order, { create: vi.fn(async () => Promise.reject(new Error('limit_reached'))) });
     await expect(uploadDocument('C1', file, () => {}, undefined, d)).rejects.toThrow('limit_reached');
     expect(d.put).not.toHaveBeenCalled();
+  });
+});
+
+describe('uploadDocument when complete answers 503', () => {
+  it('keeps the document and throws an error that carries it, so the UI can retry complete', async () => {
+    const order: string[] = [];
+    const d = deps(order, { complete: vi.fn(async () => Promise.reject(new ApiError(503, 'unavailable', 'queue down'))) });
+    const error = await uploadDocument('C1', file, () => {}, undefined, d).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(UploadIncompleteError);
+    expect((error as UploadIncompleteError).document.id).toBe('D1');
+    // The file is stored, so the half-created document must stay for the retry.
+    expect(d.remove).not.toHaveBeenCalled();
+  });
+
+  it('passes other complete errors through unchanged', async () => {
+    const d = deps([], { complete: vi.fn(async () => Promise.reject(new ApiError(409, 'conflict', 'missing'))) });
+    await expect(uploadDocument('C1', file, () => {}, undefined, d)).rejects.toMatchObject({ code: 'conflict' });
   });
 });
 

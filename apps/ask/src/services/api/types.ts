@@ -2,7 +2,7 @@
 
 export type Role = 'owner' | 'student';
 export type TutoringStyle = 'socratic' | 'hints' | 'step_by_step' | 'concepts' | 'direct';
-export type DocumentStatus = 'uploading' | 'queued' | 'processing' | 'ready' | 'failed';
+export type DocumentStatus = 'uploading' | 'queued' | 'processing' | 'ready' | 'failed' | 'deleting';
 
 export interface User {
   id: string;
@@ -56,6 +56,11 @@ export interface CourseDocument {
   status: DocumentStatus;
   error?: string;
   pageCount?: number;
+  chunkCount?: number;
+  /** Pages that went through the transcription model. */
+  transcribedPages?: number;
+  /** Owner-safe notes, for example when the daily transcription cap was reached. */
+  warnings?: string[];
   createdAt: string;
   updatedAt: string;
 }

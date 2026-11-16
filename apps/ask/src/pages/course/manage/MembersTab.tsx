@@ -42,7 +42,7 @@ export function MembersTab() {
     <div className="space-y-4">
       <p className="text-sm text-text-secondary">
         {students === 0
-          ? 'No students have joined yet. Share your invite code to add some.'
+          ? 'You are the only member. If you teach a class, share your invite code to add students.'
           : `${students} ${students === 1 ? 'student has' : 'students have'} joined this course.`}
       </p>
       <ul className="divide-y divide-border overflow-hidden rounded-2xl border border-border bg-surface">

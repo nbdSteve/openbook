@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
-import { COURSE_ID, CONVERSATIONS, STUDENT_COURSE_ID } from './data';
+import { COURSE_ID, CONVERSATIONS, OWNER_COURSE, STUDENT_COURSE_ID } from './data';
 import { expectNoHorizontalOverflow, expectNoSeriousA11yViolations, prepare, type MockOptions, scrollThrough, VIEWPORTS, type Theme } from './fixtures';
 
 // Screenshots go to an ignored folder. Read them to check the screens by eye.
@@ -38,12 +38,40 @@ const SCREENS: Screen[] = [
     fullPage: true },
   { name: 'home-empty', url: '/app', signedIn: true, ready: heading('You have no courses yet', 2), fullPage: true, mock: { courses: [] } },
   {
+    name: 'home-personal-dialog',
+    url: '/app',
+    signedIn: true,
+    ready: heading('Your courses'),
+    act: async (page) => {
+      await page.getByRole('button', { name: 'Study on your own' }).click();
+      await expect(page.getByLabel('Course name')).toHaveValue('My study course');
+    },
+  },
+  {
+    name: 'personal-first-run',
+    url: '/app',
+    signedIn: true,
+    ready: heading('Your courses'),
+    mock: {
+      override: (path, method) => {
+        if (method === 'POST' && path === '/api/courses') return { status: 201, body: { course: OWNER_COURSE } };
+        if (method === 'GET' && path.endsWith('/documents')) return { status: 200, body: { documents: [] } };
+        return undefined;
+      },
+    },
+    act: async (page) => {
+      await page.getByRole('button', { name: 'Study on your own' }).click();
+      await page.getByRole('button', { name: 'Start studying' }).click();
+      await expect(page.getByText('Your study course is ready')).toBeVisible();
+    },
+  },
+  {
     name: 'home-create-dialog',
     url: '/app',
     signedIn: true,
     ready: heading('Your courses'),
     act: async (page) => {
-      await page.getByRole('button', { name: 'Create a course' }).first().click();
+      await page.getByRole('button', { name: 'Create a course for a class' }).first().click();
       await expect(page.getByRole('dialog')).toBeVisible();
     },
   },
@@ -55,6 +83,7 @@ const SCREENS: Screen[] = [
     ready: async (page) => {
       await heading('What would you like to learn?', 2)(page);
       await expect(page.getByTestId('composer-note')).toHaveCount(0);
+      await expect(page.getByTestId('materials')).toContainText('The tutor can use 2 documents');
     },
   },
   {
@@ -115,6 +144,8 @@ const SCREENS: Screen[] = [
     ready: async (page) => {
       await heading('What would you like to learn?', 2)(page);
       await expect(page.getByTestId('composer-note')).toHaveText('Your teacher can see the questions you ask in this course.');
+      // The student sees only ready documents, and is told how many.
+      await expect(page.getByTestId('materials')).toContainText('has 2 documents');
     },
   },
   {
@@ -135,7 +166,12 @@ const SCREENS: Screen[] = [
     ready: heading('Course not found'),
     fullPage: true,
   },
-  { name: 'manage-documents', url: `/app/c/${COURSE_ID}/manage?tab=documents`, signedIn: true, ready: (p) => expect(p.getByText('Problem set 2.pdf')).toBeVisible() },
+  { name: 'manage-documents', url: `/app/c/${COURSE_ID}/manage?tab=documents`, signedIn: true, ready: async (p) => {
+      await expect(p.getByText('Problem set 2.pdf')).toBeVisible();
+      await expect(p.getByText('38 pages')).toBeVisible();
+      await expect(p.getByText('Removing the document')).toBeVisible();
+      await expect(p.getByText('Page 7 was not transcribed')).toBeVisible();
+    } },
   { name: 'manage-invite', url: `/app/c/${COURSE_ID}/manage?tab=invite`, signedIn: true, ready: (p) => expect(p.getByTestId('invite-code')).toBeVisible() },
   { name: 'manage-invite-confirm', url: `/app/c/${COURSE_ID}/manage?tab=invite`, signedIn: true, ready: (p) => expect(p.getByTestId('invite-code')).toBeVisible(), act: async (p) => {
       await p.getByRole('button', { name: 'Make a new code' }).click();

@@ -89,7 +89,11 @@ export async function mockBackend(page: Page, options: MockOptions = {}) {
       const conversation = CONVERSATIONS.find((c) => c.id === id) ?? CONVERSATIONS[0];
       return json(route, { conversation, messages: MESSAGES });
     }
-    if (path.endsWith('/documents')) return json(route, { documents: DOCUMENTS });
+    if (path.endsWith('/documents')) {
+      // Students see only ready documents (docs/api.md).
+      const documents = path.includes(STUDENT_COURSE_ID) ? DOCUMENTS.filter((d) => d.status === 'ready') : DOCUMENTS;
+      return json(route, { documents });
+    }
     if (path.endsWith('/members')) return json(route, { members: MEMBERS });
     if (path.endsWith('/insights')) return json(route, INSIGHTS);
     if (path.endsWith('/chat')) {
