@@ -26,7 +26,8 @@
         "provider": "bedrock",
         "modelId": "au.anthropic.claude-sonnet-4-6",
         "residency": "au",
-        "maxOutputTokens": 2000
+        "maxOutputTokens": 2000,
+        "vision": true
       },
       {
         "id": "claude-haiku",
@@ -35,7 +36,8 @@
         "provider": "bedrock",
         "modelId": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
         "residency": "au",
-        "maxOutputTokens": 2000
+        "maxOutputTokens": 2000,
+        "vision": true
       },
       {
         "id": "gpt-oss-120b",
@@ -44,7 +46,8 @@
         "provider": "bedrock",
         "modelId": "openai.gpt-oss-120b-1:0",
         "residency": "au",
-        "maxOutputTokens": 2000
+        "maxOutputTokens": 2000,
+        "vision": false
       }
     ],
     "defaultChatModel": "claude-sonnet",
@@ -52,13 +55,16 @@
     "stageLimits": {
       "dev": {
         "limitDailyMessagesGlobal": 100,
-        "limitDailyTokensGlobal": 100000
+        "limitDailyTokensGlobal": 100000,
+        "limitDailyTranscribedPagesGlobal": 100
       },
       "prod": {
         "limitDailyMessagesGlobal": 300,
-        "limitDailyTokensGlobal": 300000
+        "limitDailyTokensGlobal": 300000,
+        "limitDailyTranscribedPagesGlobal": 300
       }
-    }
+    },
+    "embeddingModelId": "amazon.titan-embed-text-v2:0"
   },
   "cli-telemetry": false
 }

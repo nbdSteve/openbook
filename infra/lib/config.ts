@@ -1,6 +1,6 @@
 import * as path from 'path';
 import type { Node } from 'constructs';
-import { validateCatalog, type Catalog } from './catalog';
+import { assertEmbeddingModel, assertTranscribeModel, validateCatalog, type Catalog } from './catalog';
 
 export type Stage = 'dev' | 'prod';
 
@@ -17,6 +17,9 @@ export interface Limits {
   coursesOwned: number;
   documentsPerCourse: number;
   uploadBytes: number;
+  pagesPerDocument: number;
+  transcribedPagesPerUser: number;
+  transcribedPagesGlobal: number;
 }
 
 export interface DomainConfig {
@@ -28,8 +31,12 @@ export interface DomainConfig {
 export interface OpenbookConfig {
   stage: Stage;
   apiAssetDir: string;
+  ingestAssetDir: string;
   webAssetDir: string;
   catalog: Catalog;
+  /** The catalog ID of the model that transcribes pages. */
+  transcribeModel: string;
+  embeddingModelId: string;
   limits: Limits;
   domain?: DomainConfig;
 }
@@ -43,7 +50,12 @@ export const defaultLimits: Limits = {
   coursesOwned: 10,
   documentsPerCourse: 50,
   uploadBytes: 26_214_400,
+  pagesPerDocument: 500,
+  transcribedPagesPerUser: 300,
+  transcribedPagesGlobal: 1000,
 };
+
+export const defaultEmbeddingModelId = 'amazon.titan-embed-text-v2:0';
 
 function str(node: Node, key: string): string | undefined {
   const value: unknown = node.tryGetContext(key);
@@ -78,6 +90,11 @@ export function resolveConfig(node: Node): OpenbookConfig {
     node.tryGetContext('fastModel'),
   );
 
+  // The transcription model defaults to the fast model. It must accept images, and be `au`.
+  const transcribeModel = str(node, 'transcribeModel') ?? catalog.fastModel;
+  assertTranscribeModel(catalog, transcribeModel);
+  const embeddingModelId = assertEmbeddingModel(str(node, 'embeddingModelId') ?? defaultEmbeddingModelId);
+
   const domainName = str(node, 'domainName');
   const hostedZoneName = str(node, 'hostedZoneName');
   const hostedZoneId = str(node, 'hostedZoneId');
@@ -95,8 +112,11 @@ export function resolveConfig(node: Node): OpenbookConfig {
   return {
     stage,
     apiAssetDir: path.resolve(infraRoot, str(node, 'apiAssetDir') ?? '../target/lambda/openbook-api'),
+    ingestAssetDir: path.resolve(infraRoot, str(node, 'ingestAssetDir') ?? '../target/lambda/openbook-ingest'),
     webAssetDir: path.resolve(infraRoot, str(node, 'webAssetDir') ?? '../apps/ask/dist'),
     catalog,
+    transcribeModel,
+    embeddingModelId,
     limits: {
       dailyMessagesPerUser: limit(node, stage, 'limitDailyMessagesPerUser', defaultLimits.dailyMessagesPerUser),
       dailyMessagesGlobal: limit(node, stage, 'limitDailyMessagesGlobal', defaultLimits.dailyMessagesGlobal),
@@ -105,6 +125,9 @@ export function resolveConfig(node: Node): OpenbookConfig {
       coursesOwned: limit(node, stage, 'limitCoursesOwned', defaultLimits.coursesOwned),
       documentsPerCourse: limit(node, stage, 'limitDocumentsPerCourse', defaultLimits.documentsPerCourse),
       uploadBytes: limit(node, stage, 'limitUploadBytes', defaultLimits.uploadBytes),
+      pagesPerDocument: limit(node, stage, 'limitPagesPerDocument', defaultLimits.pagesPerDocument),
+      transcribedPagesPerUser: limit(node, stage, 'limitDailyTranscribedPagesPerUser', defaultLimits.transcribedPagesPerUser),
+      transcribedPagesGlobal: limit(node, stage, 'limitDailyTranscribedPagesGlobal', defaultLimits.transcribedPagesGlobal),
     },
     ...(domain ? { domain } : {}),
   };

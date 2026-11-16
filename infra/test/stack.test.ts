@@ -367,7 +367,18 @@ describe.each([
   test('the outputs are the documented set', () => {
     const outputs = Object.keys((s.json as unknown as { Outputs: Json }).Outputs).sort();
     expect(outputs).toEqual(
-      ['ApiFunctionName', 'DistributionId', 'DocsBucketName', 'SiteUrl', 'TableName', 'UserPoolClientId', 'UserPoolId'].sort(),
+      [
+        'ApiFunctionName',
+        'DistributionId',
+        'DocsBucketName',
+        'IngestFunctionName',
+        'IngestQueueUrl',
+        'SiteUrl',
+        'TableName',
+        'UserPoolClientId',
+        'UserPoolId',
+        'VectorBucketName',
+      ].sort(),
     );
   });
 });

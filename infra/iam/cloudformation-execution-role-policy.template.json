@@ -176,6 +176,50 @@
       }
     },
     {
+      "Sid": "IngestQueues",
+      "Effect": "Allow",
+      "Action": [
+        "sqs:CreateQueue",
+        "sqs:DeleteQueue",
+        "sqs:GetQueueAttributes",
+        "sqs:GetQueueUrl",
+        "sqs:ListQueueTags",
+        "sqs:SetQueueAttributes",
+        "sqs:TagQueue",
+        "sqs:UntagQueue"
+      ],
+      "Resource": "arn:aws:sqs:ap-southeast-2:${ACCOUNT_ID}:Openbook-prod-ingest*"
+    },
+    {
+      "Sid": "IngestEventSourceMappingOfTheStackFunctions",
+      "Effect": "Allow",
+      "Action": [
+        "lambda:CreateEventSourceMapping",
+        "lambda:DeleteEventSourceMapping",
+        "lambda:GetEventSourceMapping",
+        "lambda:UpdateEventSourceMapping"
+      ],
+      "Resource": "arn:aws:lambda:ap-southeast-2:${ACCOUNT_ID}:event-source-mapping:*",
+      "Condition": {
+        "ArnLike": {
+          "lambda:FunctionArn": "arn:aws:lambda:ap-southeast-2:${ACCOUNT_ID}:function:Openbook-prod-*"
+        }
+      }
+    },
+    {
+      "Sid": "VectorBucket",
+      "Effect": "Allow",
+      "Action": [
+        "s3vectors:CreateVectorBucket",
+        "s3vectors:DeleteVectorBucket",
+        "s3vectors:GetVectorBucket",
+        "s3vectors:ListTagsForResource",
+        "s3vectors:TagResource",
+        "s3vectors:UntagResource"
+      ],
+      "Resource": "arn:aws:s3vectors:ap-southeast-2:${ACCOUNT_ID}:bucket/openbook-prod-*"
+    },
+    {
       "Sid": "StackLogGroups",
       "Effect": "Allow",
       "Action": [

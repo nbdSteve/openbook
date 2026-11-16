@@ -113,6 +113,39 @@ describe('the assembly validator', () => {
     expect(result.stderr).toContain('cloud assembly refused');
   });
 
+  test('accepts the ingest worker zip, and refuses one asset more or less', () => {
+    const names = (assets: Json): string[] => Object.values(assets.files as Record<string, { displayName: string }>).map((f) => f.displayName);
+    let seen: string[] = [];
+    expect(tampered((_d, _m, assets) => { seen = names(assets); }).status).toBe(0);
+    expect(seen).toContain('IngestFunction/Code');
+    expect(seen).toHaveLength(8);
+    // One more asset: a copy of the API asset under another name and key.
+    const more = tampered((_d, _m, assets) => {
+      const files = assets.files as Record<string, { displayName: string }>;
+      const [hash, file] = Object.entries(files)[0];
+      files['b'.repeat(64)] = { ...JSON.parse(JSON.stringify(file)), displayName: 'EvilFunction/Code' };
+      void hash;
+    });
+    expect(more.status).toBe(1);
+    expect(more.stderr).toContain('not an asset of the stack');
+    // One less: the ingest zip removed.
+    const less = tampered((_d, _m, assets) => {
+      const files = assets.files as Record<string, { displayName: string }>;
+      for (const [hash, file] of Object.entries(files)) if (file.displayName === 'IngestFunction/Code') delete files[hash];
+    });
+    expect(less.status).toBe(1);
+    expect(less.stderr).toContain('"IngestFunction/Code" is missing');
+  });
+
+  test('refuses an asset that changes its packaging or appears twice', () => {
+    const packaging = tampered((_d, _m, assets) => {
+      const f = Object.values(assets.files as Record<string, { displayName: string; source: Json }>).find((x) => x.displayName === 'IngestFunction/Code');
+      if (f) f.source.packaging = 'file';
+    });
+    expect(packaging.status).toBe(1);
+    expect(packaging.stderr).toMatch(/packaging|directory/);
+  });
+
   test('refuses a template asset that is not the hashed template file', () => {
     const result = tampered((dir) => {
       const template = path.join(dir, 'Openbook-prod.template.json');

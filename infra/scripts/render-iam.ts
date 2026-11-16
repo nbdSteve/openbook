@@ -42,7 +42,7 @@ export function catalogResources(): string[] {
   const context = (JSON.parse(fs.readFileSync(path.join(iamDir, '..', 'cdk.json'), 'utf8')) as { context: Record<string, unknown> }).context;
   const catalog = validateCatalog(context.models, context.defaultChatModel, context.fastModel);
   // The account stays a placeholder: the next step substitutes the supplied account.
-  return bedrockResourceArns(catalog.models, '${ACCOUNT_ID}');
+  return bedrockResourceArns(catalog.models, '${ACCOUNT_ID}', 'aws', String(context.embeddingModelId));
 }
 
 function expandBuiltins(text: string): string {

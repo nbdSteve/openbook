@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import { parseModelId, validateCatalog } from '../lib/catalog';
-import { asArray, cdkJsonContext, policyStatements, synth, type Json } from './helpers';
+import { asArray, cdkJsonContext, synth, type Json } from './helpers';
 
 type Model = Record<string, unknown>;
 const deployed = cdkJsonContext.models as Model[];
@@ -12,6 +12,7 @@ const model = (over: Model): Model => ({
   modelId: 'au.anthropic.claude-sonnet-5-5',
   residency: 'au',
   maxOutputTokens: 2000,
+  vision: true,
   ...over,
 });
 const withCatalog = (models: Model[], defaultChatModel = 'm', fastModel = 'm') =>
@@ -122,9 +123,13 @@ const globalModels: Model[] = [
 
 /** The Bedrock resources of a template, as plain strings with the partition filled in. */
 function bedrockOf(s: ReturnType<typeof synth>): { statements: Json[]; resources: string[] } {
-  const statements = policyStatements(s.json).filter((st) =>
-    asArray(st.Action as string | string[]).some((a) => a.startsWith('bedrock:')),
-  );
+  // The API role's catalog statements. The embedding statement and the ingest role are tested
+  // in their own describe.
+  const statements = Object.entries(s.json.Resources)
+    .filter(([id, r]) => r.Type === 'AWS::IAM::Policy' && id.startsWith('ApiFunctionServiceRole'))
+    .flatMap(([, r]) => (r.Properties?.PolicyDocument as { Statement: Json[] }).Statement)
+    .filter((st) => asArray(st.Action as string | string[]).some((a) => a.startsWith('bedrock:')))
+    .filter((st) => st.Sid !== 'InvokeEmbeddingModel');
   const resources = statements.flatMap((st) =>
     asArray(st.Resource as string | unknown[]).map((r) => {
       const parts = ((r as { 'Fn::Join'?: [string, unknown[]] })['Fn::Join'] ?? ['', [r]])[1];
