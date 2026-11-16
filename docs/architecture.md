@@ -21,7 +21,7 @@ Browser ── https://<site> ──► CloudFront
                                ├─ /*      ─► S3 web bucket (OAC). SPA routes rewrite to /index.html by a CloudFront Function.
                                └─ /api/*  ─► Lambda function URL (OAC, AWS_IAM auth, RESPONSE_STREAM) ─► openbook-api (Rust, arm64)
 Browser ── presigned PUT ─────► S3 docs bucket
-Browser ── Cognito SRP ───────► Cognito user pool (self sign-up, email verification)
+Browser ── Cognito sign-in ───► Cognito user pool (self sign-up, email verification, USER_PASSWORD_AUTH)
 
 openbook-api ─► DynamoDB (one table, on-demand)
              ─► S3 docs bucket
@@ -56,7 +56,7 @@ Every item has a `type` attribute. Other attributes are camelCase.
 |---|---|---|---|---|---|
 | Profile | `USER#<userId>` | `PROFILE` | | | `email`, `createdAt` |
 | Counters (user) | `USER#<userId>` | `COUNTERS` | | | `courses` (courses owned; changed only inside the create and delete transactions, with a condition on the limit) |
-| Failed joins | `USER#<userId>` | `JOINFAIL#D#<yyyy-mm-dd>` | | | `attempts`, `ttl` (2 days) |
+| Failed joins | `USER#<userId>` | `JOINFAIL#D#<yyyy-mm-dd>` | | | `attempts`, `ttl` (40 days) |
 | Course | `COURSE#<courseId>` | `META` | | | `name`, `description`, `tutoringStyle`, `model`, `ownerId`, `inviteCode`, `docCount`, `createdAt`, `updatedAt` |
 | Membership | `COURSE#<courseId>` | `MEMBER#<userId>` | `USER#<userId>` | `COURSE#<joinedAt>#<courseId>` | `courseId`, `userId`, `email`, `role`, `joinedAt` |
 | Invite code | `INVITE#<code>` | `INVITE` | | | `courseId`, `createdAt` |
@@ -105,8 +105,8 @@ The API reads only environment variables. Names and defaults:
 | `OPENBOOK_CA_BUNDLE` | (unset) | Local only: a PEM file (the emulator's `ca.pem`) that the AWS SDK and JWKS clients trust in addition to the system roots |
 | `OPENBOOK_PRESIGN_ENDPOINT` | (unset) | Local only: base URL for presigned S3 URLs that the browser can reach, for example `http://localhost:5173/__aws` |
 | `OPENBOOK_LIMIT_DAILY_MESSAGES_PER_USER` | `50` | |
-| `OPENBOOK_LIMIT_DAILY_MESSAGES_GLOBAL` | `500` | The kill switch for model spend |
-| `OPENBOOK_LIMIT_DAILY_TOKENS_GLOBAL` | `3000000` | Second spend guard: no new chat once today's global input plus output tokens reach it |
+| `OPENBOOK_LIMIT_DAILY_MESSAGES_GLOBAL` | `500` | The kill switch for model spend. Until the public launch, `cdk.json` sets 300 (prod) and 100 (dev) |
+| `OPENBOOK_LIMIT_DAILY_TOKENS_GLOBAL` | `3000000` | Second spend guard: no new chat once today's global input plus output tokens reach it. Until the public launch, `cdk.json` sets 300000 (prod) and 100000 (dev): at Sonnet list prices that is at most about US$4.50 a day per stack even if every token were output |
 | `OPENBOOK_LIMIT_FAILED_JOINS_PER_DAY` | `20` | Per user; slows down guessing invite codes |
 | `OPENBOOK_LIMIT_COURSES_OWNED` | `10` | |
 | `OPENBOOK_LIMIT_DOCUMENTS_PER_COURSE` | `50` | |
