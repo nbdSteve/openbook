@@ -12,7 +12,7 @@ Think of it as an open-book exam for the model: it answers from the course mater
 3. **Tenancy is the course.** Every read and write of course data checks membership first. A non-member gets `404`, never `403`.
 4. **Data stays in Australia.** Use the `ap-southeast-2` Region and Bedrock `au.` inference profiles. Do not use `global.` or other Regions' profiles.
 5. **Same code locally and in Lambda.** The API is one axum router. Lambda runs it through `lambda_http`; locally it runs on a TCP listener. Local runs use AWS Emulator for AWS services.
-6. **Fail closed.** If the API runs in Lambda with local-only settings (stage `local`, the fake model provider, or emulator endpoint overrides), it must refuse to start.
+6. **Fail closed.** If the API runs in Lambda with local-only settings (stage `local`, the fake model provider, `AWS_ENDPOINT_URL`, `OPENBOOK_COGNITO_JWKS_URL`, `OPENBOOK_CA_BUNDLE`, `OPENBOOK_PRESIGN_ENDPOINT`, or `OPENBOOK_BEDROCK_PROFILE`), it must refuse to start.
 
 ## Components
 
@@ -98,6 +98,7 @@ The API reads only environment variables. Names and defaults:
 | `OPENBOOK_CHAT_MODEL_ID` | `au.anthropic.claude-sonnet-5-5` | |
 | `OPENBOOK_FAST_MODEL_ID` | `au.anthropic.claude-haiku-5-5` | |
 | `OPENBOOK_BEDROCK_PROFILE` | (unset) | Local only: use real Bedrock with this AWS profile from `~/.aws`, while every other service uses the emulator |
+| `OPENBOOK_CA_BUNDLE` | (unset) | Local only: a PEM file (the emulator's `ca.pem`) that the AWS SDK and JWKS clients trust in addition to the system roots |
 | `OPENBOOK_PRESIGN_ENDPOINT` | (unset) | Local only: base URL for presigned S3 URLs that the browser can reach, for example `http://localhost:5173/__aws` |
 | `OPENBOOK_LIMIT_DAILY_MESSAGES_PER_USER` | `50` | |
 | `OPENBOOK_LIMIT_DAILY_MESSAGES_GLOBAL` | `500` | The kill switch for model spend |

@@ -24,7 +24,7 @@ The Vite proxy trusts it through `NODE_EXTRA_CA_CERTS`.
 - Telemetry: the emulator turns it on by default. Our scripts start it with `EMULATOR_TELEMETRY=off` unless you set `EMULATOR_TELEMETRY=on`.
 - State is in memory only. Restart the container for a clean state, then run `make bootstrap` again.
 - Use one Region (`us-east-1`) for everything that talks to the emulator.
-- Rust clients trust the emulator through `SSL_CERT_FILE`. Because `SSL_CERT_FILE` replaces the system roots, `make bootstrap` writes `.local/ca-bundle.pem` = system roots + this run's `ca.pem`, so real Bedrock still works in hybrid mode.
+- The API trusts the emulator through `OPENBOOK_CA_BUNDLE=~/.aws/emulator/<port>/ca.pem`, which it adds to the system roots of its AWS SDK and JWKS HTTP clients. Real Bedrock (hybrid mode) still works because the system roots stay. The file path stays the same across emulator restarts, but its contents change, so restart the API after you restart the emulator.
 
 ## Resources that `make bootstrap` creates
 
@@ -38,9 +38,8 @@ The Vite proxy trusts it through `NODE_EXTRA_CA_CERTS`.
 
 It also writes:
 
-- `.local/api.env`: the environment for `openbook-api` (stage `local`, emulator endpoint, `OPENBOOK_COGNITO_JWKS_URL`, `OPENBOOK_PRESIGN_ENDPOINT=http://localhost:<webPort>/__aws`, `OPENBOOK_MODEL_PROVIDER=fake`, `SSL_CERT_FILE`).
+- `.local/api.env`: the environment for `openbook-api` (stage `local`, `AWS_ENDPOINT_URL`, `AWS_REGION=us-east-1`, test keys, `OPENBOOK_CA_BUNDLE`, `OPENBOOK_COGNITO_REGION=us-east-1`, `OPENBOOK_COGNITO_JWKS_URL`, `OPENBOOK_PRESIGN_ENDPOINT=http://localhost:<webPort>/__aws`, `OPENBOOK_MODEL_PROVIDER=fake`).
 - `apps/ask/public/config.json`: the web runtime config with `cognito.endpoint = "http://localhost:<webPort>/__aws/"`.
-- `.local/ca-bundle.pem`.
 
 All of these are git-ignored.
 
