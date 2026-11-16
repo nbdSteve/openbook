@@ -46,7 +46,7 @@ export function InviteTab() {
   return (
     <div className="space-y-6">
       <p className="text-sm text-text-secondary">
-        Share this code or link with your students. Anyone who has it can join the course as a student.
+        Teaching a class? Share this code or link with your students. Anyone who has it can join the course as a student. Studying on your own? You do not need it.
       </p>
 
       <section className="rounded-2xl border border-border bg-surface p-5">

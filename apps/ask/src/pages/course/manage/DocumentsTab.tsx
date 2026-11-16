@@ -1,18 +1,20 @@
 import { useEffect, useRef, useState, type DragEvent } from 'react';
 import toast from 'react-hot-toast';
 import { clsx } from 'clsx';
-import { AlertCircle, CheckCircle2, Clock, FileText, Loader2, Trash2, Upload, X } from 'lucide-react';
+import { useLocation } from 'react-router';
+import { AlertCircle, CheckCircle2, Clock, FileText, Loader2, RotateCw, Trash2, Upload, X } from 'lucide-react';
 import { Alert } from '@/components/ui/Alert';
 import { Badge } from '@/components/ui/Badge';
+import { Button } from '@/components/ui/Button';
 import { ConfirmDialog } from '@/components/ui/Dialog';
 import { Spinner } from '@/components/ui/Spinner';
 import { DOCUMENT_STATUS_LABEL, POLL_INTERVAL_MS } from '@/lib/constants';
 import { formatBytes, formatDate } from '@/lib/format';
 import { useResource } from '@/lib/useResource';
 import { describeApiError } from '@/services/api/errors';
-import { deleteDocument, listDocuments } from '@/services/api/routes';
+import { completeDocument, deleteDocument, listDocuments } from '@/services/api/routes';
 import type { CourseDocument, DocumentStatus } from '@/services/api/types';
-import { checkUploadFile, uploadDocument } from '@/services/api/upload';
+import { checkUploadFile, UploadIncompleteError, uploadDocument } from '@/services/api/upload';
 import { useMe } from '@/services/me/MeContext';
 import { useCourse } from '../CourseContext';
 
@@ -22,6 +24,8 @@ interface UploadItem {
   progress: number;
   phase: 'uploading' | 'finishing' | 'failed';
   error?: string;
+  /** Set when the file is stored but `complete` failed (503). Retrying `complete` is safe. */
+  retryDocumentId?: string;
 }
 
 const STATUS_TONE: Record<DocumentStatus, 'neutral' | 'accent' | 'warning' | 'success' | 'danger'> = {
@@ -30,15 +34,35 @@ const STATUS_TONE: Record<DocumentStatus, 'neutral' | 'accent' | 'warning' | 'su
   processing: 'warning',
   ready: 'success',
   failed: 'danger',
+  deleting: 'neutral',
 };
 
 function StatusBadge({ status }: { status: DocumentStatus }) {
-  const Icon = { uploading: Upload, queued: Clock, processing: Loader2, ready: CheckCircle2, failed: AlertCircle }[status];
+  const Icon = { uploading: Upload, queued: Clock, processing: Loader2, ready: CheckCircle2, failed: AlertCircle, deleting: Trash2 }[status];
   return (
     <Badge tone={STATUS_TONE[status]}>
-      <Icon className={clsx('h-3 w-3', status === 'processing' && 'animate-spin')} aria-hidden="true" />
+      <Icon className={clsx('h-3 w-3', (status === 'processing' || status === 'deleting') && 'animate-pulse', status === 'processing' && 'animate-spin')} aria-hidden="true" />
       {DOCUMENT_STATUS_LABEL[status]}
     </Badge>
+  );
+}
+
+function pagesLabel(count: number): string {
+  return `${count} ${count === 1 ? 'page' : 'pages'}`;
+}
+
+/** What the worker is doing, in calm words. Ready, failed, and deleting have their own lines. */
+function ProgressNote({ status }: { status: DocumentStatus }) {
+  if (status !== 'queued' && status !== 'processing') return null;
+  return (
+    <div className="mt-2">
+      <div className="h-1 w-40 max-w-full overflow-hidden rounded-full bg-bg-tertiary" aria-hidden="true">
+        <div className={clsx('h-full w-1/3 rounded-full bg-accent/60', status === 'processing' && 'animate-pulse')} />
+      </div>
+      <p className="mt-1.5 text-xs text-text-tertiary">
+        {status === 'queued' ? 'Waiting for its turn. You can keep working.' : 'Reading the pages. This can take a few minutes for a long file.'}
+      </p>
+    </div>
   );
 }
 
@@ -58,6 +82,8 @@ function problemText(problem: string, name: string, maxBytes: number): string {
 export function DocumentsTab() {
   const { course } = useCourse();
   const { me } = useMe();
+  const location = useLocation();
+  const firstRun = (location.state as { first?: 'class' | 'personal' } | null)?.first;
   const docs = useResource(`documents:${course.id}`, (signal) => listDocuments(course.id, signal));
   const { reload } = docs;
   const [uploads, setUploads] = useState<UploadItem[]>([]);
@@ -70,7 +96,7 @@ export function DocumentsTab() {
 
   // Poll every 5 seconds while a document waits for ingestion. Slow down when nothing changes or a
   // poll fails, and pause while the tab is hidden.
-  const waiting = docs.data?.some((d) => d.status === 'queued' || d.status === 'processing') ?? false;
+  const waiting = docs.data?.some((d) => d.status === 'queued' || d.status === 'processing' || d.status === 'deleting') ?? false;
   const signature = docs.data?.map((d) => `${d.id}:${d.status}`).join(',') ?? '';
   const rhythm = useRef({ signature: '', unchanged: 0, failures: 0 });
   useEffect(() => {
@@ -126,11 +152,27 @@ export function DocumentsTab() {
         setUploads((all) => all.filter((u) => u.key !== key));
       } catch (error) {
         if (controller.signal.aborted) setUploads((all) => all.filter((u) => u.key !== key));
-        else patchUpload(key, { phase: 'failed', error: describeApiError(error, me.limits) });
+        else if (error instanceof UploadIncompleteError) {
+          patchUpload(key, { phase: 'failed', error: error.message, retryDocumentId: error.document.id });
+        } else patchUpload(key, { phase: 'failed', error: describeApiError(error, me.limits) });
       } finally {
         controllers.current.delete(key);
         reload();
       }
+    }
+  };
+
+  /** Call `complete` again for a stored file. Used after a 503, and for a document stuck in `uploading`. */
+  const retryComplete = async (documentId: string, uploadKey?: string) => {
+    try {
+      await completeDocument(course.id, documentId);
+      if (uploadKey) setUploads((all) => all.filter((u) => u.key !== uploadKey));
+    } catch (error) {
+      const message = error instanceof UploadIncompleteError ? error.message : describeApiError(error, me.limits);
+      if (uploadKey) patchUpload(uploadKey, { error: message });
+      else toast.error(message);
+    } finally {
+      reload();
     }
   };
 
@@ -144,10 +186,11 @@ export function DocumentsTab() {
     if (!toDelete) return;
     setDeleting(true);
     try {
-      await deleteDocument(course.id, toDelete.id);
-      toast.success('Document deleted');
+      const deleted = await deleteDocument(course.id, toDelete.id);
+      // The worker finishes the delete a little later. Show `deleting` now, and the poll sees it go.
+      docs.update((list) => list.map((d) => (d.id === deleted.id ? deleted : d)));
+      toast.success('Deleting the document');
       setToDelete(null);
-      reload();
     } catch (error) {
       toast.error(describeApiError(error));
     } finally {
@@ -157,6 +200,14 @@ export function DocumentsTab() {
 
   return (
     <div className="space-y-6">
+      {firstRun && docs.data?.length === 0 && (
+        <Alert tone="info">
+          {firstRun === 'personal'
+            ? 'Your study course is ready. Upload the PDFs you study from, then open the chat and ask your first question.'
+            : 'Your course is ready. Upload your materials first. When you want students in, share the invite code from the Invite tab.'}
+        </Alert>
+      )}
+
       <div>
         <label
           onDragOver={(e) => {
@@ -232,7 +283,8 @@ export function DocumentsTab() {
               </div>
               {u.phase === 'failed' ? (
                 <p role="alert" className="mt-1 text-sm text-danger">
-                  Upload failed. {u.error} If the file shows as Uploading in the list below, delete it and try again.
+                  Upload failed. {u.error}
+                  {!u.retryDocumentId && ' If the file shows as Uploading in the list below, delete it and try again.'}
                 </p>
               ) : (
                 <div
@@ -245,6 +297,12 @@ export function DocumentsTab() {
                 >
                   <div className="h-full rounded-full bg-accent transition-[width] duration-150" style={{ width: `${u.progress * 100}%` }} />
                 </div>
+              )}
+              {u.phase === 'failed' && u.retryDocumentId && (
+                <Button className="mt-2" size="sm" variant="secondary" onClick={() => void retryComplete(u.retryDocumentId!, u.key)}>
+                  <RotateCw className="h-4 w-4" aria-hidden="true" />
+                  Try again
+                </Button>
               )}
             </li>
           ))}
@@ -266,30 +324,50 @@ export function DocumentsTab() {
         {docs.data && docs.data.length > 0 && (
           <ul className="space-y-2">
             {docs.data.map((doc) => (
-              <li key={doc.id} className="rounded-xl border border-border bg-surface p-3 sm:p-4">
+              <li key={doc.id} className={clsx('rounded-xl border border-border bg-surface p-3 sm:p-4', doc.status === 'deleting' && 'opacity-70')}>
                 <div className="flex items-start gap-3">
                   <FileText className="mt-0.5 h-5 w-5 shrink-0 text-text-muted" aria-hidden="true" />
                   <div className="min-w-0 flex-1">
                     <p className="break-words text-sm font-medium text-text-primary">{doc.filename}</p>
                     <p className="mt-0.5 text-xs text-text-muted">
-                      {formatBytes(doc.sizeBytes)}
-                      {doc.pageCount ? ` · ${doc.pageCount} pages` : ''} · Added {formatDate(doc.createdAt)}
+                      {formatBytes(doc.sizeBytes)} · Added {formatDate(doc.createdAt)}
                     </p>
-                    <div className="mt-2">
+                    <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
                       <StatusBadge status={doc.status} />
+                      {doc.status === 'ready' && doc.pageCount !== undefined && (
+                        <span className="text-xs text-text-secondary">{pagesLabel(doc.pageCount)}</span>
+                      )}
                     </div>
-                    {doc.status === 'failed' && doc.error && (
-                      <p className="mt-2 text-sm text-danger">{doc.error}</p>
+                    <ProgressNote status={doc.status} />
+                    {doc.status === 'deleting' && <p className="mt-1.5 text-xs text-text-tertiary">Removing the document. This can take a moment.</p>}
+                    {doc.status === 'failed' && doc.error && <p className="mt-2 text-sm text-danger">{doc.error}</p>}
+                    {doc.status === 'uploading' && !uploads.some((u) => u.phase !== 'failed') && (
+                      <Button className="mt-2" size="sm" variant="secondary" onClick={() => void retryComplete(doc.id)}>
+                        <RotateCw className="h-4 w-4" aria-hidden="true" />
+                        Try to finish
+                      </Button>
+                    )}
+                    {doc.warnings && doc.warnings.length > 0 && (
+                      <ul className="mt-2 space-y-1" aria-label={`Notes about ${doc.filename}`}>
+                        {doc.warnings.map((warning) => (
+                          <li key={warning} className="flex items-start gap-1.5 text-xs text-warning">
+                            <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                            {warning}
+                          </li>
+                        ))}
+                      </ul>
                     )}
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setToDelete(doc)}
-                    className="-mr-1 shrink-0 rounded-lg p-2.5 text-text-tertiary hover:bg-danger-light hover:text-danger"
-                    aria-label={`Delete ${doc.filename}`}
-                  >
-                    <Trash2 className="h-4 w-4" aria-hidden="true" />
-                  </button>
+                  {doc.status !== 'deleting' && (
+                    <button
+                      type="button"
+                      onClick={() => setToDelete(doc)}
+                      className="-mr-1 shrink-0 rounded-lg p-2.5 text-text-tertiary hover:bg-danger-light hover:text-danger"
+                      aria-label={`Delete ${doc.filename}`}
+                    >
+                      <Trash2 className="h-4 w-4" aria-hidden="true" />
+                    </button>
+                  )}
                 </div>
               </li>
             ))}
@@ -297,7 +375,7 @@ export function DocumentsTab() {
         )}
         {waiting && (
           <p className="mt-3 text-xs text-text-muted" aria-live="polite">
-            Some documents are still being prepared. This list updates by itself.
+            Some documents are still changing. This list updates by itself.
           </p>
         )}
       </section>

@@ -1,3 +1,4 @@
+import { ApiError } from './client';
 import { completeDocument, createDocument, deleteDocument } from './routes';
 import type { CourseDocument, UploadTarget } from './types';
 
@@ -34,11 +35,25 @@ export function putFile(
   });
 }
 
+/**
+ * The file reached storage, but `complete` answered 503 (the queue could not take the message). The
+ * document is back in `uploading`, and calling `complete` again is safe, so the UI offers a retry.
+ */
+export class UploadIncompleteError extends Error {
+  readonly document: CourseDocument;
+
+  constructor(document: CourseDocument, message: string) {
+    super(message);
+    this.name = 'UploadIncompleteError';
+    this.document = document;
+  }
+}
+
 export interface UploadDeps {
   create: (courseId: string, filename: string, sizeBytes: number) => Promise<{ document: CourseDocument; upload: UploadTarget }>;
   put: typeof putFile;
   complete: (courseId: string, documentId: string) => Promise<CourseDocument>;
-  remove: (courseId: string, documentId: string) => Promise<void>;
+  remove: (courseId: string, documentId: string) => Promise<unknown>;
 }
 
 const defaultDeps: UploadDeps = {
@@ -67,7 +82,14 @@ export async function uploadDocument(
     await deps.remove(courseId, document.id).catch(() => undefined);
     throw error;
   }
-  return deps.complete(courseId, document.id);
+  try {
+    return await deps.complete(courseId, document.id);
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 503) {
+      throw new UploadIncompleteError(document, 'The file is uploaded, but it could not be queued yet. Try again.');
+    }
+    throw error;
+  }
 }
 
 export type UploadProblem = 'not_pdf' | 'empty' | 'too_large' | 'name_too_long';

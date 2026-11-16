@@ -11,7 +11,7 @@ import { useResource } from '@/lib/useResource';
 import { describeApiError } from '@/services/api/errors';
 import { listCourses } from '@/services/api/routes';
 import type { Course } from '@/services/api/types';
-import { CreateCourseDialog } from './CreateCourseDialog';
+import { CreateCourseDialog, type CourseMode } from './CreateCourseDialog';
 import { JoinCourseDialog } from './JoinCourseDialog';
 
 function CourseCard({ course }: { course: Course }) {
@@ -34,7 +34,7 @@ function CourseCard({ course }: { course: Course }) {
   );
 }
 
-function EmptyState({ onCreate, onJoin }: { onCreate: () => void; onJoin: () => void }) {
+function EmptyState({ onCreate, onJoin }: { onCreate: (mode: CourseMode) => void; onJoin: () => void }) {
   return (
     <div className="space-y-6">
       <div className="text-center">
@@ -50,12 +50,12 @@ function EmptyState({ onCreate, onJoin }: { onCreate: () => void; onJoin: () => 
           </div>
           <h3 className="text-lg font-semibold text-text-primary">Teaching a class?</h3>
           <p className="mt-2 text-sm leading-relaxed text-text-secondary">
-            Create a course for your class. Upload your notes, slides, and readings as PDFs. Share the invite code so your students can ask questions and see answers that point back to your materials.
+            Create a course for your class. Upload your notes, slides, and readings as PDFs. Share the invite code so your students can ask questions and get answers from your materials.
           </p>
           <div className="mt-auto pt-5">
-            <Button onClick={onCreate}>
+            <Button onClick={() => onCreate('class')}>
               <Plus className="h-4 w-4" aria-hidden="true" />
-              Create a course
+              Create a course for a class
             </Button>
           </div>
         </section>
@@ -65,12 +65,12 @@ function EmptyState({ onCreate, onJoin }: { onCreate: () => void; onJoin: () => 
           </div>
           <h3 className="text-lg font-semibold text-text-primary">Studying on your own?</h3>
           <p className="mt-2 text-sm leading-relaxed text-text-secondary">
-            Create a personal course and upload the books or notes you study from. You are the only member, and the tutor answers from your own materials. Did a teacher give you an invite code? Join their course instead.
+            Make a personal course, upload the books or notes you study from, and ask questions. It is just for you: nobody else joins or sees your questions. Did a teacher give you an invite code? Join their course instead.
           </p>
           <div className="mt-auto flex flex-wrap gap-3 pt-5">
-            <Button onClick={onCreate}>
-              <Plus className="h-4 w-4" aria-hidden="true" />
-              Create a personal course
+            <Button onClick={() => onCreate('personal')}>
+              <UserRound className="h-4 w-4" aria-hidden="true" />
+              Study on your own
             </Button>
             <Button variant="secondary" onClick={onJoin}>
               <KeyRound className="h-4 w-4" aria-hidden="true" />
@@ -85,7 +85,7 @@ function EmptyState({ onCreate, onJoin }: { onCreate: () => void; onJoin: () => 
 
 export function CourseHome() {
   const { data, error, loading, reload } = useResource('courses', listCourses);
-  const [creating, setCreating] = useState(false);
+  const [creating, setCreating] = useState<CourseMode | null>(null);
   const [joining, setJoining] = useState(false);
 
   return (
@@ -100,9 +100,13 @@ export function CourseHome() {
                 <KeyRound className="h-4 w-4" aria-hidden="true" />
                 Join a course
               </Button>
-              <Button onClick={() => setCreating(true)}>
+              <Button variant="secondary" onClick={() => setCreating('personal')}>
+                <UserRound className="h-4 w-4" aria-hidden="true" />
+                Study on your own
+              </Button>
+              <Button onClick={() => setCreating('class')}>
                 <Plus className="h-4 w-4" aria-hidden="true" />
-                Create a course
+                Create a course for a class
               </Button>
             </div>
           )}
@@ -117,7 +121,7 @@ export function CourseHome() {
             </button>
           </Alert>
         )}
-        {data && data.length === 0 && <EmptyState onCreate={() => setCreating(true)} onJoin={() => setJoining(true)} />}
+        {data && data.length === 0 && <EmptyState onCreate={setCreating} onJoin={() => setJoining(true)} />}
         {data && data.length > 0 && (
           <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {data.map((course) => (
@@ -128,11 +132,11 @@ export function CourseHome() {
         {data && data.length > 0 && (
           <p className="mt-8 flex items-center gap-2 text-sm text-text-muted">
             <BookOpen className="h-4 w-4 shrink-0" aria-hidden="true" />
-            Open a course to chat. Course owners also manage materials, members, and insights there.
+            Open a course to chat. In your own courses you also manage the documents there.
           </p>
         )}
       </main>
-      <CreateCourseDialog open={creating} onClose={() => setCreating(false)} />
+      <CreateCourseDialog key={creating ?? 'closed'} open={creating !== null} mode={creating ?? 'class'} onClose={() => setCreating(null)} />
       <JoinCourseDialog open={joining} onClose={() => setJoining(false)} />
     </div>
   );

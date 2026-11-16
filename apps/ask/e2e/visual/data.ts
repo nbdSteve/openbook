@@ -91,11 +91,13 @@ export const MESSAGES: Message[] = [
 ];
 
 export const DOCUMENTS: CourseDocument[] = [
-  { id: 'D1', courseId: COURSE_ID, filename: 'Lecture 4 - Photosynthesis.pdf', sizeBytes: 2457600, status: 'ready', pageCount: 38, createdAt: T, updatedAt: T },
+  { id: 'D1', courseId: COURSE_ID, filename: 'Lecture 4 - Photosynthesis.pdf', sizeBytes: 2457600, status: 'ready', pageCount: 38, chunkCount: 112, transcribedPages: 3, warnings: ['Page 7 was not transcribed because the daily transcription limit was reached.'], createdAt: T, updatedAt: T },
   { id: 'D2', courseId: COURSE_ID, filename: 'Lecture 5 - Cellular respiration and the electron transport chain.pdf', sizeBytes: 3145728, status: 'processing', createdAt: T, updatedAt: T },
   { id: 'D3', courseId: COURSE_ID, filename: 'Problem set 2.pdf', sizeBytes: 524288, status: 'queued', createdAt: T, updatedAt: T },
   { id: 'D4', courseId: COURSE_ID, filename: 'Scanned handout.pdf', sizeBytes: 9437184, status: 'failed', error: 'The PDF is password protected.', createdAt: T, updatedAt: T },
   { id: 'D5', courseId: COURSE_ID, filename: 'Textbook chapter 1.pdf', sizeBytes: 1048576, status: 'uploading', createdAt: T, updatedAt: T },
+  { id: 'D6', courseId: COURSE_ID, filename: 'Old syllabus.pdf', sizeBytes: 204800, status: 'deleting', createdAt: T, updatedAt: T },
+  { id: 'D7', courseId: COURSE_ID, filename: 'Lab manual.pdf', sizeBytes: 819200, status: 'ready', pageCount: 1, chunkCount: 4, createdAt: T, updatedAt: T },
 ];
 
 export const MEMBERS: Member[] = [

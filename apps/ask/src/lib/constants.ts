@@ -19,6 +19,7 @@ export const DOCUMENT_STATUS_LABEL: Record<DocumentStatus, string> = {
   processing: 'Processing',
   ready: 'Ready',
   failed: 'Failed',
+  deleting: 'Deleting',
 };
 
 export const POLL_INTERVAL_MS = 5000;
