@@ -24,6 +24,27 @@ pub const MAX_PER_DOCUMENT: usize = 4;
 /// With Titan v2, a relevant passage had distances near 0.68 and an unrelated question near 0.94.
 /// Phase 4 tunes this number against the evaluation set.
 pub const GATE_MAX_DISTANCE: f32 = 0.85;
+
+/// The tunable numbers of fusion and the gate. `Default` is what production uses. The evaluation
+/// changes them to compare settings; the API never does.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Params {
+    pub rrf_k: f64,
+    pub final_sources: usize,
+    pub max_per_document: usize,
+    pub gate_max_distance: f32,
+}
+
+impl Default for Params {
+    fn default() -> Self {
+        Self {
+            rrf_k: RRF_K,
+            final_sources: FINAL_SOURCES,
+            max_per_document: MAX_PER_DOCUMENT,
+            gate_max_distance: GATE_MAX_DISTANCE,
+        }
+    }
+}
 /// A search query is cut to this many characters.
 pub const MAX_QUERY_CHARS: usize = 500;
 /// Each retriever gets this long. A slow one counts as failed.
@@ -59,6 +80,11 @@ pub struct Fused {
 /// Fuses two ranked lists with reciprocal rank fusion. Ranks start at 1 in list order. The result
 /// is in fused order, at most `FINAL_SOURCES` long, and has at most `MAX_PER_DOCUMENT` per document.
 pub fn fuse(dense: &[Hit], lexical: &[Hit]) -> Vec<Fused> {
+    fuse_with(&Params::default(), dense, lexical)
+}
+
+/// `fuse` with explicit numbers.
+pub fn fuse_with(params: &Params, dense: &[Hit], lexical: &[Hit]) -> Vec<Fused> {
     let mut by_key: HashMap<&str, Fused> = HashMap::new();
     let mut order: Vec<&str> = Vec::new();
     for (list, is_dense) in [(dense, true), (lexical, false)] {
@@ -81,7 +107,7 @@ pub fn fuse(dense: &[Hit], lexical: &[Hit]) -> Vec<Fused> {
             };
             if slot.is_none() {
                 *slot = Some(rank);
-                entry.score += 1.0 / (RRF_K + rank as f64);
+                entry.score += 1.0 / (params.rrf_k + rank as f64);
             }
         }
     }
@@ -99,12 +125,12 @@ pub fn fuse(dense: &[Hit], lexical: &[Hit]) -> Vec<Fused> {
         let count = per_document
             .entry(candidate.passage.document_id.clone())
             .or_insert(0);
-        if *count >= MAX_PER_DOCUMENT {
+        if *count >= params.max_per_document {
             continue;
         }
         *count += 1;
         kept.push(candidate);
-        if kept.len() == FINAL_SOURCES {
+        if kept.len() == params.final_sources {
             break;
         }
     }
@@ -122,7 +148,16 @@ fn best_rank(f: &Fused) -> usize {
 /// The relevance gate. With no BM25 hit, a best dense distance above `GATE_MAX_DISTANCE` (or no dense
 /// result at all) gives no sources.
 pub fn passes_gate(best_dense_distance: Option<f32>, lexical_hits: usize) -> bool {
-    let dense_is_close = best_dense_distance.is_some_and(|d| d <= GATE_MAX_DISTANCE);
+    passes_gate_with(&Params::default(), best_dense_distance, lexical_hits)
+}
+
+/// `passes_gate` with explicit numbers.
+pub fn passes_gate_with(
+    params: &Params,
+    best_dense_distance: Option<f32>,
+    lexical_hits: usize,
+) -> bool {
+    let dense_is_close = best_dense_distance.is_some_and(|d| d <= params.gate_max_distance);
     dense_is_close || lexical_hits > 0
 }
 
@@ -245,6 +280,15 @@ pub struct Decision {
 /// failed. When dense search failed and BM25 found nothing, the gate cannot judge without the dense
 /// result, so the outcome is `NotUsed` and not `NotCovered`.
 pub fn decide(dense: Option<Vec<Hit>>, lexical: Option<Vec<Hit>>) -> Decision {
+    decide_with(&Params::default(), dense, lexical)
+}
+
+/// `decide` with explicit numbers.
+pub fn decide_with(
+    params: &Params,
+    dense: Option<Vec<Hit>>,
+    lexical: Option<Vec<Hit>>,
+) -> Decision {
     if dense.is_none() && lexical.as_ref().is_none_or(Vec::is_empty) {
         return Decision {
             outcome: Outcome::NotUsed,
@@ -255,8 +299,8 @@ pub fn decide(dense: Option<Vec<Hit>>, lexical: Option<Vec<Hit>>) -> Decision {
     }
     let (dense, lexical) = (dense.unwrap_or_default(), lexical.unwrap_or_default());
     let best_dense = dense.first().map(|h| h.value);
-    let fused = if passes_gate(best_dense, lexical.len()) {
-        fuse(&dense, &lexical)
+    let fused = if passes_gate_with(params, best_dense, lexical.len()) {
+        fuse_with(params, &dense, &lexical)
     } else {
         Vec::new()
     };
@@ -468,5 +512,36 @@ mod tests {
         assert_eq!(found.embed_tokens, 7);
         assert!(found.dense.is_some() && found.lexical.is_none());
         assert_eq!(found.errors, ["lexical failed"]);
+    }
+
+    #[test]
+    fn explicit_numbers_change_the_cap_the_count_and_the_gate() {
+        let dense: Vec<Hit> = (0..10).map(|i| hit("A", i, 0.5)).collect();
+        let wide = Params {
+            max_per_document: 10,
+            final_sources: 10,
+            ..Params::default()
+        };
+        assert_eq!(fuse_with(&wide, &dense, &[]).len(), 10);
+        assert_eq!(fuse(&dense, &[]).len(), MAX_PER_DOCUMENT);
+        let strict = Params {
+            gate_max_distance: 0.4,
+            ..Params::default()
+        };
+        assert_eq!(
+            decide_with(&strict, Some(dense.clone()), Some(Vec::new())).outcome,
+            Outcome::NotCovered
+        );
+        assert_eq!(
+            decide(Some(dense), Some(Vec::new())).outcome,
+            Outcome::Found
+        );
+        // A smaller k makes the first rank count more.
+        let sharp = Params {
+            rrf_k: 1.0,
+            ..Params::default()
+        };
+        let score = fuse_with(&sharp, &[hit("A", 0, 0.1)], &[])[0].score;
+        assert!((score - 0.5).abs() < 1e-12);
     }
 }
