@@ -1262,6 +1262,7 @@ const THREE_MODELS: &str = r#"[
 
 /// A fast model with a fixed reply that records what it was asked.
 struct ScriptedRewriter {
+    usage: openbook_core::model::TokenUsage,
     reply: Result<String, String>,
     seen: std::sync::Mutex<Vec<openbook_core::model::ChatRequest>>,
 }
@@ -1269,6 +1270,10 @@ struct ScriptedRewriter {
 impl ScriptedRewriter {
     fn new(reply: Result<&str, &str>) -> Arc<Self> {
         Arc::new(Self {
+            usage: openbook_core::model::TokenUsage {
+                input_tokens: 7,
+                output_tokens: 3,
+            },
             reply: reply.map(str::to_owned).map_err(str::to_owned),
             seen: std::sync::Mutex::new(Vec::new()),
         })
@@ -1292,7 +1297,7 @@ impl openbook_core::model::ChatModel for ScriptedRewriter {
                 let events = vec![
                     Ok(openbook_core::model::ModelEvent::Delta(text.clone())),
                     Ok(openbook_core::model::ModelEvent::Finish {
-                        usage: Default::default(),
+                        usage: self.usage,
                         stop_reason: "end_turn".into(),
                     }),
                 ];
@@ -1411,7 +1416,7 @@ async fn chat_sends_sources_before_the_first_delta_and_the_fake_answer_cites_the
     assert!(!sources.is_empty() && sources.len() <= 8, "{sources:?}");
     for (i, source) in sources.iter().enumerate() {
         assert_eq!(source["n"], i + 1);
-        assert!(source["snippet"].as_str().unwrap().chars().count() <= 1200);
+        assert!(source["snippet"].as_str().unwrap().chars().count() <= 2400);
         assert!(source["documentName"].as_str().unwrap().ends_with(".pdf"));
         assert!(source["page"].as_u64().unwrap() >= 1);
     }
@@ -1722,4 +1727,199 @@ async fn a_member_of_one_course_never_gets_sources_from_another_course() {
                 .all(|s| s["documentId"] == geometry)
         );
     }
+}
+
+async fn daily_tokens(e: &Env, user: &TestUser) -> (i64, i64) {
+    let item = e
+        .app
+        .dynamodb
+        .get_item()
+        .table_name(&e.app.table)
+        .key("pk", AttributeValue::S(format!("USER#{}", user.id)))
+        .key(
+            "sk",
+            AttributeValue::S(format!(
+                "USAGE#D#{}",
+                openbook_core::quota::usage_date(chrono::Utc::now())
+            )),
+        )
+        .consistent_read(true)
+        .send()
+        .await
+        .unwrap()
+        .item;
+    let number = |name: &str| match item.as_ref().and_then(|i| i.get(name)) {
+        Some(AttributeValue::N(n)) => n.parse().unwrap(),
+        _ => 0,
+    };
+    (number("inputTokens"), number("outputTokens"))
+}
+
+fn embed_tokens(query: &str) -> i64 {
+    (query.chars().count() as i64 + 3) / 4
+}
+
+#[tokio::test]
+#[ignore = "needs AWS Emulator; run make test-integration"]
+async fn the_tokens_of_the_rewrite_and_the_embedding_are_counted() {
+    let e = env_with_fast(ScriptedRewriter::new(Ok(
+        "photosynthesis chlorophyll glucose",
+    )))
+    .await;
+    e.two_documents().await;
+    let first_message = "What is the Pythagorean theorem?";
+    let first = e.chat(&e.owner, json!({"message": first_message})).await;
+    let done1 = first.last().unwrap().1["usage"].clone();
+    let conversation = text(&first[0].1, "conversationId");
+    let second = e
+        .chat(
+            &e.owner,
+            json!({"conversationId": conversation, "message": "Tell me more about that"}),
+        )
+        .await;
+    let done2 = second.last().unwrap().1["usage"].clone();
+
+    // Turn 1: the embedding of the message. Turn 2: the rewrite (7 in, 3 out) and the embedding of the rewrite.
+    let expected_in = done1["inputTokens"].as_i64().unwrap()
+        + done2["inputTokens"].as_i64().unwrap()
+        + embed_tokens(first_message)
+        + 7
+        + embed_tokens("photosynthesis chlorophyll glucose");
+    let expected_out =
+        done1["outputTokens"].as_i64().unwrap() + done2["outputTokens"].as_i64().unwrap() + 3;
+    assert_eq!(
+        daily_tokens(&e, &e.owner).await,
+        (expected_in, expected_out)
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs AWS Emulator; run make test-integration"]
+async fn retrieval_tokens_are_counted_even_when_the_model_fails_and_the_message_goes_back() {
+    let e = env_with_fast(ScriptedRewriter::new(Ok("unused"))).await;
+    e.two_documents().await;
+    let message = "What is the Pythagorean theorem? [fake:fail-start]";
+    let events = e.chat(&e.owner, json!({"message": message})).await;
+    assert_eq!(names(&events).last(), Some(&"error"));
+    let me = e.app.get("/api/me", &e.owner).await.json();
+    assert_eq!(me["usage"]["messagesUsed"], 0, "the message went back");
+    assert_eq!(daily_tokens(&e, &e.owner).await, (embed_tokens(message), 0));
+}
+
+#[tokio::test]
+#[ignore = "needs AWS Emulator; run make test-integration"]
+async fn the_reader_cache_keeps_only_the_current_blob_and_warms_in_the_background() {
+    let e = env_with_fast(ScriptedRewriter::new(Ok("unused"))).await;
+    let (_geometry, _) = e.ingest("Geometry notes.pdf", geometry_pdf()).await;
+    let key1 = e.bm25_key().await.unwrap();
+
+    // A root with leftovers: a new cache starts clean.
+    let root = std::env::temp_dir().join(format!(
+        "openbook-reader-cache-{}",
+        openbook_core::ids::new_id()
+    ));
+    std::fs::create_dir_all(root.join("OLDCOURSE/v1-X")).unwrap();
+    let cache = openbook_search::bm25::Bm25ReaderCache::new(
+        e.app.s3.clone(),
+        e.app.bucket.clone(),
+        root.clone(),
+    );
+    assert!(
+        !root.join("OLDCOURSE").exists(),
+        "leftover files are removed at start"
+    );
+
+    // The caller gives up at once. The download still finishes and fills the cache.
+    let gave_up = tokio::time::timeout(
+        std::time::Duration::from_nanos(1),
+        cache.reader(&e.course_id, &key1),
+    )
+    .await;
+    assert!(
+        gave_up.is_err(),
+        "the cold load is slower than a nanosecond"
+    );
+    let mut warm = false;
+    for _ in 0..100 {
+        if cache.cached_courses().await == vec![e.course_id.clone()] {
+            warm = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(warm, "the cache did not warm after the caller left");
+    let reader = cache.reader(&e.course_id, &key1).await.unwrap();
+    assert!(!reader.search("pythagorean", 3).unwrap().is_empty());
+    let course_dir = root.join(&e.course_id);
+    let names = |dir: &std::path::Path| -> Vec<String> {
+        let mut v: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|d| d.file_name().to_string_lossy().into_owned())
+            .collect();
+        v.sort();
+        v
+    };
+    let name1 = key1
+        .rsplit('/')
+        .next()
+        .unwrap()
+        .strip_suffix(".tar.zst")
+        .unwrap()
+        .to_owned();
+    assert_eq!(names(&course_dir), vec![name1.clone()]);
+
+    // A second document makes a new blob. The new reader replaces the old one, and v1's files go.
+    e.ingest("Biology.pdf", make_pdf(&[biology_page()])).await;
+    let key2 = e.bm25_key().await.unwrap();
+    assert_ne!(key1, key2);
+    let reader2 = cache.reader(&e.course_id, &key2).await.unwrap();
+    assert!(!reader2.search("photosynthesis", 3).unwrap().is_empty());
+    let name2 = key2
+        .rsplit('/')
+        .next()
+        .unwrap()
+        .strip_suffix(".tar.zst")
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        names(&course_dir),
+        vec![name2],
+        "the files of the first blob are gone"
+    );
+    assert_eq!(cache.cached_courses().await, vec![e.course_id.clone()]);
+    // The old reader in a caller's hand still works (its files were open).
+    let _ = reader.chunk_count();
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+#[ignore = "needs AWS Emulator; run make test-integration"]
+async fn when_dense_search_fails_and_bm25_finds_nothing_the_answer_has_no_notice() {
+    let e = env_with_fast(ScriptedRewriter::new(Ok("unused"))).await;
+    e.two_documents().await;
+    // The same data behind a vector bucket that does not exist: QueryVectors fails (or finds no index).
+    let mut vars = e.app.vars().clone();
+    vars.insert(
+        "OPENBOOK_VECTOR_BUCKET".into(),
+        "bucket-that-is-gone".into(),
+    );
+    let router = e.app.router_with_vars(&vars);
+    let reply = support::send_to(
+        &router,
+        axum::http::Method::POST,
+        &format!("/api/courses/{}/chat", e.course_id),
+        Some(&e.owner.token),
+        Some(json!({"message": "zebra xylophone quantum"})),
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.text);
+    let events = reply.sse();
+    assert!(!names(&events).contains(&"sources"));
+    let answer = answer_of(&events);
+    assert!(
+        !answer.contains("do not cover"),
+        "no 'not covered' note when dense search is unavailable: {answer}"
+    );
+    assert_eq!(names(&events).last(), Some(&"done"));
 }

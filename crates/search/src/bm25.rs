@@ -673,14 +673,34 @@ impl Lru {
 
 /// Readers for the API: an in-memory LRU over the files in `/tmp` that `Bm25Cache` keeps.
 /// It is keyed by course and blob key, holds at most 8 courses and 1 GB, and drops the least
-/// recently used course first. A new blob key for a course replaces its old reader.
+/// recently used course first. A new blob key for a course replaces its old reader and its old files.
+///
+/// A cold download does not belong to the request that asked for it: it runs in a detached task,
+/// one per course at a time, and it always finishes and fills the cache. A request that gives up
+/// (its own timeout) leaves the task running, so a large course warms up over a few requests.
+#[derive(Clone)]
 pub struct Bm25ReaderCache {
+    inner: std::sync::Arc<CacheInner>,
+}
+
+type LoadResult = Result<std::sync::Arc<Bm25Reader>, Bm25Error>;
+type SharedLoad = futures::future::Shared<futures::future::BoxFuture<'static, LoadResult>>;
+
+struct CacheInner {
     files: Bm25Cache,
     root: PathBuf,
-    state: tokio::sync::Mutex<Lru>,
+    state: tokio::sync::Mutex<CacheState>,
+}
+
+struct CacheState {
+    lru: Lru,
+    /// The load that runs for a course now: the blob key and the shared result.
+    loading: std::collections::HashMap<String, (String, SharedLoad)>,
 }
 
 impl Bm25ReaderCache {
+    /// Starts with an empty cache. Files that an earlier process left in `root` are removed:
+    /// nothing in the cache refers to them.
     pub fn new(s3: S3Client, bucket: String, root: PathBuf) -> Self {
         Self::with_limits(
             s3,
@@ -698,33 +718,91 @@ impl Bm25ReaderCache {
         max_courses: usize,
         max_bytes: u64,
     ) -> Self {
+        let _ = std::fs::remove_dir_all(&root);
         Self {
-            files: Bm25Cache::new(s3, bucket, root.clone()),
-            root,
-            state: tokio::sync::Mutex::new(Lru {
-                entries: Vec::new(),
-                max_courses,
-                max_bytes,
+            inner: std::sync::Arc::new(CacheInner {
+                files: Bm25Cache::new(s3, bucket, root.clone()),
+                root,
+                state: tokio::sync::Mutex::new(CacheState {
+                    lru: Lru {
+                        entries: Vec::new(),
+                        max_courses,
+                        max_bytes,
+                    },
+                    loading: std::collections::HashMap::new(),
+                }),
             }),
         }
     }
 
-    /// The reader for the blob `key` of the course. A miss downloads and unpacks the blob.
-    pub async fn reader(
-        &self,
-        course_id: &str,
-        key: &str,
-    ) -> Result<std::sync::Arc<Bm25Reader>, Bm25Error> {
-        let mut state = self.state.lock().await;
-        if let Some(reader) = state.get(course_id, key) {
-            return Ok(reader);
+    /// The reader for the blob `key` of the course. A miss starts (or joins) the download of the
+    /// course and waits for it. Drop the future (a timeout) and the download goes on.
+    pub async fn reader(&self, course_id: &str, key: &str) -> LoadResult {
+        loop {
+            let wait = {
+                let mut state = self.inner.state.lock().await;
+                if let Some(reader) = state.lru.get(course_id, key) {
+                    return Ok(reader);
+                }
+                match state.loading.get(course_id) {
+                    Some((loading_key, done)) => (loading_key == key, done.clone()),
+                    None => {
+                        let done = self.start_load(&mut state, course_id, key);
+                        (true, done)
+                    }
+                }
+            };
+            let (same_key, done) = wait;
+            let result = done.await;
+            if same_key {
+                return result;
+            }
+            // Another blob of this course was loading. It is done, so try again for this one.
         }
-        let reader = std::sync::Arc::new(self.files.open(course_id, key).await?);
-        let dir = self.root.join(course_id);
-        let bytes = tokio::task::spawn_blocking(move || dir_size(&dir))
+    }
+
+    fn start_load(&self, state: &mut CacheState, course_id: &str, key: &str) -> SharedLoad {
+        use futures::FutureExt;
+        let inner = self.inner.clone();
+        let (course, blob) = (course_id.to_owned(), key.to_owned());
+        let handle = tokio::spawn(async move { inner.load(&course, &blob).await });
+        let done: SharedLoad = async move { handle.await.map_err(index_err)? }
+            .boxed()
+            .shared();
+        state
+            .loading
+            .insert(course_id.to_owned(), (key.to_owned(), done.clone()));
+        done
+    }
+
+    /// The courses that have a reader now, most recently used first.
+    pub async fn cached_courses(&self) -> Vec<String> {
+        self.inner
+            .state
+            .lock()
             .await
-            .map_err(index_err)?;
-        let evicted = state.insert(CachedReader {
+            .lru
+            .entries
+            .iter()
+            .map(|e| e.course_id.clone())
+            .collect()
+    }
+}
+
+impl CacheInner {
+    /// Downloads, unpacks, opens, and caches. It runs in its own task and ends the load either way.
+    async fn load(&self, course_id: &str, key: &str) -> LoadResult {
+        let opened = self.files.open(course_id, key).await;
+        let bytes = {
+            let dir = self.root.join(course_id);
+            tokio::task::spawn_blocking(move || dir_size(&dir))
+                .await
+                .unwrap_or(0)
+        };
+        let mut state = self.state.lock().await;
+        state.loading.remove(course_id);
+        let reader = std::sync::Arc::new(opened?);
+        let evicted = state.lru.insert(CachedReader {
             course_id: course_id.to_owned(),
             key: key.to_owned(),
             reader: reader.clone(),
@@ -734,17 +812,6 @@ impl Bm25ReaderCache {
             let _ = std::fs::remove_dir_all(self.root.join(course));
         }
         Ok(reader)
-    }
-
-    /// The courses that have a reader now, most recently used first.
-    pub async fn cached_courses(&self) -> Vec<String> {
-        self.state
-            .lock()
-            .await
-            .entries
-            .iter()
-            .map(|e| e.course_id.clone())
-            .collect()
     }
 }
 
@@ -762,7 +829,15 @@ fn dir_size(dir: &Path) -> u64 {
         .sum()
 }
 
-/// Opens a given version of a course index with a local cache (for warm Lambda invocations).
+/// Unpacks a blob file into `dir` (created if needed).
+pub fn unpack_file(path: &Path, dir: &Path) -> Result<(), Bm25Error> {
+    std::fs::create_dir_all(dir).map_err(index_err)?;
+    let file = std::fs::File::open(path).map_err(index_err)?;
+    let decoder = zstd::Decoder::new(file).map_err(index_err)?;
+    tar::Archive::new(decoder).unpack(dir).map_err(index_err)
+}
+
+/// Opens a given blob of a course index with files in a local directory (for warm Lambda invocations).
 pub struct Bm25Cache {
     s3: S3Client,
     bucket: String,
@@ -774,8 +849,8 @@ impl Bm25Cache {
         Self { s3, bucket, root }
     }
 
-    /// The reader for the blob `key` (the course item's `bm25Key`). It downloads and unpacks on a
-    /// cache miss, and removes the other cached blobs of the course.
+    /// The reader for the blob `key` (the course item's `bm25Key`). It streams the blob to disk and
+    /// unpacks it on a miss, and removes every other file of the course (older blobs, half-done downloads).
     pub async fn open(&self, course_id: &str, key: &str) -> Result<Bm25Reader, Bm25Error> {
         let name = key
             .rsplit('/')
@@ -785,8 +860,8 @@ impl Bm25Cache {
             .to_owned();
         let course_dir = self.root.join(course_id);
         let dir = course_dir.join(&name);
-        let marker = dir.join(".complete");
-        if !marker.exists() {
+        if !dir.join(".complete").exists() {
+            std::fs::create_dir_all(&course_dir).map_err(index_err)?;
             let out = self
                 .s3
                 .get_object()
@@ -795,18 +870,26 @@ impl Bm25Cache {
                 .send()
                 .await
                 .map_err(|e| s3_err(&e))?;
-            let bytes = out
-                .body
-                .collect()
+            // Stream to a file: the blob never sits in memory as a whole.
+            let download = course_dir.join(format!("{name}.download"));
+            let mut file = tokio::fs::File::create(&download)
                 .await
-                .map_err(|e| s3_err(&e))?
-                .into_bytes()
-                .to_vec();
+                .map_err(index_err)?;
+            let mut body = out.body.into_async_read();
+            tokio::io::copy(&mut body, &mut file)
+                .await
+                .map_err(index_err)?;
+            tokio::io::AsyncWriteExt::flush(&mut file)
+                .await
+                .map_err(index_err)?;
+            drop(file);
             let staging = course_dir.join(format!("{name}.tmp"));
-            let _ = std::fs::remove_dir_all(&staging);
             let final_dir = dir.clone();
             tokio::task::spawn_blocking(move || -> Result<(), Bm25Error> {
-                unpack(&bytes, &staging)?;
+                let _ = std::fs::remove_dir_all(&staging);
+                let result = unpack_file(&download, &staging);
+                let _ = std::fs::remove_file(&download);
+                result?;
                 let _ = std::fs::remove_dir_all(&final_dir);
                 std::fs::rename(&staging, &final_dir).map_err(index_err)?;
                 std::fs::write(final_dir.join(".complete"), b"ok").map_err(index_err)
@@ -814,18 +897,29 @@ impl Bm25Cache {
             .await
             .map_err(index_err)??;
         }
-        if let Ok(entries) = std::fs::read_dir(&course_dir) {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().into_owned();
-                if entry.file_name().to_string_lossy() != name {
-                    let _ = std::fs::remove_dir_all(entry.path());
-                }
-            }
-        }
+        remove_other_entries(&course_dir, &name);
         let open_dir = dir.clone();
         tokio::task::spawn_blocking(move || Bm25Reader::open(&open_dir))
             .await
             .map_err(index_err)?
+    }
+}
+
+/// Removes everything in `course_dir` except the entry `keep`.
+fn remove_other_entries(course_dir: &Path, keep: &str) {
+    let Ok(entries) = std::fs::read_dir(course_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry.file_name().to_string_lossy() == keep {
+            continue;
+        }
+        let path = entry.path();
+        if path.is_dir() {
+            let _ = std::fs::remove_dir_all(&path);
+        } else {
+            let _ = std::fs::remove_file(&path);
+        }
     }
 }
 
@@ -1295,5 +1389,44 @@ mod tests {
         std::fs::write(dir.join("sub/b"), vec![0u8; 50]).unwrap();
         assert_eq!(dir_size(&dir), 150);
         assert_eq!(dir_size(&dir.join("missing")), 0);
+    }
+
+    #[test]
+    fn opening_a_new_blob_removes_the_old_blob_and_half_finished_downloads() {
+        let base = temp_dir();
+        let course_dir = base.join("COURSE");
+        for name in ["v1-AAA", "v2-BBB", "v3-CCC.tmp"] {
+            std::fs::create_dir_all(course_dir.join(name)).unwrap();
+            std::fs::write(course_dir.join(name).join("file"), b"x").unwrap();
+        }
+        std::fs::write(course_dir.join("v3-CCC.download"), b"partial").unwrap();
+        remove_other_entries(&course_dir, "v2-BBB");
+        let mut left: Vec<String> = std::fs::read_dir(&course_dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["v2-BBB"]);
+    }
+
+    #[test]
+    fn unpacking_a_blob_file_matches_unpacking_bytes() {
+        let dir = temp_dir();
+        build(&dir, &[chunk("D", 0, 4, "H", "streamed blob")]);
+        let blob = pack(&dir).unwrap();
+        let base = temp_dir();
+        let path = base.join("blob.tar.zst");
+        std::fs::write(&path, &blob).unwrap();
+        let target = base.join("out");
+        unpack_file(&path, &target).unwrap();
+        assert_eq!(
+            Bm25Reader::open(&target)
+                .unwrap()
+                .search("streamed", 3)
+                .unwrap()
+                .len(),
+            1
+        );
     }
 }

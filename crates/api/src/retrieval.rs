@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use openbook_core::domain::{CourseRecord, Document, DocumentStatus, MessageRole, Source};
-use openbook_core::model::{ChatModel, ChatRequest, ChatTurn, ModelEvent};
+use openbook_core::model::{ChatModel, ChatRequest, ChatTurn, ModelEvent, TokenUsage};
 use openbook_core::prompt::{REWRITE_SYSTEM_PROMPT, SourceContext, SourceMode, rewrite_user_text};
 use openbook_search::bm25::Bm25ReaderCache;
 use openbook_search::embed::Embedder;
@@ -31,8 +31,10 @@ pub const MAX_PER_DOCUMENT: usize = 4;
 /// With Titan v2, a relevant passage had distances near 0.68 and an unrelated question near 0.94.
 /// Phase 4 tunes this number against the evaluation set.
 pub const GATE_MAX_DISTANCE: f32 = 0.85;
-/// The longest snippet in a `sources` event, in characters.
-pub const SNIPPET_CHARS: usize = 1200;
+/// The longest snippet in a `sources` event, in characters. It is the whole chunk: the chunker's
+/// limit is `MAX_CHARS` (2400), and a table or a formula that cannot be split is cut here. The model
+/// gets the same clipped text, so it sees exactly what the student can read.
+pub const SNIPPET_CHARS: usize = openbook_search::chunker::MAX_CHARS;
 /// Candidates per retriever in the trace.
 pub const TRACE_CANDIDATES: usize = 10;
 /// The trace stays under this many bytes.
@@ -265,6 +267,8 @@ pub struct TurnResult {
     pub contexts: Vec<SourceContext>,
     /// The trace as JSON text. `None` when retrieval did not run.
     pub trace: Option<String>,
+    /// Tokens that retrieval spent: the rewrite (fast model) and the query embedding.
+    pub usage: TokenUsage,
 }
 
 impl TurnResult {
@@ -274,6 +278,7 @@ impl TurnResult {
             sources: Vec::new(),
             contexts: Vec::new(),
             trace: None,
+            usage: TokenUsage::default(),
         }
     }
 
@@ -295,6 +300,8 @@ pub struct Retrieval {
 
 /// A retriever result: `None` when it failed.
 struct Searched {
+    /// Input tokens of the query embedding.
+    embed_tokens: u64,
     dense: Option<Vec<Hit>>,
     lexical: Option<Vec<Hit>>,
     dense_ms: Option<u64>,
@@ -303,18 +310,19 @@ struct Searched {
 }
 
 impl Retrieval {
-    async fn dense(&self, course_id: &str, query: &str) -> Result<Vec<Hit>, String> {
-        let embedding = self
+    async fn dense(&self, course_id: &str, query: &str) -> Result<(Vec<Hit>, u64), String> {
+        let (embedding, tokens) = self
             .embedder
-            .embed(query)
+            .embed_counted(query)
             .await
             .map_err(|e| format!("embedding: {e}"))?;
         let hits = self
             .vectors
-            .query(&index_name(course_id), &embedding, DENSE_TOP_K, None)
+            .query_existing(&index_name(course_id), &embedding, DENSE_TOP_K, None)
             .await
-            .map_err(|e| e.to_string())?;
-        Ok(hits
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "the vector index was not found".to_owned())?;
+        let hits = hits
             .into_iter()
             .map(|h| Hit {
                 value: h.distance,
@@ -326,7 +334,8 @@ impl Retrieval {
                     text: h.text,
                 },
             })
-            .collect())
+            .collect();
+        Ok((hits, tokens))
     }
 
     async fn lexical(&self, course: &CourseRecord, query: &str) -> Result<Vec<Hit>, String> {
@@ -374,6 +383,11 @@ impl Retrieval {
             timed(self.lexical(course, query))
         );
         let mut errors = Vec::new();
+        let mut embed_tokens = 0;
+        let dense = dense.map(|(hits, tokens)| {
+            embed_tokens = tokens;
+            hits
+        });
         let mut keep = |name: &str, result: Result<Vec<Hit>, String>| match result {
             Ok(hits) => Some(hits),
             Err(error) => {
@@ -385,6 +399,7 @@ impl Retrieval {
         let dense = keep("dense", dense);
         let lexical = keep("lexical", lexical);
         Searched {
+            embed_tokens,
             dense,
             lexical,
             dense_ms: Some(dense_ms),
@@ -395,12 +410,13 @@ impl Retrieval {
 }
 
 /// Turns the last student message and the earlier ones into one search query with the fast model.
-/// It returns `None` on any failure, so the caller uses the raw message.
+/// It returns `None` for the query on any failure, so the caller uses the raw message. The usage is
+/// what the fast model reported (zero when it failed before it said).
 pub async fn rewrite_query(
     model: &dyn ChatModel,
     earlier: &[(MessageRole, String)],
     message: &str,
-) -> Option<String> {
+) -> (Option<String>, TokenUsage) {
     let start = earlier.len().saturating_sub(REWRITE_HISTORY);
     let request = ChatRequest {
         system: REWRITE_SYSTEM_PROMPT.to_owned(),
@@ -411,20 +427,29 @@ pub async fn rewrite_query(
         max_tokens: Some(REWRITE_MAX_TOKENS),
         temperature: Some(0.0),
     };
+    let usage = std::sync::Mutex::new(TokenUsage::default());
     let work = async {
         let mut stream = model.stream(request).await.ok()?;
         let mut text = String::new();
         while let Some(event) = stream.next().await {
             match event {
                 Ok(ModelEvent::Delta(delta)) => text.push_str(&delta),
-                Ok(ModelEvent::Finish { .. }) => {}
+                Ok(ModelEvent::Finish { usage: used, .. }) => {
+                    if let Ok(mut slot) = usage.lock() {
+                        *slot = used;
+                    }
+                }
                 Err(_) => return None,
             }
         }
         Some(text)
     };
-    let text = tokio::time::timeout(REWRITE_TIMEOUT, work).await.ok()??;
-    clean_query(&text)
+    let text = tokio::time::timeout(REWRITE_TIMEOUT, work)
+        .await
+        .ok()
+        .flatten();
+    let used = usage.lock().map(|u| *u).unwrap_or_default();
+    (text.and_then(|t| clean_query(&t)), used)
 }
 
 /// One line, no quotes, one space between words, at most `MAX_QUERY_CHARS`. `None` when empty.
@@ -458,13 +483,17 @@ pub async fn run_turn(
 
     let started = Instant::now();
     let mut timings = Timings::default();
+    let mut usage = TokenUsage::default();
     let mut query = clip(message.trim(), MAX_QUERY_CHARS);
     let mut rewritten = false;
     if !earlier.is_empty()
         && let Some(model) = rewriter
     {
         let at = Instant::now();
-        if let Some(better) = rewrite_query(model, earlier, message).await {
+        let (better, used) = rewrite_query(model, earlier, message).await;
+        usage.input_tokens += used.input_tokens;
+        usage.output_tokens += used.output_tokens;
+        if let Some(better) = better {
             rewritten = better != query;
             query = better;
         }
@@ -474,6 +503,7 @@ pub async fn run_turn(
     let at = Instant::now();
     let searched = retrieval.search(course, &query).await;
     timings.retrieve_ms = at.elapsed().as_millis() as u64;
+    usage.input_tokens += searched.embed_tokens;
     timings.dense_ms = searched.dense_ms;
     timings.lexical_ms = searched.lexical_ms;
     let mut trace = Trace {
@@ -492,11 +522,14 @@ pub async fn run_turn(
         })
     };
     let (dense, lexical) = (only_ready(searched.dense), only_ready(searched.lexical));
-    if dense.is_none() && lexical.is_none() {
-        // Both retrievers failed. Answer without sources, and keep the trace for the logs.
+    if dense.is_none() && lexical.as_ref().is_none_or(Vec::is_empty) {
+        // Dense search failed and BM25 found nothing (or failed too). The relevance gate cannot judge
+        // without the dense result, so this is not "the materials do not cover it": answer without
+        // sources and without the notice, and keep the trace.
         trace.timings = timings;
         return TurnResult {
             trace: Some(trace.to_json_capped()),
+            usage,
             ..TurnResult::not_used()
         };
     }
@@ -542,6 +575,7 @@ pub async fn run_turn(
             sources: Vec::new(),
             contexts: Vec::new(),
             trace: Some(trace.to_json_capped()),
+            usage,
         };
     }
     let mut sources = Vec::with_capacity(fused.len());
@@ -564,7 +598,8 @@ pub async fn run_turn(
             n,
             document_name: name.to_owned(),
             page,
-            text: f.passage.text.clone(),
+            // The same text as the snippet: the model sees what the student can read.
+            text: clip(&f.passage.text, SNIPPET_CHARS),
         });
     }
     TurnResult {
@@ -572,6 +607,7 @@ pub async fn run_turn(
         sources,
         contexts,
         trace: Some(trace.to_json_capped()),
+        usage,
     }
 }
 
@@ -711,7 +747,7 @@ mod tests {
                 MAX_PER_DOCUMENT,
                 SNIPPET_CHARS
             ),
-            (40, 40, 8, 4, 1200)
+            (40, 40, 8, 4, 2400)
         );
         assert_eq!((RRF_K, GATE_MAX_DISTANCE), (60.0, 0.85));
         assert_eq!(
@@ -820,5 +856,11 @@ mod tests {
     fn clip_never_cuts_inside_a_character() {
         assert_eq!(clip("éééé", 2), "éé");
         assert_eq!(clip("short", 100), "short");
+    }
+
+    #[test]
+    fn a_snippet_holds_the_whole_chunk() {
+        // The chunker never makes a chunk longer than this (except one atomic table or formula).
+        const { assert!(SNIPPET_CHARS >= openbook_search::chunker::MAX_CHARS) };
     }
 }

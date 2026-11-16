@@ -1526,6 +1526,22 @@ impl Store {
     /// Adds token counts to the user's daily and monthly items and to the global daily item.
     /// Best effort: failures are logged.
     pub async fn record_usage(&self, user_id: &str, at: DateTime<Utc>, usage: TokenUsage) {
+        self.record_usage_inner(user_id, at, usage, true).await;
+    }
+
+    /// Adds token counts like `record_usage`, but does not count a message. It is for tokens that a
+    /// turn spent although its message was given back (the query rewrite and the embedding).
+    pub async fn record_tokens_only(&self, user_id: &str, at: DateTime<Utc>, usage: TokenUsage) {
+        self.record_usage_inner(user_id, at, usage, false).await;
+    }
+
+    async fn record_usage_inner(
+        &self,
+        user_id: &str,
+        at: DateTime<Utc>,
+        usage: TokenUsage,
+        count_message: bool,
+    ) {
         let date = usage_date(at);
         let month = usage_month(at);
         let daily_user =
@@ -1534,7 +1550,7 @@ impl Store {
             user_pk(user_id),
             usage_monthly_sk(&month),
             usage,
-            true,
+            count_message,
             false,
         );
         let daily_global = self.add_tokens(

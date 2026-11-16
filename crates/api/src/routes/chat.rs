@@ -327,6 +327,22 @@ async fn next_event(
     }
 }
 
+fn sum_usage(a: TokenUsage, b: TokenUsage) -> TokenUsage {
+    TokenUsage {
+        input_tokens: a.input_tokens + b.input_tokens,
+        output_tokens: a.output_tokens + b.output_tokens,
+    }
+}
+
+/// The message went back, but retrieval still spent tokens. Record them without counting a message.
+async fn record_retrieval_only(run: &ChatRun, usage: TokenUsage) {
+    if usage != TokenUsage::default() {
+        run.store
+            .record_tokens_only(&run.user.user_id, run.at, usage)
+            .await;
+    }
+}
+
 async fn run_chat(run: ChatRun, tx: mpsc::Sender<ChatEvent>) {
     let started = Instant::now();
     let deadline = started + run.timeouts.overall;
@@ -387,6 +403,8 @@ async fn run_chat(run: ChatRun, tx: mpsc::Sender<ChatEvent>) {
         turns: normalize_turns(&run.history),
         ..ChatRequest::default()
     };
+    // Tokens that retrieval spent (the rewrite and the query embedding) are counted on every way out.
+    let retrieval_usage = turn.usage;
     let input_chars = request.system.chars().count()
         + request
             .turns
@@ -416,6 +434,7 @@ async fn run_chat(run: ChatRun, tx: mpsc::Sender<ChatEvent>) {
                 tracing::error!(model = %run.model_id, "model call timed out before it started");
             }
             release_message(&run.store, &run.user.user_id, &date).await;
+            record_retrieval_only(&run, retrieval_usage).await;
             log_end("model_failed_to_start", TokenUsage::default());
             emit(
                 &tx,
@@ -467,6 +486,7 @@ async fn run_chat(run: ChatRun, tx: mpsc::Sender<ChatEvent>) {
             if text.is_empty() {
                 // Nothing reached the student, so the message does not count.
                 release_message(&run.store, &run.user.user_id, &date).await;
+                record_retrieval_only(&run, retrieval_usage).await;
                 log_end(outcome, TokenUsage::default());
             } else {
                 // The model produced text and cost money. Record the estimated tokens and the message.
@@ -475,7 +495,7 @@ async fn run_chat(run: ChatRun, tx: mpsc::Sender<ChatEvent>) {
                     output_tokens: estimate_tokens(text.chars().count()),
                 };
                 run.store
-                    .record_usage(&run.user.user_id, run.at, usage)
+                    .record_usage(&run.user.user_id, run.at, sum_usage(usage, retrieval_usage))
                     .await;
                 log_end(outcome, usage);
             }
@@ -509,7 +529,7 @@ async fn run_chat(run: ChatRun, tx: mpsc::Sender<ChatEvent>) {
     if let Err(error) = saved {
         tracing::error!(%error, "could not save the assistant message");
         run.store
-            .record_usage(&run.user.user_id, run.at, usage)
+            .record_usage(&run.user.user_id, run.at, sum_usage(usage, retrieval_usage))
             .await;
         log_end("save_failed", usage);
         emit(&tx, error_event("internal", INTERNAL_MESSAGE)).await;
@@ -539,7 +559,7 @@ async fn run_chat(run: ChatRun, tx: mpsc::Sender<ChatEvent>) {
         Err(error) => tracing::error!(%error, "could not update the conversation"),
     }
     run.store
-        .record_usage(&run.user.user_id, run.at, usage)
+        .record_usage(&run.user.user_id, run.at, sum_usage(usage, retrieval_usage))
         .await;
     log_end("done", usage);
 

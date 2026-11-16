@@ -549,6 +549,11 @@ impl TestApp {
         &self.vars
     }
 
+    /// A router over the same resources with another set of variables.
+    pub fn router_with_vars(&self, vars: &HashMap<String, String>) -> Router {
+        build_router(build_state(vars, &self.sdk, Duration::ZERO, None, None))
+    }
+
     /// A router over the same resources with another ingest queue URL.
     pub fn router_with_queue(&self, queue_url: &str) -> Router {
         let mut vars = self.vars.clone();
