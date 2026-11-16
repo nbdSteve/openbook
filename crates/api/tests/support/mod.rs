@@ -277,10 +277,8 @@ fn build_state(
     let models = ModelRegistry::from_catalog(config.catalog.clone(), None, fake_delay)
         .expect("model registry");
     let queue = openbook_core::queue::IngestQueue::new(sdk, config.ingest_queue_url.clone());
-    let vectors = openbook_search::vectors::VectorStore::new(sdk, config.vector_bucket.clone());
     AppState {
         queue,
-        vectors,
         config: std::sync::Arc::new(config),
         store,
         files,
