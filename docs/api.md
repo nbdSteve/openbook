@@ -63,6 +63,7 @@ interface Course {
   name: string;            // 1..80 chars after trim
   description: string;     // 0..500 chars
   tutoringStyle: TutoringStyle;
+  model: string;           // the course default model, a ModelInfo.id from GET /api/models
   role: Role;              // the caller's role in this course
   inviteCode?: string;     // only present when role === 'owner'
   createdAt: string;
@@ -70,6 +71,14 @@ interface Course {
 }
 
 interface Member { userId: string; email: string; role: Role; joinedAt: string }
+
+interface ModelInfo {
+  id: string;              // catalog ID, for example "claude-sonnet"
+  label: string;           // for example "Claude Sonnet 5.5"
+  vendor: string;          // "anthropic", "openai", ...
+  residency: 'au' | 'global'; // 'global' means the provider may process data outside Australia
+  isDefault: boolean;      // true for the deployment's default chat model
+}
 
 interface Document {
   id: string;
@@ -83,7 +92,7 @@ interface Document {
   updatedAt: string;
 }
 
-interface Conversation { id: string; courseId: string; title: string; createdAt: string; updatedAt: string }
+interface Conversation { id: string; courseId: string; title: string; model: string /* catalog ID of the last answer */; createdAt: string; updatedAt: string }
 
 interface Source {          // phase 3; the API sends none before then
   n: number;               // citation number used in the answer text, starting at 1
@@ -99,6 +108,7 @@ interface Message {
   content: string;         // Markdown with $...$ and $$...$$ LaTeX
   createdAt: string;
   sources?: Source[];      // assistant messages only
+  model?: string;          // assistant messages only: the catalog ID that wrote it
 }
 
 interface Question {        // teacher insights
@@ -132,16 +142,21 @@ Tutoring styles (the server owns the prompts; clients only send the style ID):
 `GET /api/me` → `200 { "user": User, "usage": Usage, "limits": Limits }`.
 The first call for a user creates their profile.
 
+### Models
+
+`GET /api/models` → `200 { "models": ModelInfo[] }`: the deployment's model catalog, in display order.
+
 ### Courses
 
 `GET /api/courses` → `200 { "courses": Course[] }`: every course the caller is a member of, newest membership first.
 
-`POST /api/courses` body `{ "name": string, "description"?: string, "tutoringStyle"?: TutoringStyle }` → `201 { "course": Course }`.
-The caller becomes the owner. Default style is `socratic`. `409 limit_reached` when the caller already owns `maxCoursesOwned` courses.
+`POST /api/courses` body `{ "name": string, "description"?: string, "tutoringStyle"?: TutoringStyle, "model"?: string }` → `201 { "course": Course }`.
+The caller becomes the owner. Default style is `socratic`. Default model is the catalog default. An unknown `model` → `400`. `409 limit_reached` when the caller already owns `maxCoursesOwned` courses.
 
 `GET /api/courses/{courseId}` → `200 { "course": Course }` for members, else `404`.
 
-`PATCH /api/courses/{courseId}` (owner) body `{ "name"?, "description"?, "tutoringStyle"? }` → `200 { "course": Course }`.
+`PATCH /api/courses/{courseId}` (owner) body `{ "name"?, "description"?, "tutoringStyle"?, "model"? }` → `200 { "course": Course }`. An unknown `model` → `400`.
+If a course's stored model leaves the catalog later, reads return the catalog default in `model`, and chat uses it.
 
 `DELETE /api/courses/{courseId}` (owner) → `204`.
 Deletes the course, its memberships, its documents (including S3 objects), its invite code, and its insights.
@@ -185,19 +200,20 @@ Missing object → `409 conflict`. Calling it again on a document that is not `u
 
 ### Chat
 
-`POST /api/courses/{courseId}/chat` (member) body `{ "conversationId"?: string, "message": string }` → `200 text/event-stream`.
+`POST /api/courses/{courseId}/chat` (member) body `{ "conversationId"?: string, "message": string, "model"?: string }` → `200 text/event-stream`.
 
 - `message` is 1..4000 characters after trim.
 - Without `conversationId`, the API creates a conversation. Its title is the first 60 characters of the message (cut at a word boundary when possible).
 - With `conversationId`, it must belong to the caller and to this course, else `404`.
+- `model` is optional and must be a catalog ID (`GET /api/models`), else `400`. Any member may pick any catalog model. Without it, the API uses the conversation's model, or for a new conversation the course default. The conversation's `model` becomes the model used.
 - The API checks the per-user daily quota and the global daily cap before it calls the model. Those failures, and all validation and auth failures, are normal JSON error responses, not stream events.
-- The server builds the prompt: tutoring style, course name, conversation history (the last 20 messages), and (phase 3) retrieved sources. Clients never send a system prompt, model ID, or token limit.
+- The server builds the prompt: tutoring style, course name, conversation history (the last 20 messages), and (phase 3) retrieved sources. Clients never send a system prompt, a raw Bedrock model ID, or a token limit; they can only name a catalog model.
 
 Stream events, in order (each is `event: <name>` plus one `data: <json>` line):
 
 | Event | Data | Notes |
 |---|---|---|
-| `meta` | `{ "conversationId", "userMessageId", "assistantMessageId", "title" }` | Always first |
+| `meta` | `{ "conversationId", "userMessageId", "assistantMessageId", "title", "model" }` | Always first; `model` is the catalog ID in use |
 | `sources` | `{ "sources": Source[] }` | Phase 3, before the first `delta`; omitted when there are no sources |
 | `delta` | `{ "text": string }` | Zero or more |
 | `done` | `{ "usage": { "inputTokens": number, "outputTokens": number }, "stopReason": string }` | Last event on success |

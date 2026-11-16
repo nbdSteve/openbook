@@ -38,7 +38,7 @@ The Vite proxy trusts it through `NODE_EXTRA_CA_CERTS`.
 
 It also writes:
 
-- `.local/api.env`: the environment for `openbook-api` (stage `local`, `AWS_ENDPOINT_URL`, `AWS_REGION=us-east-1`, test keys, `OPENBOOK_CA_BUNDLE`, `OPENBOOK_COGNITO_REGION=us-east-1`, `OPENBOOK_COGNITO_JWKS_URL`, `OPENBOOK_PRESIGN_ENDPOINT=http://localhost:<webPort>/__aws`, `OPENBOOK_MODEL_PROVIDER=fake`).
+- `.local/api.env`: the environment for `openbook-api` (stage `local`, `AWS_ENDPOINT_URL`, `AWS_REGION=us-east-1`, test keys, `OPENBOOK_CA_BUNDLE`, `OPENBOOK_COGNITO_REGION=us-east-1`, `OPENBOOK_COGNITO_JWKS_URL`, `OPENBOOK_PRESIGN_ENDPOINT=http://localhost:<webPort>/__aws`, and a model catalog with one `fake` entry as the default chat and fast model).
 - `apps/ask/public/config.json`: the web runtime config with `cognito.endpoint = "http://localhost:<webPort>/__aws/"`.
 
 All of these are git-ignored.
@@ -51,13 +51,13 @@ All of these are git-ignored.
 | `make bootstrap` | Create the local resources and write the files above |
 | `make dev` | Emulator, bootstrap, API, and Vite together; Ctrl-C stops all of them |
 | `make e2e-local` | Start an isolated stack on other ports, run the Playwright suite headless, and stop everything |
-| `OPENBOOK_BEDROCK_PROFILE=<profile> make dev` | Same as `make dev`, but chat uses real Bedrock with that AWS profile |
+| `OPENBOOK_BEDROCK_PROFILE=<profile> make dev` | Same as `make dev`, but with the deployed model catalog on real Bedrock through that AWS profile |
 
 Ports for `make e2e-local` are separate from `make dev` (emulator 9310, API 8790, web 5180), so both can run at the same time.
 
 ## Fake model provider
 
-`OPENBOOK_MODEL_PROVIDER=fake` streams a fixed, deterministic answer in small deltas.
+The catalog entry with provider `fake` streams a fixed, deterministic answer in small deltas.
 The answer repeats the student's question, uses Markdown, and includes one inline formula (`$a^2 + b^2 = c^2$`) and one block formula, so the UI rendering paths get exercised.
 Token usage is estimated as one token per 4 characters.
 Phase 2 and 3 add deterministic fake embeddings (hashed bag of words, 1024 dimensions, L2-normalized) and plain-text page extraction instead of model transcription.

@@ -50,7 +50,8 @@ Run `make help` for the full list. The main ones:
 - The API never trusts client-sent prompts, model IDs, token limits, or source text.
 - Every course route checks membership before it reads or writes course data; non-members get `404`.
 - Local-only settings make the API refuse to start inside Lambda.
-- Bedrock calls use `au.` inference profiles only.
+- Models come only from the configured model catalog. The default chat and fast models have residency `au`; `global` entries are labeled in the UI.
+- The API never trusts a client-sent model ID outside the catalog.
 
 ## Writing style
 
