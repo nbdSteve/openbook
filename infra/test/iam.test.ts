@@ -162,6 +162,10 @@ describe('the CloudFormation execution role', () => {
     'AWS::Lambda::Function': 'lambda',
     'AWS::Lambda::Url': 'lambda',
     'AWS::Lambda::Permission': 'lambda',
+    'AWS::Lambda::EventSourceMapping': 'lambda',
+    'AWS::SQS::Queue': 'sqs',
+    'AWS::SQS::QueuePolicy': 'sqs',
+    'AWS::S3Vectors::VectorBucket': 's3vectors',
     'AWS::Lambda::LayerVersion': 'lambda',
     'Custom::CDKBucketDeployment': 'lambda',
     'AWS::S3::Bucket': 's3',
@@ -193,7 +197,7 @@ describe('the CloudFormation execution role', () => {
 
   test('grants nothing on a service with a baseline cost or that the stack does not use', () => {
     const granted = allActions(execPolicy).map((a) => a.split(':')[0]);
-    for (const service of ['kms', 'secretsmanager', 'ec2', 'rds', 'es', 'aoss', 'elasticache', 'wafv2', 'bedrock', 'sqs', 'route53', 'acm']) {
+    for (const service of ['kms', 'secretsmanager', 'ec2', 'rds', 'es', 'aoss', 'elasticache', 'wafv2', 'bedrock', 'route53', 'acm']) {
       expect(granted).not.toContain(service);
     }
   });
@@ -208,6 +212,7 @@ describe('the CloudFormation execution role', () => {
       'ReadTheStackAssets',
       'ReadTheBootstrapVersion',
       'CloudFrontSpaRewriteFunction',
+      'IngestEventSourceMappingOfTheStackFunctions',
       'NeverRemoveTheBoundary',
     ]);
     for (const s of execPolicy.Statement) {

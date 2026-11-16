@@ -42,6 +42,10 @@ jobs:
       - name: install the pinned toolchain
         run: rustup show
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # The ingest tests open PDFs with pdfium. The script downloads the pinned build and prints
+      # where the library is.
+      - name: fetch pdfium for the tests
+        run: echo "OPENBOOK_PDFIUM_PATH=$(scripts/fetch-pdfium.sh linux-x64)" >> "$GITHUB_ENV"
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
@@ -59,8 +63,11 @@ jobs:
       - name: install cargo-lambda
         run: pip3 install "cargo-lambda==${CARGO_LAMBDA_VERSION}" "ziglang==${ZIGLANG_VERSION}"
       - run: make build-lambdas
-      - name: the bootstrap binary exists
-        run: test -s target/lambda/openbook-api/bootstrap
+      - name: both binaries and libpdfium.so exist
+        run: |
+          test -x target/lambda/openbook-api/bootstrap
+          test -x target/lambda/openbook-ingest/bootstrap
+          test -s target/lambda/openbook-ingest/libpdfium.so
 
   rust-integration:
     name: rust integration (AWS Emulator)
@@ -71,6 +78,8 @@ jobs:
           persist-credentials: false
       - run: rustup show
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: fetch pdfium for the tests
+        run: echo "OPENBOOK_PDFIUM_PATH=$(scripts/fetch-pdfium.sh linux-x64)" >> "$GITHUB_ENV"
       # Build from the latest RPM, never from a cached layer. `make test-integration` then
       # starts the container as the runner user, on 127.0.0.1 only, with `-a off` and
       # EMULATOR_TELEMETRY=off, waits for /__admin/health with the new CA, runs the ignored

@@ -19,6 +19,8 @@ export interface CatalogModel {
   residency: Residency;
   maxOutputTokens?: number;
   temperature?: number;
+  /** True when the model accepts images. The transcription model must have it. */
+  vision?: boolean;
 }
 
 export interface Catalog {
@@ -91,7 +93,7 @@ export function validateCatalog(raw: unknown, defaultChatModel: unknown, fastMod
   const out: CatalogModel[] = [];
   for (const entry of models as Record<string, unknown>[]) {
     if (typeof entry !== 'object' || entry === null) fail('every entry must be an object');
-    const { id, label, vendor, provider, modelId, residency, maxOutputTokens, temperature } = entry;
+    const { id, label, vendor, provider, modelId, residency, maxOutputTokens, temperature, vision } = entry;
     if (typeof id !== 'string' || !idPattern.test(id)) fail(`id "${String(id)}" must match [a-z0-9-]{1,40}`);
     if (seen.has(id)) fail(`duplicate id "${id}"`);
     seen.add(id);
@@ -118,6 +120,7 @@ export function validateCatalog(raw: unknown, defaultChatModel: unknown, fastMod
     if (temperature !== undefined && (typeof temperature !== 'number' || !Number.isFinite(temperature) || temperature < 0 || temperature > 2)) {
       fail(`"${id}" temperature must be a number from 0 to 2`);
     }
+    if (vision !== undefined && typeof vision !== 'boolean') fail(`"${id}" vision must be true or false`);
     out.push({
       id,
       label,
@@ -127,6 +130,7 @@ export function validateCatalog(raw: unknown, defaultChatModel: unknown, fastMod
       residency,
       ...(maxOutputTokens !== undefined ? { maxOutputTokens: maxOutputTokens as number } : {}),
       ...(temperature !== undefined ? { temperature } : {}),
+      ...(vision !== undefined ? { vision } : {}),
     });
   }
 
@@ -222,8 +226,8 @@ export function bedrockStatements(models: CatalogModel[], partition: string, acc
  * The boundary template takes its Bedrock resources from here, so the boundary allows what
  * the catalog uses and nothing else.
  */
-export function bedrockResourceArns(models: CatalogModel[], account: string, partition = 'aws'): string[] {
-  const out: string[] = [];
+export function bedrockResourceArns(models: CatalogModel[], account: string, partition = 'aws', embeddingModelId?: string): string[] {
+  const out: string[] = embeddingModelId ? [embeddingModelArn(embeddingModelId, partition)] : [];
   for (const model of models) {
     const { prefix, foundationModel } = parseModelId(model.modelId);
     const profile = `arn:${partition}:bedrock:${sourceRegion}:${account}:inference-profile/${model.modelId}`;
@@ -233,4 +237,30 @@ export function bedrockResourceArns(models: CatalogModel[], account: string, par
     else out.push(profile, fm(sourceRegion), fm(''));
   }
   return [...new Set(out)];
+}
+
+/**
+ * The transcription model renders pages to images, so it must be a catalog entry that accepts
+ * images (`vision: true`) and has residency `au` (page images are course material).
+ */
+export function assertTranscribeModel(catalog: Catalog, id: string): CatalogModel {
+  const model = catalog.models.find((m) => m.id === id);
+  if (!model) fail(`transcribeModel "${id}" is not in the catalog`);
+  if (model.vision !== true) fail(`transcribeModel "${id}" must have vision: true`);
+  if (model.residency !== 'au') fail(`transcribeModel "${id}" must have residency "au"`);
+  return model;
+}
+
+/** The embedding model runs on demand in Sydney: a bare `<vendor>.<model>` ID, no profile prefix. */
+export function assertEmbeddingModel(modelId: string): string {
+  const { prefix } = parseModelId(modelId);
+  if (prefix !== 'none') {
+    throw new Error(`embeddingModelId "${modelId}" must be an on-demand model in Sydney (<vendor>.<model>), not a profile`);
+  }
+  return modelId;
+}
+
+/** The foundation-model ARN of the embedding model, which runs in Sydney only. */
+export function embeddingModelArn(modelId: string, partition = 'aws'): string {
+  return `arn:${partition}:bedrock:${sourceRegion}::foundation-model/${assertEmbeddingModel(modelId)}`;
 }

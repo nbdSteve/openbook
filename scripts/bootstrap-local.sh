@@ -16,6 +16,8 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lib/pdfium.sh
+. "${repo_root}/scripts/lib/pdfium.sh"
 
 emulator_port="${OPENBOOK_EMULATOR_PORT:-9297}"
 web_port="${OPENBOOK_WEB_PORT:-5173}"
@@ -104,6 +106,7 @@ pool_name="openbook-local"
 client_name="openbook-local"
 vector_bucket="openbook-local-vectors"
 queue_name="openbook-local-ingest.fifo"
+dlq_name="openbook-local-ingest-dlq.fifo"
 seed_password="Openbook-local-1"
 seed_users=("teacher@openbook.test" "student@openbook.test")
 
@@ -209,23 +212,47 @@ for user in "${seed_users[@]}"; do
     --permanent
 done
 
-# ---- Phase 2 resources -----------------------------------------------------------------
-# The ingest worker does not exist yet. Create these when the emulator supports them, and
-# say so when it does not, so that phase 2 needs no change to this script.
+# ---- Ingest queue and vector bucket ----------------------------------------------------
+# The same settings as the deployed stack (docs/retrieval.md): FIFO, the sender names the
+# deduplication ID, visibility 960 s, retention 4 days, and a FIFO dead-letter queue after 3
+# receives. The script sets them on a queue that already exists too.
 if aws s3vectors get-vector-bucket --vector-bucket-name "$vector_bucket" > /dev/null 2>&1; then
   log "vector bucket ${vector_bucket} exists"
-elif aws s3vectors create-vector-bucket --vector-bucket-name "$vector_bucket" > /dev/null 2>&1; then
-  log "created vector bucket ${vector_bucket}"
 else
-  log "warning: could not create the vector bucket ${vector_bucket} (phase 2; skipped)"
+  log "creating vector bucket ${vector_bucket}"
+  aws s3vectors create-vector-bucket --vector-bucket-name "$vector_bucket" > /dev/null
 fi
+
+if ! aws sqs get-queue-url --queue-name "$dlq_name" > /dev/null 2>&1; then
+  log "creating queue ${dlq_name}"
+  aws sqs create-queue --queue-name "$dlq_name" \
+    --attributes FifoQueue=true,MessageRetentionPeriod=1209600 > /dev/null
+fi
+dlq_url="$(aws sqs get-queue-url --queue-name "$dlq_name" --query QueueUrl --output text)"
+dlq_arn="$(aws sqs get-queue-attributes --queue-url "$dlq_url" --attribute-names QueueArn --query Attributes.QueueArn --output text)"
+queue_settings="$(jq -nc --arg arn "$dlq_arn" '{
+  ContentBasedDeduplication: "false",
+  VisibilityTimeout: "960",
+  MessageRetentionPeriod: "345600",
+  RedrivePolicy: ({deadLetterTargetArn: $arn, maxReceiveCount: 3} | tojson)}')"
 if aws sqs get-queue-url --queue-name "$queue_name" > /dev/null 2>&1; then
   log "queue ${queue_name} exists"
-elif aws sqs create-queue --queue-name "$queue_name" \
-  --attributes FifoQueue=true,ContentBasedDeduplication=true > /dev/null 2>&1; then
-  log "created queue ${queue_name}"
 else
-  log "warning: could not create the queue ${queue_name} (phase 2; skipped)"
+  log "creating queue ${queue_name}"
+  aws sqs create-queue --queue-name "$queue_name" --attributes '{"FifoQueue":"true"}' > /dev/null
+fi
+queue_url="$(aws sqs get-queue-url --queue-name "$queue_name" --query QueueUrl --output text)"
+aws sqs set-queue-attributes --queue-url "$queue_url" --attributes "$queue_settings"
+
+# ---- pdfium for the local worker ---------------------------------------------------------
+# The worker opens PDFs with pdfium. The fetch script downloads the pinned build for this
+# machine into .local/pdfium/<platform>/ and prints where the library is.
+pdfium_path=""
+if [ -x "${OPENBOOK_PDFIUM_FETCH:-${repo_root}/scripts/fetch-pdfium.sh}" ]; then
+  pdfium_path="$(pdfium_fetch "$(pdfium_platform)")"
+  log "pdfium: ${pdfium_path}"
+else
+  log "warning: scripts/fetch-pdfium.sh does not exist yet, so OPENBOOK_PDFIUM_PATH is not set"
 fi
 
 # ---- Files -----------------------------------------------------------------------------
@@ -247,13 +274,18 @@ if [ -n "$bedrock_profile" ]; then
   models="$(jq -c '.context.models' "${repo_root}/infra/cdk.json")"
   default_chat="$(jq -r '.context.defaultChatModel' "${repo_root}/infra/cdk.json")"
   fast_model="$(jq -r '.context.fastModel' "${repo_root}/infra/cdk.json")"
+  embedding_model="$(jq -r '.context.embeddingModelId' "${repo_root}/infra/cdk.json")"
+  transcribe_model="${fast_model}"
   log "model catalog: deployed (real Bedrock through AWS profile ${bedrock_profile})"
 else
   # `fake` is the default chat and fast model (residency au). `fake-global` has residency
   # global, so the model picker and its global label can be tested.
-  models='[{"id":"fake","label":"Local fake model","vendor":"openbook","provider":"fake","modelId":"fake","residency":"au","maxOutputTokens":2000},{"id":"fake-global","label":"Local fake global model","vendor":"openbook","provider":"fake","modelId":"fake-global","residency":"global","maxOutputTokens":2000}]'
+  models='[{"id":"fake","label":"Local fake model","vendor":"openbook","provider":"fake","modelId":"fake","residency":"au","maxOutputTokens":2000,"vision":true},{"id":"fake-global","label":"Local fake global model","vendor":"openbook","provider":"fake","modelId":"fake-global","residency":"global","maxOutputTokens":2000,"vision":true}]'
   default_chat="fake"
   fast_model="fake"
+  # The local worker embeds with a hashed bag of words and transcribes with the fake model.
+  embedding_model="fake"
+  transcribe_model="fake"
   log "model catalog: two fake models (fake, fake-global)"
 fi
 
@@ -269,6 +301,13 @@ fi
   echo "OPENBOOK_MODELS=$(sq "$models")"
   echo "OPENBOOK_DEFAULT_CHAT_MODEL=${default_chat}"
   echo "OPENBOOK_FAST_MODEL=${fast_model}"
+  echo "OPENBOOK_INGEST_QUEUE_URL=$(sq "$queue_url")"
+  echo "OPENBOOK_VECTOR_BUCKET=${vector_bucket}"
+  echo "OPENBOOK_EMBEDDING_MODEL_ID=${embedding_model}"
+  echo "OPENBOOK_TRANSCRIBE_MODEL=${transcribe_model}"
+  if [ -n "$pdfium_path" ]; then
+    echo "OPENBOOK_PDFIUM_PATH=$(sq "$pdfium_path")"
+  fi
   if [ -n "$daily_messages_per_user" ]; then
     echo "OPENBOOK_LIMIT_DAILY_MESSAGES_PER_USER=${daily_messages_per_user}"
   fi

@@ -43,6 +43,10 @@ function flatten(value: unknown, json: Synth['json']): string {
     if (resource?.Type === 'AWS::S3::Bucket') {
       return `${isArn ? 'arn:aws:s3:::' : ''}openbook-prod-${logical.toLowerCase()}`;
     }
+    if (resource?.Type === 'AWS::SQS::Queue') {
+      const name = (resource.Properties as { QueueName: string }).QueueName;
+      return isArn ? `arn:aws:sqs:${acct}:${name}` : `https://sqs/${name}`;
+    }
     if (resource?.Type === 'AWS::Lambda::Function') {
       return `${isArn ? `arn:aws:lambda:${acct}:function:` : ''}Openbook-prod-${logical}`;
     }
@@ -117,7 +121,7 @@ describe('the permissions boundary', () => {
     // No IAM, STS, Lambda, CloudFormation, or Cognito permission: a role under the boundary
     // can never create or change another role.
     const services = new Set(doc.Statement.flatMap((st) => asArray(st.Action as string[]).map((a) => a.split(':')[0])));
-    expect([...services].sort()).toEqual(['bedrock', 'cloudfront', 'dynamodb', 'logs', 's3']);
+    expect([...services].sort()).toEqual(['bedrock', 'cloudfront', 'dynamodb', 'logs', 's3', 's3vectors', 'sqs']);
   });
 
   test('every grant of the stack roles fits inside the boundary', () => {
@@ -303,7 +307,7 @@ describe('deployment logs and limits', () => {
 
 describe('an account-agnostic synth, as the CI build job runs it', () => {
   test('the prod template has no account number and still names every resource through pseudo parameters', () => {
-    const app = newApp({ ...cdkJsonContext, stage: 'prod', apiAssetDir: fixtures.api, webAssetDir: fixtures.web });
+    const app = newApp({ ...cdkJsonContext, stage: 'prod', apiAssetDir: fixtures.api, ingestAssetDir: fixtures.ingest, webAssetDir: fixtures.web });
     const config = resolveConfig(app.node);
     const stack = new OpenbookStack(app, 'Openbook-prod', {
       config,
@@ -377,11 +381,13 @@ describe('the boundary follows the catalog and the real API calls', () => {
 
   test('the boundary Bedrock resources are exactly the catalog ARNs, and equal to the stack policy', () => {
     const resources = boundary.find((s) => s.Sid === 'InvokeBedrockModels')?.Resource ?? [];
-    expect([...resources].sort()).toEqual([...bedrockResourceArns(models, fakeAccount)].sort());
+    expect([...resources].sort()).toEqual(
+      [...bedrockResourceArns(models, fakeAccount, 'aws', cdkJsonContext.embeddingModelId as string)].sort(),
+    );
     const stackBedrock = stackStatements(prod)
       .filter((x) => x.statement.Action.some((a) => a.startsWith('bedrock:')))
       .flatMap((x) => x.statement.Resource);
-    expect([...resources].sort()).toEqual([...stackBedrock].sort());
+    expect([...resources].sort()).toEqual([...new Set(stackBedrock)].sort());
     for (const r of resources) expect(r).not.toContain('*');
   });
 
@@ -390,12 +396,12 @@ describe('the boundary follows the catalog and the real API calls', () => {
     const stackActions = stackStatements(prod)
       .filter((x) => x.statement.Action.some((a) => a.startsWith('dynamodb:')))
       .flatMap((x) => x.statement.Action);
-    expect([...boundaryActions].sort()).toEqual([...stackActions].sort());
+    expect([...boundaryActions].sort()).toEqual([...new Set(stackActions)].sort());
     for (const never of ['dynamodb:Scan', 'dynamodb:DescribeTable', 'dynamodb:ConditionCheckItem']) {
       expect(boundaryActions).not.toContain(never);
     }
     // The calls that crates/core/src/store.rs makes. A transaction needs Put, Update, and Delete.
-    expect([...stackActions].sort()).toEqual([
+    expect([...new Set(stackActions)].sort()).toEqual([
       'dynamodb:BatchGetItem',
       'dynamodb:BatchWriteItem',
       'dynamodb:DeleteItem',

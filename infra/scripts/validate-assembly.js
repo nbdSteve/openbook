@@ -27,6 +27,20 @@ const REGION = 'ap-southeast-2';
 const BUCKET = 'cdk-hnb659fds-assets-${AWS::AccountId}-ap-southeast-2';
 const PREFIX = 'openbook-prod/';
 
+// The assets of the stack today, by display name and packaging. The ingest worker's zip
+// (`IngestFunction/Code`) is the newest. A new asset needs a review of this list, and nothing
+// else may appear.
+const ASSETS = {
+  'ApiFunction/Code': 'zip',
+  'IngestFunction/Code': 'zip',
+  'OpenbookDeployAssets/AwsCliLayer/Code': 'file',
+  'Custom::CDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C/Code': 'zip',
+  'OpenbookDeployAssets/Asset1': 'zip',
+  'OpenbookDeployEntry/Asset1': 'zip',
+  'OpenbookDeployEntry/Asset2': 'zip',
+  [`${STACK} Template`]: 'file',
+};
+
 const ARTIFACTS = {
   [STACK]: 'aws:cloudformation:stack',
   [`${STACK}.assets`]: 'cdk:asset-manifest',
@@ -132,6 +146,7 @@ function validate(rootArgument) {
     refuse('the asset manifest has no files');
   }
 
+  const seen = new Set();
   let sawTemplate = false;
   for (const [hash, file] of Object.entries(assets.files)) {
     const where = `the asset ${hash.slice(0, 12)}`;
@@ -143,6 +158,12 @@ function validate(rootArgument) {
     if (file.source.packaging !== 'zip' && file.source.packaging !== 'file') {
       refuse(`${where} has the packaging "${file.source.packaging}"`);
     }
+    if (!Object.prototype.hasOwnProperty.call(ASSETS, file.displayName)) {
+      refuse(`${where} is "${file.displayName}", which is not an asset of the stack`);
+    }
+    if (ASSETS[file.displayName] !== file.source.packaging) refuse(`${where} has the wrong packaging for "${file.displayName}"`);
+    if (seen.has(file.displayName)) refuse(`the asset "${file.displayName}" appears twice`);
+    seen.add(file.displayName);
     const source = insideAssembly(root, file.source.path, where);
     if (!fs.existsSync(source)) refuse(`${where} points at a path that does not exist`);
     const isDirectory = fs.statSync(source).isDirectory();
@@ -171,6 +192,9 @@ function validate(rootArgument) {
     }
   }
   if (!sawTemplate) refuse('the asset manifest has no template asset');
+  for (const name of Object.keys(ASSETS)) {
+    if (!seen.has(name)) refuse(`the asset "${name}" is missing`);
+  }
 }
 
 function main(argv) {

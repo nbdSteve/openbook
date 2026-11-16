@@ -85,12 +85,13 @@ stack_wait_url() {
   return 1
 }
 
-# stack_run_api <env-file>: run the API with only the variables of the env file plus a short
-# allowlist that cargo needs. Nothing else of the caller's environment gets through, so an
-# exported OPENBOOK_LIMIT_* value, an AWS profile, or a real credential cannot change the
-# local API.
-stack_run_api() {
+# stack_run_rust <env-file> <cargo args...>: run `cargo run --quiet <args>` with only the
+# variables of the env file plus a short allowlist that cargo needs. Nothing else of the
+# caller's environment gets through, so an exported OPENBOOK_LIMIT_* value, an AWS profile, or
+# a real credential cannot change the local API or worker.
+stack_run_rust() {
   local env_file="$1" entry name
+  shift
   local allowed=()
   while IFS= read -r -d '' entry; do
     name="${entry%%=*}"
@@ -100,8 +101,18 @@ stack_run_api() {
         ;;
     esac
   done < <(env -0)
-  # shellcheck disable=SC2016 # $1 is for the inner bash
-  exec env -i ${allowed[@]+"${allowed[@]}"} bash -c 'set -a; . "$1"; set +a; exec cargo run --quiet -p openbook-api' _ "$env_file"
+  # shellcheck disable=SC2016 # $1 and $@ are for the inner bash
+  exec env -i ${allowed[@]+"${allowed[@]}"} bash -c 'set -a; . "$1"; set +a; shift; exec cargo run --quiet "$@"' _ "$env_file" "$@"
+}
+
+# stack_run_api <env-file>: the API.
+stack_run_api() {
+  stack_run_rust "$1" -p openbook-api
+}
+
+# stack_run_ingest <env-file>: the ingest worker, polling the local queue.
+stack_run_ingest() {
+  stack_run_rust "$1" -p openbook-ingest -- --poll
 }
 
 # stack_run_web <emulator-port> <api-port> <web-port> <web-config-file>: run the Vite dev server.

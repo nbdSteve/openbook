@@ -19,4 +19,4 @@ export AWS_SHARED_CREDENTIALS_FILE=/dev/null
 export AWS_EC2_METADATA_DISABLED=true
 
 exec npx cdk synth --quiet \
-  -c apiAssetDir=test/fixtures/api -c webAssetDir=test/fixtures/web "$@"
+  -c apiAssetDir=test/fixtures/api -c ingestAssetDir=test/fixtures/ingest -c webAssetDir=test/fixtures/web "$@"

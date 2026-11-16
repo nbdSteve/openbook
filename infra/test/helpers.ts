@@ -14,6 +14,7 @@ export const fakeAccount = '111111111111';
 
 export const fixtures = {
   api: path.resolve(__dirname, 'fixtures/api'),
+  ingest: path.resolve(__dirname, 'fixtures/ingest'),
   web: path.resolve(__dirname, 'fixtures/web'),
 };
 
@@ -45,7 +46,7 @@ export function newApp(context: Record<string, unknown>): cdk.App {
 }
 
 export function synth(context: Record<string, unknown> = {}): Synth {
-  const app = newApp({ ...cdkJsonContext, apiAssetDir: fixtures.api, webAssetDir: fixtures.web, ...context });
+  const app = newApp({ ...cdkJsonContext, apiAssetDir: fixtures.api, ingestAssetDir: fixtures.ingest, webAssetDir: fixtures.web, ...context });
   const config = resolveConfig(app.node);
   let certStack: CertificateStack | undefined;
   if (config.domain) {
@@ -92,7 +93,7 @@ export function asArray<T>(value: T | T[] | undefined): T[] {
  * assembly to `target`. The layer zip is emptied, because validators only check that it exists.
  */
 export function copyAgnosticAssembly(target: string): void {
-  const app = newApp({ ...cdkJsonContext, stage: 'prod', apiAssetDir: fixtures.api, webAssetDir: fixtures.web });
+  const app = newApp({ ...cdkJsonContext, stage: 'prod', apiAssetDir: fixtures.api, ingestAssetDir: fixtures.ingest, webAssetDir: fixtures.web });
   const config = resolveConfig(app.node);
   new OpenbookStack(app, 'Openbook-prod', {
     config,

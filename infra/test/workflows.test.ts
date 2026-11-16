@@ -179,7 +179,7 @@ describe('the deploy workflow', () => {
     expect(build.steps[0].name).toBe('require main');
     expect(deploy.text).toContain('refs/heads/main');
     const runs = build.steps.map((s) => s.run ?? '').join('\n');
-    expect(runs).toContain('cargo lambda build --release --arm64 -p openbook-api');
+    expect(runs).toContain('make build-lambdas');
     expect(runs).toContain('npm run build');
     expect(runs).toContain('npm test');
     expect(runs).toContain('npx cdk synth --quiet -c stage=prod');
@@ -346,6 +346,29 @@ describe('the verify, unpack, and validate step', () => {
     expect(result.output).toContain('not executable');
   });
 
+  test('refuses an assembly without libpdfium.so beside the ingest bootstrap', () => {
+    const result = runStep({
+      prepare: (cdkOut) => {
+        for (const dir of fs.readdirSync(cdkOut)) {
+          if (fs.statSync(path.join(cdkOut, dir)).isDirectory()) fs.rmSync(path.join(cdkOut, dir, 'libpdfium.so'), { force: true });
+        }
+      },
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.output).toContain('libpdfium.so is missing');
+  });
+
+  test('refuses an assembly with only one Lambda binary', () => {
+    const result = runStep({
+      prepare: (cdkOut) => {
+        const dirs = fs.readdirSync(cdkOut).filter((d) => fs.existsSync(path.join(cdkOut, d, 'bootstrap')));
+        fs.rmSync(path.join(cdkOut, dirs[0], 'bootstrap'));
+      },
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.output).toContain('exactly two Lambda bootstrap binaries');
+  });
+
   test('refuses a tar whose hash is not the one that the build job recorded', () => {
     const result = runStep({ expectedHash: (actual) => actual.replace(/^./, (c) => (c === '0' ? '1' : '0')) });
     expect(result.status).not.toBe(0);
@@ -386,5 +409,31 @@ describe('the verify, unpack, and validate step', () => {
     });
     expect(result.status).not.toBe(0);
     expect(result.output).toContain('cloud assembly refused');
+  });
+});
+
+describe('the phase 2 packaging', () => {
+  test('make build-lambdas builds both binaries for arm64 and puts libpdfium.so next to the worker', () => {
+    expect(read('Makefile')).toMatch(/build-lambdas:.*\n\tscripts\/build-lambdas\.sh/);
+    const script = read('scripts/build-lambdas.sh');
+    expect(script).toContain('cargo lambda build --release --arm64 -p openbook-api -p openbook-ingest');
+    expect(script).toContain('pdfium_fetch linux-arm64');
+    expect(script).toContain('target/lambda/openbook-ingest/libpdfium.so');
+  });
+
+  test('the deploy build job uses make build-lambdas, and the checks build the same way', () => {
+    const buildRuns = (deploy.wf.jobs.build as Job).steps.map((s) => s.run ?? '');
+    expect(buildRuns).toContain('make build-lambdas');
+    expect(checks.wf.jobs.lambda.steps.map((s) => s.run)).toContain('make build-lambdas');
+    const lambdaRun = checks.wf.jobs.lambda.steps.map((s) => s.run ?? '').join('\n');
+    expect(lambdaRun).toContain('target/lambda/openbook-ingest/libpdfium.so');
+  });
+
+  test('the Rust test jobs fetch pdfium for linux-x64 and export its path', () => {
+    for (const job of ['rust', 'rust-integration']) {
+      const runs = checks.wf.jobs[job].steps.map((s) => s.run ?? '').join('\n');
+      expect(runs, job).toContain('OPENBOOK_PDFIUM_PATH=$(scripts/fetch-pdfium.sh linux-x64)');
+      expect(runs, job).toContain('>> "$GITHUB_ENV"');
+    }
   });
 });

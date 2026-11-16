@@ -54,6 +54,7 @@ else
 fi
 
 stack_start api stack_run_api "${stack_dir}/api.env"
+stack_start ingest stack_run_ingest "${stack_dir}/api.env"
 stack_start web stack_run_web "$emulator_port" "$api_port" "$web_port" "${repo_root}/${stack_dir}/web-config.json"
 
 # The first API start compiles the Rust workspace, which can take a few minutes.

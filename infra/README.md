@@ -23,10 +23,25 @@ The CDK app reads all settings from context (`cdk.json` or `-c key=value`). Noth
 |---|---|---|
 | `stage` | `dev` | `dev` or `prod`. Prod retains data, has point-in-time recovery, deletion protection, termination protection, the permissions boundary, and 25 reserved concurrent executions. |
 | `apiAssetDir` | `../target/lambda/openbook-api` | The directory with the Lambda `bootstrap` binary |
+| `ingestAssetDir` | `../target/lambda/openbook-ingest` | The directory with the worker's `bootstrap` and `libpdfium.so`. Synth refuses a directory without both. `make build-lambdas` makes it. |
+| `transcribeModel`, `embeddingModelId` | the fast model, `amazon.titan-embed-text-v2:0` | The catalog ID that transcribes pages (it must have `vision: true` and residency `au`, or synth fails), and the on-demand embedding model in Sydney |
 | `webAssetDir` | `../apps/ask/dist` | The built web app. Synth refuses an `index.html` with an inline `<script>`, because the CSP blocks it. |
 | `models`, `defaultChatModel`, `fastModel` | in `cdk.json` | The model catalog (`docs/architecture.md`, "Model catalog"). Synth fails if it breaks a rule, including the model ID allowlist. The Bedrock IAM policy comes from it. |
+| `limitPagesPerDocument`, `limitDailyTranscribedPagesPerUser`, `limitDailyTranscribedPagesGlobal` | `stageLimits.<stage>`, then the API default | The page and transcription limits. Until the public launch, `cdk.json` caps the global transcription at 300 pages a day in prod and 100 in dev. |
 | `limitDailyMessagesPerUser`, `limitDailyMessagesGlobal`, `limitDailyTokensGlobal`, `limitFailedJoinsPerDay`, `limitCoursesOwned`, `limitDocumentsPerCourse`, `limitUploadBytes` | `stageLimits.<stage>` in `cdk.json`, then the API default | The `OPENBOOK_LIMIT_*` values. Until the public launch, `cdk.json` caps the global spend: prod 300 messages and 300,000 tokens a day, dev 100 and 100,000 (the API defaults of 500 and 3,000,000 allow more than the US$20 budget). For the launch, delete `stageLimits` or override with `-c limitDailyMessagesGlobal=...`. |
 | `domainName`, `hostedZoneName`, `hostedZoneId` | unset | A custom domain. All three are needed. The hosted zone ID avoids a lookup at synth time. |
+
+## The ingest worker
+
+`openbook-ingest` (docs/retrieval.md, "Ingestion (phase 2)") is a second Lambda function of the stack, with its own role and log group (stage retention):
+
+- arm64, `provided.al2023`, 3008 MB, 900 s, 4096 MB of `/tmp`, reserved concurrency 5 (prod) or 2 (dev).
+- Fed by the FIFO queue `Openbook-<stage>-ingest.fifo` (visibility 960 s, retention 4 days, dead-letter queue `Openbook-<stage>-ingest-dlq.fifo` after 3 receives, SQS-managed encryption, TLS only) through an event source mapping with batch size 1, partial batch responses, and a maximum concurrency equal to the reserved concurrency (so the poller never throttles on the function and burns a receive count).
+- The S3 Vectors bucket `openbook-<stage>-vectors` (SSE-S3; retained in prod). The worker creates one index per course.
+- Both functions get the same environment, with `OPENBOOK_INGEST_QUEUE_URL`, `OPENBOOK_VECTOR_BUCKET`, `OPENBOOK_EMBEDDING_MODEL_ID`, `OPENBOOK_TRANSCRIBE_MODEL`, and the page and transcription limits. A test checks the environment against the 4 KB limit of Lambda.
+- Permissions (exact statements are in `test/snapshots/stack-policies.prod.json`): the API sends to the queue (`sqs:SendMessage`), deletes and queries course indexes, and embeds with Titan. The worker consumes from the queue, uses the table and the docs bucket, creates indexes and puts, gets, queries, and deletes vectors in the stage bucket (it cannot delete an index), and invokes only the transcribe model and Titan. Every role has the permissions boundary.
+- `libpdfium.so` must sit next to the worker's `bootstrap`. `make build-lambdas` copies it (pinned by SHA-256 in `scripts/fetch-pdfium.sh`). The deploy job checks the assembly for exactly two `bootstrap` files, both executable, and one `libpdfium.so` beside the worker's.
+- The catalog entries have a `vision` flag (the Claude entries are `true`, gpt-oss is `false`).
 
 ## Deploy
 

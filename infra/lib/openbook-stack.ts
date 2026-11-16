@@ -7,13 +7,17 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as logs from 'aws-cdk-lib/aws-logs';
+import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as route53 from 'aws-cdk-lib/aws-route53';
 import * as targets from 'aws-cdk-lib/aws-route53-targets';
 import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as s3vectors from 'aws-cdk-lib/aws-s3vectors';
 import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
 import type { Construct, IConstruct } from 'constructs';
-import { bedrockStatements } from './catalog';
+import { assertTranscribeModel, bedrockStatements, embeddingModelArn } from './catalog';
 import { region, type OpenbookConfig } from './config';
+import { assertLambdaAssetDir } from './lambda-assets';
 import { permissionsBoundaryName, spaRewriteFunctionName } from './deployment';
 import { spaRewriteCode } from './spa-rewrite';
 import { assertNoInlineScripts } from './web-assets';
@@ -121,6 +125,105 @@ export class OpenbookStack extends cdk.Stack {
     const docsBucketName = `openbook-${config.stage}-docs-${this.account}-${this.region}`;
     const docsBucketDomain = `${docsBucketName}.s3.${region}.amazonaws.com`;
 
+    // ---- Ingest queue and vector bucket ---------------------------------------------
+    // The names are fixed: the queue names are in docs/retrieval.md, and the execution role is
+    // scoped to them. A FIFO queue name must end in `.fifo`.
+    const ingestDlq = new sqs.Queue(this, 'IngestDeadLetterQueue', {
+      queueName: `${this.stackName}-ingest-dlq.fifo`,
+      fifo: true,
+      retentionPeriod: cdk.Duration.days(14),
+      encryption: sqs.QueueEncryption.SQS_MANAGED,
+      enforceSSL: true,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+    const ingestQueue = new sqs.Queue(this, 'IngestQueue', {
+      queueName: `${this.stackName}-ingest.fifo`,
+      fifo: true,
+      // The API sends its own deduplication ID: `<documentId>:<action>:<ULID>`.
+      contentBasedDeduplication: false,
+      // Longer than the 900 s timeout of the worker, as AWS requires for an event source.
+      visibilityTimeout: cdk.Duration.seconds(960),
+      retentionPeriod: cdk.Duration.days(4),
+      deadLetterQueue: { queue: ingestDlq, maxReceiveCount: 3 },
+      encryption: sqs.QueueEncryption.SQS_MANAGED,
+      enforceSSL: true,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    // One S3 Vectors bucket per stage, with a fixed name like the docs bucket. The worker
+    // creates one index per course in it (`c-<courseId in lower case>`).
+    const vectorBucketName = `openbook-${config.stage}-vectors`;
+    const vectorBucketArn = `arn:${this.partition}:s3vectors:${this.region}:${this.account}:bucket/${vectorBucketName}`;
+    const vectorBucket = new s3vectors.CfnVectorBucket(this, 'VectorBucket', {
+      vectorBucketName,
+      encryptionConfiguration: { sseType: 'AES256' },
+    });
+    vectorBucket.applyRemovalPolicy(removalPolicy);
+
+    // ---- The environment that both Lambda functions get ----------------------------
+    const environment: Record<string, string> = {
+      OPENBOOK_STAGE: config.stage,
+      OPENBOOK_TABLE_NAME: table.tableName,
+      OPENBOOK_DOCS_BUCKET: docsBucketName,
+      OPENBOOK_COGNITO_USER_POOL_ID: userPool.userPoolId,
+      OPENBOOK_COGNITO_CLIENT_ID: userPoolClient.userPoolClientId,
+      OPENBOOK_MODELS: JSON.stringify(config.catalog.models),
+      OPENBOOK_DEFAULT_CHAT_MODEL: config.catalog.defaultChatModel,
+      OPENBOOK_FAST_MODEL: config.catalog.fastModel,
+      OPENBOOK_INGEST_QUEUE_URL: ingestQueue.queueUrl,
+      OPENBOOK_VECTOR_BUCKET: vectorBucketName,
+      OPENBOOK_EMBEDDING_MODEL_ID: config.embeddingModelId,
+      OPENBOOK_TRANSCRIBE_MODEL: config.transcribeModel,
+      OPENBOOK_LIMIT_DAILY_MESSAGES_PER_USER: String(config.limits.dailyMessagesPerUser),
+      OPENBOOK_LIMIT_DAILY_MESSAGES_GLOBAL: String(config.limits.dailyMessagesGlobal),
+      OPENBOOK_LIMIT_DAILY_TOKENS_GLOBAL: String(config.limits.dailyTokensGlobal),
+      OPENBOOK_LIMIT_FAILED_JOINS_PER_DAY: String(config.limits.failedJoinsPerDay),
+      OPENBOOK_LIMIT_COURSES_OWNED: String(config.limits.coursesOwned),
+      OPENBOOK_LIMIT_DOCUMENTS_PER_COURSE: String(config.limits.documentsPerCourse),
+      OPENBOOK_LIMIT_UPLOAD_BYTES: String(config.limits.uploadBytes),
+      OPENBOOK_LIMIT_PAGES_PER_DOCUMENT: String(config.limits.pagesPerDocument),
+      OPENBOOK_LIMIT_DAILY_TRANSCRIBED_PAGES_PER_USER: String(config.limits.transcribedPagesPerUser),
+      OPENBOOK_LIMIT_DAILY_TRANSCRIBED_PAGES_GLOBAL: String(config.limits.transcribedPagesGlobal),
+      RUST_LOG: 'info',
+    };
+
+    // The item calls that the two functions make (crates/core/src/store.rs), and no more.
+    // `grantReadWriteData` would add stream, export, scan, and describe actions. A transaction
+    // needs the permission of each of its operations, and nothing uses a ConditionCheck.
+    // Add an action here, and to the boundary template, when the code starts to call it.
+    const tableStatement = (): iam.PolicyStatement =>
+      new iam.PolicyStatement({
+        sid: 'ApplicationTable',
+        actions: [
+          'dynamodb:BatchGetItem',
+          'dynamodb:BatchWriteItem',
+          'dynamodb:DeleteItem',
+          'dynamodb:GetItem',
+          'dynamodb:PutItem',
+          'dynamodb:Query',
+          'dynamodb:UpdateItem',
+        ],
+        resources: [table.tableArn, `${table.tableArn}/index/*`],
+      });
+    const docsObjectsStatements = (): iam.PolicyStatement[] => [
+      new iam.PolicyStatement({
+        sid: 'DocsBucketObjects',
+        actions: ['s3:GetObject', 's3:PutObject', 's3:DeleteObject'],
+        resources: [`arn:${this.partition}:s3:::${docsBucketName}/*`],
+      }),
+      new iam.PolicyStatement({
+        sid: 'DocsBucketList',
+        actions: ['s3:ListBucket'],
+        resources: [`arn:${this.partition}:s3:::${docsBucketName}`],
+      }),
+    ];
+    const embeddingStatement = (): iam.PolicyStatement =>
+      new iam.PolicyStatement({
+        sid: 'InvokeEmbeddingModel',
+        actions: ['bedrock:InvokeModel'],
+        resources: [embeddingModelArn(config.embeddingModelId, this.partition)],
+      });
+
     // ---- API Lambda ----------------------------------------------------------------
     const apiLogGroup = new logs.LogGroup(this, 'ApiLogGroup', {
       retention: isProd ? logs.RetentionDays.ONE_MONTH : logs.RetentionDays.ONE_WEEK,
@@ -135,63 +238,97 @@ export class OpenbookStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(120),
       reservedConcurrentExecutions: isProd ? 25 : 5,
       logGroup: apiLogGroup,
-      environment: {
-        OPENBOOK_STAGE: config.stage,
-        OPENBOOK_TABLE_NAME: table.tableName,
-        OPENBOOK_DOCS_BUCKET: docsBucketName,
-        OPENBOOK_COGNITO_USER_POOL_ID: userPool.userPoolId,
-        OPENBOOK_COGNITO_CLIENT_ID: userPoolClient.userPoolClientId,
-        OPENBOOK_MODELS: JSON.stringify(config.catalog.models),
-        OPENBOOK_DEFAULT_CHAT_MODEL: config.catalog.defaultChatModel,
-        OPENBOOK_FAST_MODEL: config.catalog.fastModel,
-        OPENBOOK_LIMIT_DAILY_MESSAGES_PER_USER: String(config.limits.dailyMessagesPerUser),
-        OPENBOOK_LIMIT_DAILY_MESSAGES_GLOBAL: String(config.limits.dailyMessagesGlobal),
-        OPENBOOK_LIMIT_DAILY_TOKENS_GLOBAL: String(config.limits.dailyTokensGlobal),
-        OPENBOOK_LIMIT_FAILED_JOINS_PER_DAY: String(config.limits.failedJoinsPerDay),
-        OPENBOOK_LIMIT_COURSES_OWNED: String(config.limits.coursesOwned),
-        OPENBOOK_LIMIT_DOCUMENTS_PER_COURSE: String(config.limits.documentsPerCourse),
-        OPENBOOK_LIMIT_UPLOAD_BYTES: String(config.limits.uploadBytes),
-        RUST_LOG: 'info',
-      },
+      environment,
     });
-    // The item calls that the API makes (crates/core/src/store.rs), and no more.
-    // `grantReadWriteData` would add stream, export, scan, and describe actions. A transaction
-    // needs the permission of each of its operations, and the API uses no ConditionCheck.
-    // Add an action here, and to the boundary template, when the API starts to call it.
-    apiFunction.addToRolePolicy(
-      new iam.PolicyStatement({
-        sid: 'ApplicationTable',
-        actions: [
-          'dynamodb:BatchGetItem',
-          'dynamodb:BatchWriteItem',
-          'dynamodb:DeleteItem',
-          'dynamodb:GetItem',
-          'dynamodb:PutItem',
-          'dynamodb:Query',
-          'dynamodb:UpdateItem',
-        ],
-        resources: [table.tableArn, `${table.tableArn}/index/*`],
-      }),
-    );
-    apiFunction.addToRolePolicy(
-      new iam.PolicyStatement({
-        sid: 'DocsBucketObjects',
-        actions: ['s3:GetObject', 's3:PutObject', 's3:DeleteObject'],
-        resources: [`arn:${this.partition}:s3:::${docsBucketName}/*`],
-      }),
-    );
-    apiFunction.addToRolePolicy(
-      new iam.PolicyStatement({
-        sid: 'DocsBucketList',
-        actions: ['s3:ListBucket'],
-        resources: [`arn:${this.partition}:s3:::${docsBucketName}`],
-      }),
-    );
+    apiFunction.addToRolePolicy(tableStatement());
+    for (const statement of docsObjectsStatements()) apiFunction.addToRolePolicy(statement);
     // The Bedrock permissions come from the catalog, so the environment and the policy
     // cannot disagree. See `bedrockStatements` for the exact resources.
     for (const statement of bedrockStatements(config.catalog.models, this.partition, this.account)) {
       apiFunction.addToRolePolicy(statement);
     }
+    // Phase 3 embeds the question with the same model that the worker uses for the chunks.
+    apiFunction.addToRolePolicy(embeddingStatement());
+    // The API sends `ingest` and `delete` messages, deletes a course's index with the course,
+    // and (phase 3) queries the indexes.
+    apiFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        sid: 'SendIngestMessages',
+        actions: ['sqs:SendMessage'],
+        resources: [ingestQueue.queueArn],
+      }),
+    );
+    apiFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        sid: 'CourseVectorIndexes',
+        actions: ['s3vectors:DeleteIndex', 's3vectors:GetIndex', 's3vectors:QueryVectors'],
+        resources: [`${vectorBucketArn}/index/*`],
+      }),
+    );
+
+    // ---- Ingest Lambda -------------------------------------------------------------
+    // The worker needs `libpdfium.so` next to its `bootstrap`.
+    assertLambdaAssetDir(
+      config.ingestAssetDir,
+      ['bootstrap', 'libpdfium.so'],
+      'Run make build-lambdas (it copies libpdfium.so next to the openbook-ingest bootstrap).',
+    );
+    const ingestLogGroup = new logs.LogGroup(this, 'IngestLogGroup', {
+      retention: isProd ? logs.RetentionDays.ONE_MONTH : logs.RetentionDays.ONE_WEEK,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+    const ingestConcurrency = isProd ? 5 : 2;
+    const ingestFunction = new lambda.Function(this, 'IngestFunction', {
+      runtime: lambda.Runtime.PROVIDED_AL2023,
+      architecture: lambda.Architecture.ARM_64,
+      handler: 'bootstrap',
+      code: lambda.Code.fromAsset(config.ingestAssetDir),
+      memorySize: 3008,
+      timeout: cdk.Duration.seconds(900),
+      ephemeralStorageSize: cdk.Size.mebibytes(4096),
+      reservedConcurrentExecutions: ingestConcurrency,
+      logGroup: ingestLogGroup,
+      environment,
+    });
+    // Batch size 1 and partial batch responses: a failed document goes back to the queue alone.
+    // `maxConcurrency` equals the reserved concurrency, so the poller never throttles on the
+    // function and burns a receive count of a message that did not run. This also adds the
+    // consume actions (receive, delete, change visibility, get attributes) on the queue.
+    ingestFunction.addEventSource(
+      new lambdaEventSources.SqsEventSource(ingestQueue, {
+        batchSize: 1,
+        reportBatchItemFailures: true,
+        maxConcurrency: ingestConcurrency,
+      }),
+    );
+    ingestFunction.addToRolePolicy(tableStatement());
+    for (const statement of docsObjectsStatements()) ingestFunction.addToRolePolicy(statement);
+    ingestFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        sid: 'CourseVectorIndexCreate',
+        actions: ['s3vectors:CreateIndex'],
+        resources: [vectorBucketArn],
+      }),
+    );
+    ingestFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        sid: 'CourseVectorIndexes',
+        actions: [
+          's3vectors:DeleteVectors',
+          's3vectors:GetIndex',
+          's3vectors:GetVectors',
+          's3vectors:PutVectors',
+          's3vectors:QueryVectors',
+        ],
+        resources: [`${vectorBucketArn}/index/*`],
+      }),
+    );
+    // Page transcription uses the transcribe model, and chunk embedding uses the embedding model.
+    const transcribeEntry = assertTranscribeModel(config.catalog, config.transcribeModel);
+    for (const statement of bedrockStatements([transcribeEntry], this.partition, this.account)) {
+      ingestFunction.addToRolePolicy(statement);
+    }
+    ingestFunction.addToRolePolicy(embeddingStatement());
 
     const functionUrl = apiFunction.addFunctionUrl({
       authType: lambda.FunctionUrlAuthType.AWS_IAM,
@@ -373,6 +510,9 @@ export class OpenbookStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'UserPoolClientId', { value: userPoolClient.userPoolClientId });
     new cdk.CfnOutput(this, 'TableName', { value: table.tableName });
     new cdk.CfnOutput(this, 'DocsBucketName', { value: docsBucket.bucketName });
+    new cdk.CfnOutput(this, 'IngestFunctionName', { value: ingestFunction.functionName });
+    new cdk.CfnOutput(this, 'IngestQueueUrl', { value: ingestQueue.queueUrl });
+    new cdk.CfnOutput(this, 'VectorBucketName', { value: vectorBucketName });
     new cdk.CfnOutput(this, 'ApiFunctionName', { value: apiFunction.functionName });
   }
 }
