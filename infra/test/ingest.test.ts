@@ -194,8 +194,12 @@ describe('the IAM statements of the two functions', () => {
 
   test('the worker uses the table and the docs bucket like the API does', () => {
     expect(bySid(ingest, 'ApplicationTable')).toEqual(bySid(api, 'ApplicationTable'));
-    expect(bySid(ingest, 'DocsBucketObjects')).toEqual(bySid(api, 'DocsBucketObjects'));
     expect(bySid(ingest, 'DocsBucketList')).toEqual(bySid(api, 'DocsBucketList'));
+    // Only the worker deletes objects: document and course deletes both run there.
+    expect(actionsOf(bySid(ingest, 'DocsBucketObjects'))).toEqual(['s3:DeleteObject', 's3:GetObject', 's3:PutObject']);
+    expect(actionsOf(bySid(api, 'DocsBucketObjects'))).toEqual(['s3:GetObject', 's3:PutObject']);
+    expect(api.flatMap(actionsOf)).not.toContain('s3:DeleteObject');
+    expect(flat(bySid(api, 'DocsBucketObjects').Resource)).toBe(flat(bySid(ingest, 'DocsBucketObjects').Resource));
   });
 
   test('the worker invokes only the transcribe model and the embedding model', () => {

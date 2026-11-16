@@ -209,10 +209,11 @@ export class OpenbookStack extends cdk.Stack {
         ],
         resources: [table.tableArn, `${table.tableArn}/index/*`],
       });
-    const docsObjectsStatements = (): iam.PolicyStatement[] => [
+    // Only the worker deletes objects (document and course deletes both run there).
+    const docsObjectsStatements = (canDelete: boolean): iam.PolicyStatement[] => [
       new iam.PolicyStatement({
         sid: 'DocsBucketObjects',
-        actions: ['s3:GetObject', 's3:PutObject', 's3:DeleteObject'],
+        actions: canDelete ? ['s3:GetObject', 's3:PutObject', 's3:DeleteObject'] : ['s3:GetObject', 's3:PutObject'],
         resources: [`arn:${this.partition}:s3:::${docsBucketName}/*`],
       }),
       new iam.PolicyStatement({
@@ -245,7 +246,7 @@ export class OpenbookStack extends cdk.Stack {
       environment,
     });
     apiFunction.addToRolePolicy(tableStatement());
-    for (const statement of docsObjectsStatements()) apiFunction.addToRolePolicy(statement);
+    for (const statement of docsObjectsStatements(false)) apiFunction.addToRolePolicy(statement);
     // The Bedrock permissions come from the catalog, so the environment and the policy
     // cannot disagree. See `bedrockStatements` for the exact resources.
     for (const statement of bedrockStatements(config.catalog.models, this.partition, this.account)) {
@@ -309,7 +310,7 @@ export class OpenbookStack extends cdk.Stack {
       }),
     );
     ingestFunction.addToRolePolicy(tableStatement());
-    for (const statement of docsObjectsStatements()) ingestFunction.addToRolePolicy(statement);
+    for (const statement of docsObjectsStatements(true)) ingestFunction.addToRolePolicy(statement);
     // CreateIndex is authorized on the index ARN too: AWS checks the index that is created. The
     // worker writes and deletes. It never queries: only the API does, in phase 3. It deletes a
     // course's index when it handles `delete_course`.
