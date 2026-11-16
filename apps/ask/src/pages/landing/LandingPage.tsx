@@ -189,40 +189,28 @@ export function LandingPage() {
         </nav>
 
         <main>
-          {/* Hero */}
+          {/* Hero: no fade-in. It is the largest element on the page, so it must be visible at first paint. */}
           <section className="relative overflow-hidden px-5 pb-16 pt-32 sm:px-6 sm:pb-20 sm:pt-36">
             <div aria-hidden="true" className="animate-float absolute left-1/4 top-20 h-72 w-72 rounded-full bg-accent/10 blur-3xl sm:h-96 sm:w-96" />
             <div aria-hidden="true" className="animate-float-delayed absolute right-1/4 top-40 h-64 w-64 rounded-full bg-teal/10 blur-3xl sm:h-80 sm:w-80" />
             <div className="relative mx-auto max-w-4xl text-center">
-              <motion.p
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.7 }}
+              <p
                 className="mb-6 inline-flex items-center gap-2 rounded-full border border-accent/20 bg-accent-subtle px-4 py-1.5 text-sm font-medium text-accent"
               >
                 <Sparkles className="h-3.5 w-3.5" aria-hidden="true" />
                 Open-source AI tutoring
-              </motion.p>
-              <motion.h1
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.7, delay: 0.1 }}
+              </p>
+              <h1
                 className="mb-6 text-4xl font-bold leading-tight text-text-primary sm:text-6xl"
               >
                 A tutor that answers from <span className="text-accent">your course materials</span>
-              </motion.h1>
-              <motion.p
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.7, delay: 0.2 }}
+              </h1>
+              <p
                 className="mx-auto mb-10 max-w-2xl text-lg leading-relaxed text-text-secondary sm:text-xl"
               >
                 Ask is the web app of Openbook. Upload your course PDFs and get tutoring answers grounded in them, with citations that point back to the page. Use it to teach a class or to study on your own.
-              </motion.p>
-              <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.7, delay: 0.3 }}
+              </p>
+              <div
                 className="flex flex-col items-stretch justify-center gap-3 sm:flex-row sm:items-center sm:gap-4"
               >
                 <Link to="/signup" className={buttonStyles('primary', 'lg')}>
@@ -232,7 +220,7 @@ export function LandingPage() {
                   See how it works
                   <ChevronDown className="h-4 w-4" aria-hidden="true" />
                 </a>
-              </motion.div>
+              </div>
               <p className="mt-6 text-sm text-text-tertiary">
                 Already have an account?{' '}
                 <Link to="/login" className="font-medium text-accent underline">

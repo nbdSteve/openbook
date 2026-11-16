@@ -5,7 +5,7 @@ import { Menu } from 'lucide-react';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { ConfirmDialog } from '@/components/ui/Dialog';
-import { FullPageSpinner } from '@/components/ui/Spinner';
+import { ShellSkeleton } from '@/components/layout/ShellSkeleton';
 import { CourseSidebar } from '@/components/layout/CourseSidebar';
 import { NotFoundScreen } from '@/components/layout/NotFoundScreen';
 import { useChatController } from '@/components/chat/useChatController';
@@ -27,7 +27,7 @@ import type { CourseContextValue } from './CourseContext';
 export function CourseLayout() {
   const { courseId = '', conversationId } = useParams();
   const course = useResource(`course:${courseId}`, (signal) => getCourse(courseId, signal));
-  if (course.loading) return <FullPageSpinner label="Loading course" />;
+  if (course.loading) return <ShellSkeleton label="Loading course" />;
   if (!course.data) {
     const notFound = course.error instanceof ApiError && (course.error.status === 404 || course.error.status === 403);
     if (notFound) {
