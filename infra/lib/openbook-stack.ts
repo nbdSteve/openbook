@@ -239,7 +239,10 @@ export class OpenbookStack extends cdk.Stack {
       architecture: lambda.Architecture.ARM_64,
       handler: 'bootstrap',
       code: lambda.Code.fromAsset(config.apiAssetDir),
-      memorySize: 512,
+      // Hybrid retrieval: the BM25 reader cache holds up to 1 GB of unpacked course indexes in
+      // /tmp, and the Tantivy readers and the query vectors need memory.
+      memorySize: 1024,
+      ephemeralStorageSize: cdk.Size.mebibytes(2048),
       timeout: cdk.Duration.seconds(120),
       reservedConcurrentExecutions: isProd ? 25 : 5,
       logGroup: apiLogGroup,

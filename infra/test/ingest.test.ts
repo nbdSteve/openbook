@@ -216,6 +216,18 @@ describe('the IAM statements of the two functions', () => {
     expect(flat(embedding.Resource)).toBe('arn:aws:bedrock:ap-southeast-2::foundation-model/amazon.titan-embed-text-v2:0');
   });
 
+  test('the API has what hybrid retrieval needs: query and read vectors, embed, and read the docs', () => {
+    const all = api.flatMap(actionsOf);
+    for (const action of ['s3vectors:QueryVectors', 's3vectors:GetVectors', 'bedrock:InvokeModel', 's3:GetObject']) {
+      expect(all, action).toContain(action);
+    }
+    expect(flat(bySid(api, 'CourseVectorIndexes').Resource)).toBe(indexARN);
+    expect(actionsOf(bySid(api, 'DocsBucketObjects'))).toContain('s3:GetObject');
+    const env = envOf(functionBy(prod, 'ApiFunction'));
+    expect(env.OPENBOOK_VECTOR_BUCKET).toBe('openbook-prod-vectors');
+    expect(env.OPENBOOK_EMBEDDING_MODEL_ID).toBe('amazon.titan-embed-text-v2:0');
+  });
+
   test('the API may also embed the question, with the same model', () => {
     expect(flat(bySid(api, 'InvokeEmbeddingModel').Resource)).toBe(
       'arn:aws:bedrock:ap-southeast-2::foundation-model/amazon.titan-embed-text-v2:0',
