@@ -278,7 +278,12 @@ async fn prepare(
     history.push((MessageRole::User, message.to_owned()));
     let request = ChatRequest {
         // Phase 3: pass the retrieved sources here instead of the empty list.
-        system: build_system_prompt(&course.name, course.tutoring_style, &[]),
+        system: build_system_prompt(
+            &course.name,
+            &course.description,
+            course.tutoring_style,
+            &[],
+        ),
         turns: normalize_turns(&history),
     };
     Ok(Prepared {
