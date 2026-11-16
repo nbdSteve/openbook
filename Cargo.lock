@@ -2438,8 +2438,10 @@ dependencies = [
  "aws-sdk-sqs",
  "aws-smithy-types",
  "aws_lambda_events",
+ "axum",
  "chrono",
  "futures",
+ "http-body-util",
  "image",
  "lambda_runtime",
  "openbook-api",
@@ -2452,6 +2454,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-stream",
+ "tower",
  "tracing",
  "tracing-subscriber",
 ]
