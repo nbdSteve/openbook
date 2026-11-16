@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { describe, expect, test } from 'vitest';
 import {
+  assertIgnoredOutDir,
   defaultOutDir,
   exampleValues,
   iamDir,
@@ -91,6 +92,30 @@ describe('rendering', () => {
   });
 });
 
+describe('malformed placeholders', () => {
+  const template = '{"Resource": "arn:aws:iam::%PLACEHOLDER%:role/x"}';
+
+  test.each(['${ACCOUNT-ID}', '$ACCOUNT_ID', '${ACCOUNT_ID }', '${ ACCOUNT_ID}', '$${ACCOUNT_ID}', '${}', '${ACCOUNT_ID'])(
+    'refuses %s without echoing a value',
+    (bad) => {
+      let message = '';
+      try {
+        renderIamDocument(template.replace('%PLACEHOLDER%', () => bad), { ACCOUNT_ID: '123456789012' });
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      expect(message).toMatch(/malformed|no value|unknown/);
+      expect(message).not.toContain('123456789012');
+    },
+  );
+
+  test('accepts a well formed placeholder', () => {
+    expect(renderIamDocument(template.replace('%PLACEHOLDER%', '${ACCOUNT_ID}'), { ACCOUNT_ID: '123456789012' })).toContain(
+      '123456789012',
+    );
+  });
+});
+
 describe('the command line', () => {
   test('refuses an unknown argument, a missing value, and a duplicate', () => {
     expect(() => parseArgv(['--nope'])).toThrow('unknown argument');
@@ -106,16 +131,28 @@ describe('the command line', () => {
     expect(() => parseArgv(['--example', '--out-dir', iamDir])).toThrow(/template directory/);
   });
 
-  test('writes the rendered documents to a chosen directory', () => {
-    const out = fs.mkdtempSync(path.join(os.tmpdir(), 'openbook-iam-'));
-    const script = path.join(__dirname, '..', 'scripts', 'render-iam.ts');
-    const stdout = execFileSync(
-      path.join(__dirname, '..', 'node_modules', '.bin', 'tsx'),
-      [script, '--example', '--out-dir', out],
-      { encoding: 'utf8' },
-    );
-    expect(stdout).toContain('Apply them out of band');
-    expect(fs.readdirSync(out).sort()).toEqual(templateNames().map((n) => `${n}.json`).sort());
+  test('writes the rendered documents to a chosen directory that git ignores', () => {
+    const out = path.join(defaultOutDir, `.test-${process.pid}`);
+    try {
+      const script = path.join(__dirname, '..', 'scripts', 'render-iam.ts');
+      const stdout = execFileSync(
+        path.join(__dirname, '..', 'node_modules', '.bin', 'tsx'),
+        [script, '--example', '--out-dir', out],
+        { encoding: 'utf8' },
+      );
+      expect(stdout).toContain('Apply them out of band');
+      expect(fs.readdirSync(out).sort()).toEqual(templateNames().map((n) => `${n}.json`).sort());
+    } finally {
+      fs.rmSync(out, { recursive: true, force: true });
+    }
+  });
+
+  test('refuses an output folder that git does not ignore, or that is outside a repository', () => {
+    expect(() => assertIgnoredOutDir(iamDir)).toThrow(/git ignores/);
+    expect(() => assertIgnoredOutDir(path.join(iamDir, '..', 'lib'))).toThrow(/git ignores/);
+    expect(() => assertIgnoredOutDir(path.join(os.tmpdir(), 'openbook-not-a-repo'))).toThrow(/git ignores/);
+    expect(() => assertIgnoredOutDir(defaultOutDir)).not.toThrow();
+    expect(() => assertIgnoredOutDir(path.join(defaultOutDir, 'a', 'b'))).not.toThrow();
   });
 
   test('the default output directory is ignored by git', () => {

@@ -12,6 +12,7 @@
  *     with the wrong shape is a refusal, never a document with a hole in it.
  *  3. No message contains a supplied value.
  */
+import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -71,6 +72,12 @@ export function renderIamDocument(text: string, values: Values): string {
   const substituted = text.replace(placeholderPattern, (match, placeholder: string) =>
     has(values, placeholder) ? values[placeholder] : match,
   );
+  // Nothing in an IAM document of ours needs a dollar sign after rendering. A `$` that is
+  // left over is a malformed placeholder (`${ACCOUNT-ID}`, `$ACCOUNT_ID`, `${ACCOUNT_ID }`)
+  // that the pattern did not match, and it would be applied as a resource that matches nothing.
+  if (substituted.includes('$')) {
+    throw new Error('the rendered document still has a "$": a placeholder is malformed');
+  }
   return `${JSON.stringify(JSON.parse(substituted), null, 2)}\n`;
 }
 
@@ -142,8 +149,27 @@ export function parseArgv(argv: string[]): Options {
   return options;
 }
 
+/**
+ * The rendered documents name the account, so they may go only into a folder that git
+ * ignores. A folder outside any repository is refused too, because nothing then proves that
+ * it stays out of one.
+ */
+export function assertIgnoredOutDir(outDir: string): void {
+  let existing = outDir;
+  while (!fs.existsSync(existing)) existing = path.dirname(existing);
+  try {
+    execFileSync('git', ['check-ignore', '-q', '--', path.join(outDir, 'probe.json')], {
+      cwd: existing,
+      stdio: 'ignore',
+    });
+  } catch {
+    throw new Error('--out-dir must be a folder that git ignores (the default is iam/rendered)');
+  }
+}
+
 function main(argv: string[]): void {
   const options = parseArgv(argv);
+  assertIgnoredOutDir(options.outDir);
   const rendered = renderAll(options.example ? exampleValues() : options.values);
   fs.mkdirSync(options.outDir, { recursive: true });
   for (const [name, document] of rendered) {

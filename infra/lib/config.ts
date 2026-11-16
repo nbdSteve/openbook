@@ -12,6 +12,8 @@ export const infraRoot = path.resolve(__dirname, '..');
 export interface Limits {
   dailyMessagesPerUser: number;
   dailyMessagesGlobal: number;
+  dailyTokensGlobal: number;
+  failedJoinsPerDay: number;
   coursesOwned: number;
   documentsPerCourse: number;
   uploadBytes: number;
@@ -36,6 +38,8 @@ export interface OpenbookConfig {
 export const defaultLimits: Limits = {
   dailyMessagesPerUser: 50,
   dailyMessagesGlobal: 500,
+  dailyTokensGlobal: 3_000_000,
+  failedJoinsPerDay: 20,
   coursesOwned: 10,
   documentsPerCourse: 50,
   uploadBytes: 26_214_400,
@@ -91,6 +95,8 @@ export function resolveConfig(node: Node): OpenbookConfig {
     limits: {
       dailyMessagesPerUser: positiveInt(node, 'limitDailyMessagesPerUser', defaultLimits.dailyMessagesPerUser),
       dailyMessagesGlobal: positiveInt(node, 'limitDailyMessagesGlobal', defaultLimits.dailyMessagesGlobal),
+      dailyTokensGlobal: positiveInt(node, 'limitDailyTokensGlobal', defaultLimits.dailyTokensGlobal),
+      failedJoinsPerDay: positiveInt(node, 'limitFailedJoinsPerDay', defaultLimits.failedJoinsPerDay),
       coursesOwned: positiveInt(node, 'limitCoursesOwned', defaultLimits.coursesOwned),
       documentsPerCourse: positiveInt(node, 'limitDocumentsPerCourse', defaultLimits.documentsPerCourse),
       uploadBytes: positiveInt(node, 'limitUploadBytes', defaultLimits.uploadBytes),

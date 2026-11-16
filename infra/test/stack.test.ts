@@ -1,3 +1,5 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import { Match } from 'aws-cdk-lib/assertions';
 import { describe, expect, test } from 'vitest';
 import { cdkJsonContext, synth, type Json } from './helpers';
@@ -129,6 +131,8 @@ describe.each([
       (r) => r.Type === 'AWS::Lambda::Function' && r.Properties?.Handler === 'bootstrap',
     );
     const env = (fn?.Properties?.Environment as { Variables: Record<string, unknown> }).Variables;
+    // No AWS_ENDPOINT_URL, and none of the per-service AWS_ENDPOINT_URL_<SERVICE> variants.
+    expect(Object.keys(env).filter((name) => /^AWS_ENDPOINT_URL/.test(name))).toEqual([]);
     for (const name of [
       'AWS_ENDPOINT_URL',
       'OPENBOOK_COGNITO_JWKS_URL',
@@ -152,6 +156,8 @@ describe.each([
     expect(JSON.stringify(env).length).toBeLessThan(4096);
     expect(env.OPENBOOK_LIMIT_DAILY_MESSAGES_PER_USER).toBe('50');
     expect(env.OPENBOOK_LIMIT_DAILY_MESSAGES_GLOBAL).toBe('500');
+    expect(env.OPENBOOK_LIMIT_DAILY_TOKENS_GLOBAL).toBe('3000000');
+    expect(env.OPENBOOK_LIMIT_FAILED_JOINS_PER_DAY).toBe('20');
     expect(env.OPENBOOK_LIMIT_COURSES_OWNED).toBe('10');
     expect(env.OPENBOOK_LIMIT_DOCUMENTS_PER_COURSE).toBe('50');
     expect(env.OPENBOOK_LIMIT_UPLOAD_BYTES).toBe('26214400');
@@ -250,6 +256,7 @@ describe.each([
     expect(csp).toContain(
       `connect-src 'self' https://cognito-idp.ap-southeast-2.amazonaws.com https://openbook-${_stage}-docs-111111111111-ap-southeast-2.s3.ap-southeast-2.amazonaws.com`,
     );
+    expect(csp).toContain(`object-src 'none'`);
     expect(csp).toContain(`frame-ancestors 'none'`);
     expect(csp).toContain(`base-uri 'self'`);
     expect(csp).toContain(`form-action 'self'`);
@@ -284,31 +291,48 @@ describe.each([
       RefreshTokenValidity: 43200,
       TokenValidityUnits: Match.objectLike({ IdToken: 'minutes', RefreshToken: 'minutes' }),
     });
-    // The web app signs in with SRP, so the client must not enable hosted-UI OAuth.
+    // One sign-in flow in every stage (docs/api.md): USER_PASSWORD_AUTH and refresh, no SRP,
+    // and no hosted-UI OAuth.
     const client = Object.values(s.json.Resources).find((r) => r.Type === 'AWS::Cognito::UserPoolClient');
     expect([...(client?.Properties?.ExplicitAuthFlows as string[])].sort()).toEqual([
       'ALLOW_REFRESH_TOKEN_AUTH',
       'ALLOW_USER_PASSWORD_AUTH',
-      'ALLOW_USER_SRP_AUTH',
     ]);
     expect(client?.Properties).not.toHaveProperty('AllowedOAuthFlows');
+    // An unverified new email must not replace the verified one.
+    s.template.hasResourceProperties('AWS::Cognito::UserPool', {
+      UserAttributeUpdateSettings: { AttributesRequireVerificationBeforeUpdate: ['email'] },
+    });
   });
 
-  test('the web deployments never prune and set the documented cache headers', () => {
+  test('the web deployments never prune; only assets/ gets the immutable cache', () => {
     const deployments = Object.values(s.json.Resources).filter((r) => r.Type === 'Custom::CDKBucketDeployment');
     expect(deployments).toHaveLength(2);
     for (const d of deployments) expect(d.Properties?.Prune).toBe(false);
 
-    const assets = deployments.find((d) => d.Properties?.Exclude);
-    expect(assets?.Properties?.Exclude).toEqual(['index.html', 'config.json']);
-    expect(assets?.Properties?.SystemMetadata).toEqual({
-      'cache-control': 'public, max-age=31536000, immutable',
-    });
-    expect(assets?.Properties).not.toHaveProperty('DistributionId');
+    const immutable = deployments.filter(
+      (d) => (d.Properties?.SystemMetadata as Json)['cache-control'] === 'public, max-age=31536000, immutable',
+    );
+    const noCache = deployments.filter((d) => (d.Properties?.SystemMetadata as Json)['cache-control'] === 'no-cache');
+    expect(immutable).toHaveLength(1);
+    expect(noCache).toHaveLength(1);
+    expect(immutable[0].Properties).not.toHaveProperty('DistributionId');
+    expect(noCache[0].Properties?.DistributionPaths).toEqual(['/index.html', '/config.json']);
 
-    const entry = deployments.find((d) => !d.Properties?.Exclude);
-    expect(entry?.Properties?.SystemMetadata).toEqual({ 'cache-control': 'no-cache' });
-    expect(entry?.Properties?.DistributionPaths).toEqual(['/index.html', '/config.json']);
+    // What each deployment uploads: the immutable one has the hashed assets and nothing else.
+    const dir = s.app.synth().directory;
+    const filesOf = (d: Json | undefined): string[] =>
+      (d?.SourceObjectKeys as string[]).flatMap((key) => {
+        const root = path.join(dir, `asset.${key.replace(/^.*\//, '').replace(/\.zip$/, '')}`);
+        const walk = (p: string): string[] =>
+          fs.readdirSync(p, { withFileTypes: true }).flatMap((e) =>
+            e.isDirectory() ? walk(path.join(p, e.name)) : [path.relative(root, path.join(p, e.name))],
+          );
+        return walk(root);
+      });
+    expect(filesOf(immutable[0].Properties).sort()).toEqual(['assets/app-abc123.js']);
+    // Everything else (the favicon too) is `no-cache`, and assets/ is not uploaded twice.
+    expect(filesOf(noCache[0].Properties).sort()).toEqual(['config.json', 'favicon.ico', 'index.html']);
   });
 
   test('config.json has the shape of docs/api.md with a null Cognito endpoint', () => {

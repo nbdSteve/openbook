@@ -31,11 +31,19 @@ export interface Catalog {
 export const sourceRegion = 'ap-southeast-2';
 export const auDestinationRegions = ['ap-southeast-2', 'ap-southeast-4'] as const;
 
-/** Inference profile prefixes the catalog refuses (docs/architecture.md, hard rule 4). */
-const refusedPrefixes = ['us', 'us-gov', 'eu', 'apac', 'jp', 'ca', 'in', 'kr', 'sg', 'cn'];
+/**
+ * The model ID allowlist of docs/architecture.md ("Model catalog"). The Rust API uses the same
+ * rule and the same vendor list. A model ID has exactly one of three shapes, and anything
+ * else is refused:
+ *
+ * - `au.<vendor>.<model>`: an Australian inference profile (residency `au`)
+ * - `<vendor>.<model>`: an on-demand model in Sydney (residency `au`)
+ * - `global.<vendor>.<model>`: a global inference profile (residency `global`)
+ */
+export const allowedVendors = ['anthropic', 'openai', 'amazon', 'meta', 'mistral', 'cohere', 'deepseek', 'qwen'] as const;
 
 const idPattern = /^[a-z0-9-]{1,40}$/;
-const bareModelPattern = /^[a-z0-9-]+\.[A-Za-z0-9._:-]+$/;
+const modelIdPattern = new RegExp(`^(?:(au|global)\\.)?(?:${allowedVendors.join('|')})\\.[A-Za-z0-9][A-Za-z0-9._:-]*$`);
 
 export interface ParsedModelId {
   /** `au`, `global`, or `none` for an on-demand model in Sydney. */
@@ -44,22 +52,17 @@ export interface ParsedModelId {
   foundationModel: string;
 }
 
-/** Splits a catalog `modelId`, and refuses any prefix except `au.` and `global.`. */
+/** Splits a catalog `modelId`, and refuses every shape that is not on the allowlist. */
 export function parseModelId(modelId: string): ParsedModelId {
-  const first = modelId.split('.')[0];
-  if (refusedPrefixes.includes(first)) {
-    throw new Error(`model ID "${modelId}" uses the "${first}." prefix; only "au." and "global." are allowed`);
+  const match = modelIdPattern.exec(modelId);
+  if (!match) {
+    throw new Error(
+      `model ID "${modelId}" is not allowed: use au.<vendor>.<model>, <vendor>.<model>, or global.<vendor>.<model>, ` +
+        `with a vendor of ${allowedVendors.join(', ')}`,
+    );
   }
-  let prefix: ParsedModelId['prefix'] = 'none';
-  let foundationModel = modelId;
-  if (first === 'au' || first === 'global') {
-    prefix = first;
-    foundationModel = modelId.slice(first.length + 1);
-  }
-  if (!bareModelPattern.test(foundationModel)) {
-    throw new Error(`model ID "${modelId}" is not a Bedrock model or inference profile ID`);
-  }
-  return { prefix, foundationModel };
+  const prefix = (match[1] ?? 'none') as ParsedModelId['prefix'];
+  return { prefix, foundationModel: prefix === 'none' ? modelId : modelId.slice(prefix.length + 1) };
 }
 
 function fail(message: string): never {

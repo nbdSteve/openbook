@@ -30,14 +30,25 @@ describe('catalog validation fails the synth', () => {
     ['a residency that does not match the prefix', model({ modelId: 'global.anthropic.x', residency: 'au' }), /residency "au"/],
     ['a global residency on an au. profile', model({ residency: 'global' }), /residency "global"/],
     ['a global residency on an unprefixed model', model({ modelId: 'openai.gpt-oss-120b-1:0', residency: 'global' }), /residency "global"/],
-    ['the us. prefix', model({ modelId: 'us.anthropic.claude-sonnet-5-5' }), /"us\." prefix/],
-    ['the apac. prefix', model({ modelId: 'apac.anthropic.claude-sonnet-5-5' }), /"apac\." prefix/],
-    ['the eu. prefix', model({ modelId: 'eu.anthropic.claude-sonnet-5-5' }), /"eu\." prefix/],
-    ['the fake provider', model({ provider: 'fake' }), /fake provider is local only/],
+    ['the us. prefix', model({ modelId: 'us.anthropic.claude-sonnet-5-5' }), /is not allowed/],
+    ['the eu. prefix', model({ modelId: 'eu.anthropic.claude-sonnet-5-5' }), /is not allowed/],
+    ['the apac. prefix', model({ modelId: 'apac.anthropic.claude-sonnet-5-5' }), /is not allowed/],
+    ['the jp. prefix', model({ modelId: 'jp.anthropic.claude-sonnet-5-5' }), /is not allowed/],
+    ['the uk. prefix', model({ modelId: 'uk.anthropic.claude-sonnet-5-5' }), /is not allowed/],
+    ['the nz. prefix', model({ modelId: 'nz.anthropic.claude-sonnet-5-5' }), /is not allowed/],
+    ['the me. prefix', model({ modelId: 'me.anthropic.claude-sonnet-5-5' }), /is not allowed/],
+    ['the ca. prefix', model({ modelId: 'ca.anthropic.claude-sonnet-5-5' }), /is not allowed/],
+    ['the us-gov. prefix', model({ modelId: 'us-gov.anthropic.claude-sonnet-5-5' }), /is not allowed/],
+    ['an unknown vendor', model({ modelId: 'au.acme.model-1' }), /is not allowed/],
+    ['an unknown vendor on a global profile', model({ id: 'g', modelId: 'global.acme.model-1', residency: 'global' }), /is not allowed/],
+    ['an extra segment', model({ modelId: 'au.au.anthropic.claude' }), /is not allowed/],
+    ['a Region-qualified ARN', model({ modelId: 'arn:aws:bedrock:ap-southeast-2::foundation-model/anthropic.x' }), /is not allowed/],
+    ['a model name that starts with a dot', model({ modelId: 'au.anthropic..x' }), /is not allowed/],
+    ['the fake provider', model({ provider: 'fake' }), /local only/],
     ['an unknown provider', model({ provider: 'openai' }), /allows only "bedrock"/],
     ['a bad id', model({ id: 'Bad_ID' }), /must match/],
     ['an unknown residency', model({ residency: 'eu' }), /residency must be/],
-    ['a model ID that is not a Bedrock ID', model({ modelId: 'sonnet' }), /not a Bedrock/],
+    ['a model ID without a vendor', model({ modelId: 'sonnet' }), /is not allowed/],
     ['a negative token limit', model({ maxOutputTokens: -1 }), /positive integer/],
   ])('refuses %s', (_name, bad, message) => {
     expect(withCatalog([bad])).toThrow(message);
@@ -70,7 +81,17 @@ describe('catalog validation fails the synth', () => {
 });
 
 describe('parseModelId', () => {
+  test.each(['anthropic', 'openai', 'amazon', 'meta', 'mistral', 'cohere', 'deepseek', 'qwen'])(
+    'accepts the vendor %s in all three shapes',
+    (vendor) => {
+      expect(parseModelId(`au.${vendor}.m-1`).prefix).toBe('au');
+      expect(parseModelId(`${vendor}.m-1`).prefix).toBe('none');
+      expect(parseModelId(`global.${vendor}.m-1`).prefix).toBe('global');
+    },
+  );
+
   test.each([
+
     ['au.anthropic.claude-sonnet-5-5', 'au', 'anthropic.claude-sonnet-5-5'],
     ['global.openai.gpt-6.1-sol', 'global', 'openai.gpt-6.1-sol'],
     ['openai.gpt-oss-120b-1:0', 'none', 'openai.gpt-oss-120b-1:0'],

@@ -5,7 +5,7 @@
   "description": "AWS CDK app for the Openbook stacks",
   "license": "AGPL-3.0-only",
   "engines": {
-    "node": ">=22.12"
+    "node": "^22.12.0 || ^24.0.0 || >=26.0.0"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
@@ -13,7 +13,7 @@
     "lint": "eslint .",
     "test": "vitest run",
     "synth": "cdk synth",
-    "synth:placeholders": "cdk synth --quiet -c apiAssetDir=test/fixtures/api -c webAssetDir=test/fixtures/web",
+    "synth:placeholders": "bash scripts/synth-placeholders.sh",
     "render:iam": "tsx scripts/render-iam.ts"
   },
   "devDependencies": {

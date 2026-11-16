@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { describe, expect, test } from 'vitest';
-import { assetBucketName, bootstrapQualifier } from '../lib/deployment';
+import { assetBucketName, assetPrefix, bootstrapQualifier, permissionsBoundaryName } from '../lib/deployment';
 import { exampleValues, iamDir, placeholderRules, placeholdersIn, readTemplate, renderIamDocument, templateNames, type Values } from '../scripts/render-iam';
 import { asArray, fakeAccount, synth, type Json } from './helpers';
 
@@ -34,6 +34,7 @@ const execPolicy = render('cloudformation-execution-role-policy');
 
 const prod = synth({ stage: 'prod' });
 const region = 'ap-southeast-2';
+const boundaryArn = `arn:aws:iam::${fakeAccount}:policy/${permissionsBoundaryName}`;
 
 describe('the GitHub deployment role trust policy', () => {
   const [st] = trust.Statement;
@@ -73,14 +74,32 @@ describe('the GitHub deployment role policy', () => {
     }
   });
 
-  test('publishes assets to the bucket the synthesizer names', () => {
-    const [st] = byAction('s3:PutObject*');
-    expect(resources(st)).toEqual([
-      `arn:aws:s3:::${assetBucketName(fakeAccount, region)}`,
-      `arn:aws:s3:::${assetBucketName(fakeAccount, region)}/*`,
-    ]);
-    expect(st.Condition).toEqual({ StringEquals: { 'aws:ResourceAccount': fakeAccount } });
+  test('publishes assets only under the Openbook prefix of the bootstrap bucket', () => {
+    const bucket = `arn:aws:s3:::${assetBucketName(fakeAccount, region)}`;
+    const [put] = byAction('s3:PutObject*');
+    expect(resources(put)).toEqual([`${bucket}/${assetPrefix('prod')}*`]);
+    expect(put.Condition).toEqual({ StringEquals: { 'aws:ResourceAccount': fakeAccount } });
     expect(allActions(deployPolicy)).not.toContain('s3:DeleteObject');
+    // Listing is limited to the same prefix, and no other statement reaches the bucket itself
+    // with an object-level action.
+    const [list] = byAction('s3:ListBucket');
+    expect(resources(list)).toEqual([bucket]);
+    expect(list.Condition).toEqual({
+      StringEquals: { 'aws:ResourceAccount': fakeAccount },
+      StringLike: { 's3:prefix': [`${assetPrefix('prod')}*`] },
+    });
+    for (const st of deployPolicy.Statement.filter((x) => resources(x).includes(bucket))) {
+      expect(actions(st).filter((a) => /Object|Abort/.test(a)), st.Sid).toEqual([]);
+    }
+  });
+
+  test('the synthesizer writes under the prefix the grants name', () => {
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(prod.app.synth().directory, 'Openbook-prod.assets.json'), 'utf8'),
+    ) as { files: Record<string, { destinations: Record<string, { objectKey: string }> }> };
+    const keys = Object.values(manifest.files).flatMap((f) => Object.values(f.destinations).map((d) => d.objectKey));
+    expect(keys.length).toBeGreaterThan(0);
+    for (const key of keys) expect(key).toMatch(new RegExp(`^${assetPrefix('prod')}`));
   });
 
   test('reads the bootstrap version parameter the qualifier names', () => {
@@ -114,20 +133,22 @@ describe('the GitHub deployment role policy', () => {
 });
 
 describe('the CloudFormation execution role', () => {
-  test('is assumable by CloudFormation in this account and nothing else', () => {
+  test('is assumable by CloudFormation and nothing else', () => {
     expect(execTrust.Statement).toHaveLength(1);
     expect(execTrust.Statement[0].Principal).toEqual({ Service: 'cloudformation.amazonaws.com' });
-    expect(execTrust.Statement[0].Condition).toEqual({ StringEquals: { 'aws:SourceAccount': fakeAccount } });
+    expect(execTrust.Statement[0]).not.toHaveProperty('Condition');
   });
 
   test('grants no wildcard action', () => {
     for (const a of allActions(execPolicy)) expect(a).not.toContain('*');
   });
 
-  test('grants only Allow statements, each with a unique Sid', () => {
+  test('has a unique Sid for every statement, and one Deny: it keeps the boundary on', () => {
     const sids = execPolicy.Statement.map((s) => s.Sid);
     expect(new Set(sids).size).toBe(sids.length);
-    for (const s of execPolicy.Statement) expect(s.Effect).toBe('Allow');
+    const denies = execPolicy.Statement.filter((s) => s.Effect === 'Deny');
+    expect(denies.map((s) => s.Sid)).toEqual(['NeverRemoveTheBoundary']);
+    expect(actions(denies[0])).toEqual(['iam:DeleteRolePermissionsBoundary']);
   });
 
   // Every resource type the prod stack creates, and the IAM service that deploys it.
@@ -186,6 +207,8 @@ describe('the CloudFormation execution role', () => {
       'DescribeLogGroupsTakesTheWholeRegion',
       'ReadTheStackAssets',
       'ReadTheBootstrapVersion',
+      'CloudFrontSpaRewriteFunction',
+      'NeverRemoveTheBoundary',
     ]);
     for (const s of execPolicy.Statement) {
       if (exceptions.has(s.Sid)) continue;
@@ -193,9 +216,9 @@ describe('the CloudFormation execution role', () => {
     }
   });
 
-  test('the only statements on every resource are the two that AWS cannot scope', () => {
+  test('the only statements on every resource are the ones that AWS cannot scope, and a Deny', () => {
     const star = execPolicy.Statement.filter((s) => resources(s).includes('*')).map((s) => s.Sid).sort();
-    expect(star).toEqual(['CloudFrontSite', 'UserPoolCreateTakesNoResource']);
+    expect(star).toEqual(['CloudFrontSite', 'NeverRemoveTheBoundary', 'UserPoolCreateTakesNoResource']);
     const create = execPolicy.Statement.find((s) => s.Sid === 'UserPoolCreateTakesNoResource');
     expect(create && actions(create)).toEqual(['cognito-idp:CreateUserPool']);
   });
@@ -207,6 +230,7 @@ describe('the CloudFormation execution role', () => {
     const attach = execPolicy.Statement.find((s) => actions(s).includes('iam:AttachRolePolicy'));
     expect((attach as Statement).Condition).toEqual({
       ArnEquals: { 'iam:PolicyARN': 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole' },
+      StringEquals: { 'iam:PermissionsBoundary': boundaryArn },
     });
     // The stack's roles use that one managed policy and no other.
     const managed = Object.values(prod.json.Resources)
@@ -277,7 +301,7 @@ describe('the CloudFormation execution role', () => {
 
   test('reads the assets from the bootstrap bucket the synthesizer publishes to', () => {
     const st = execPolicy.Statement.find((s) => s.Sid === 'ReadTheStackAssets') as Statement;
-    expect(resources(st)).toEqual([`arn:aws:s3:::${assetBucketName(fakeAccount, region)}/*`]);
+    expect(resources(st)).toEqual([`arn:aws:s3:::${assetBucketName(fakeAccount, region)}/${assetPrefix('prod')}*`]);
     const assembly = prod.app.synth();
     const manifest = JSON.parse(fs.readFileSync(path.join(assembly.directory, 'Openbook-prod.assets.json'), 'utf8')) as {
       files: Record<string, { destinations: Record<string, { bucketName: string }> }>;
@@ -304,12 +328,13 @@ describe('synthesis under the deployment synthesizer', () => {
 });
 
 describe('the committed IAM templates', () => {
-  test('are the four documents applied to the two roles', () => {
+  test('are the five documents applied to the two roles and the boundary policy', () => {
     expect(templateNames()).toEqual([
       'cloudformation-execution-role-policy',
       'cloudformation-execution-role-trust',
       'github-deploy-role-policy',
       'github-deploy-role-trust',
+      'permissions-boundary-policy',
     ]);
   });
 

@@ -3,6 +3,7 @@
 node_modules/
 dist/
 cdk.out/
+cdk-outputs.json
 *.tsbuildinfo
 
 # Local environment (see docs/local-dev.md)

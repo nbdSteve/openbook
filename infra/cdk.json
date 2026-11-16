@@ -49,5 +49,6 @@
     ],
     "defaultChatModel": "claude-sonnet",
     "fastModel": "claude-haiku"
-  }
+  },
+  "cli-telemetry": false
 }

@@ -16,7 +16,7 @@ if (config.domain) {
   const certStack = new CertificateStack(app, `OpenbookCert-${config.stage}`, {
     domain: config.domain,
     env: { account, region: 'us-east-1' },
-    synthesizer: deploymentSynthesizer(),
+    synthesizer: deploymentSynthesizer(config.stage),
   });
   certificate = certStack.certificate;
 }
@@ -25,7 +25,7 @@ new OpenbookStack(app, `Openbook-${config.stage}`, {
   config,
   env,
   description: `Openbook (${config.stage}): Ask web app, API, and data`,
-  synthesizer: deploymentSynthesizer(),
+  synthesizer: deploymentSynthesizer(config.stage),
   terminationProtection: config.stage === 'prod',
   ...(certificate ? { certificate, crossRegionReferences: true } : {}),
 });

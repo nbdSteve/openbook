@@ -15,10 +15,14 @@ RUN case "$TARGETARCH" in \
     && rpm -i /tmp/aws-emulator.rpm \
     && rm /tmp/aws-emulator.rpm \
     && mkdir -p /home/emulator \
-    && chown 1000 /home/emulator
+    && chown 1000 /home/emulator \
+    # Any user may run the container (CI uses the runner uid), so HOME must be writable.
+    && chmod 777 /home/emulator
 
 USER 1000
 ENV HOME=/home/emulator
+# Telemetry is off unless you start the container with -e EMULATOR_TELEMETRY=on.
+ENV EMULATOR_TELEMETRY=off
 ENV PATH=/opt/aws-emulator/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 EXPOSE 9297
 # `-b 0.0.0.0` binds inside the container. scripts/emulator.sh publishes the port on

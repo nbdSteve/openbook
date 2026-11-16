@@ -1,4 +1,5 @@
 import * as cdk from 'aws-cdk-lib';
+import type { Stage } from './config';
 
 /**
  * How Openbook is deployed. The values here must agree with the IAM templates in
@@ -8,9 +9,29 @@ import * as cdk from 'aws-cdk-lib';
 /** The CDK bootstrap qualifier. The account is bootstrapped with the default one. */
 export const bootstrapQualifier = 'hnb659fds';
 
+/**
+ * The key prefix of this app's objects in the shared bootstrap bucket. The deploy role may
+ * write only under the prod prefix, so it cannot overwrite the assets of other apps.
+ */
+export function assetPrefix(stage: Stage): string {
+  return `openbook-${stage}/`;
+}
+
 /** The bootstrap bucket that assets are published to. */
 export function assetBucketName(account: string, region: string): string {
   return `cdk-${bootstrapQualifier}-assets-${account}-${region}`;
+}
+
+/**
+ * The customer-managed policy that bounds every role of the prod stack. The template is
+ * `infra/iam/permissions-boundary-policy.template.json`. The execution role may create or
+ * change a role only when it carries this boundary.
+ */
+export const permissionsBoundaryName = 'OpenbookProdPermissionsBoundary';
+
+/** The name of the CloudFront Function. The execution role is scoped to it. */
+export function spaRewriteFunctionName(stage: Stage): string {
+  return `Openbook-${stage}-SpaRewrite`;
 }
 
 /**
@@ -22,10 +43,11 @@ export function assetBucketName(account: string, region: string): string {
  * anyone who can assume the deploy role is an administrator. With this synthesizer, the
  * GitHub OIDC role holds the narrow CloudFormation and asset permissions, and CI passes
  * the dedicated execution role with `cdk deploy --role-arn`. Only the bootstrap bucket
- * and the version parameter are still needed.
+ * is still needed.
  */
-export function deploymentSynthesizer(): cdk.IStackSynthesizer {
-  // Upstream typing wart: concrete synthesizers return `string | undefined` for the
-  // optional interface member, which `exactOptionalPropertyTypes` users must narrow.
-  return new cdk.CliCredentialsStackSynthesizer({ qualifier: bootstrapQualifier });
+export function deploymentSynthesizer(stage: Stage): cdk.IStackSynthesizer {
+  return new cdk.CliCredentialsStackSynthesizer({
+    qualifier: bootstrapQualifier,
+    bucketPrefix: assetPrefix(stage),
+  });
 }

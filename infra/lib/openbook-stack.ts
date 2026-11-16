@@ -11,10 +11,12 @@ import * as route53 from 'aws-cdk-lib/aws-route53';
 import * as targets from 'aws-cdk-lib/aws-route53-targets';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
-import type { Construct } from 'constructs';
+import type { Construct, IConstruct } from 'constructs';
 import { bedrockStatements } from './catalog';
 import { region, type OpenbookConfig } from './config';
+import { permissionsBoundaryName, spaRewriteFunctionName } from './deployment';
 import { spaRewriteCode } from './spa-rewrite';
+import { assertNoInlineScripts } from './web-assets';
 
 export interface OpenbookStackProps extends cdk.StackProps {
   config: OpenbookConfig;
@@ -27,6 +29,24 @@ export const devWebOrigin = 'http://localhost:5173';
 
 /** The one-year cache for hashed, immutable build assets. */
 export const immutableCacheControl = 'public, max-age=31536000, immutable';
+
+/**
+ * Puts the permissions boundary on every IAM role of the stack, including the roles that
+ * CDK creates for its own helper functions. The execution role may create a role only with
+ * this boundary, so no role of the stack can have more power than the boundary allows.
+ */
+class PermissionsBoundaryAspect implements cdk.IAspect {
+  visit(node: IConstruct): void {
+    if (node instanceof iam.CfnRole) {
+      node.permissionsBoundary = cdk.Stack.of(node).formatArn({
+        service: 'iam',
+        region: '',
+        resource: 'policy',
+        resourceName: permissionsBoundaryName,
+      });
+    }
+  }
+}
 
 /**
  * The Openbook stack: Cognito, DynamoDB, S3, the API Lambda, and CloudFront.
@@ -42,6 +62,9 @@ export class OpenbookStack extends cdk.Stack {
     if (config.domain && !props.certificate) {
       throw new Error('a custom domain needs a certificate');
     }
+    // The CSP forbids inline scripts, so refuse a web build that has one.
+    assertNoInlineScripts(config.webAssetDir);
+    if (isProd) cdk.Aspects.of(this).add(new PermissionsBoundaryAspect());
 
     // ---- Cognito -------------------------------------------------------------------
     const userPool = new cognito.UserPool(this, 'UserPool', {
@@ -51,6 +74,8 @@ export class OpenbookStack extends cdk.Stack {
       signInCaseSensitive: false,
       autoVerify: { email: true },
       standardAttributes: { email: { required: true, mutable: true } },
+      // An unverified new email must not replace the verified one.
+      keepOriginal: { email: true },
       accountRecovery: cognito.AccountRecovery.EMAIL_ONLY,
       passwordPolicy: {
         minLength: 8,
@@ -66,7 +91,8 @@ export class OpenbookStack extends cdk.Stack {
     const userPoolClient = userPool.addClient('WebClient', {
       generateSecret: false,
       disableOAuth: true,
-      authFlows: { userSrp: true, userPassword: true },
+      // One flow in every stage (docs/api.md): AWS Emulator has no SRP. CDK adds the refresh flow.
+      authFlows: { userPassword: true },
       preventUserExistenceErrors: true,
       idTokenValidity: cdk.Duration.hours(1),
       accessTokenValidity: cdk.Duration.hours(1),
@@ -123,13 +149,34 @@ export class OpenbookStack extends cdk.Stack {
         OPENBOOK_FAST_MODEL: config.catalog.fastModel,
         OPENBOOK_LIMIT_DAILY_MESSAGES_PER_USER: String(config.limits.dailyMessagesPerUser),
         OPENBOOK_LIMIT_DAILY_MESSAGES_GLOBAL: String(config.limits.dailyMessagesGlobal),
+        OPENBOOK_LIMIT_DAILY_TOKENS_GLOBAL: String(config.limits.dailyTokensGlobal),
+        OPENBOOK_LIMIT_FAILED_JOINS_PER_DAY: String(config.limits.failedJoinsPerDay),
         OPENBOOK_LIMIT_COURSES_OWNED: String(config.limits.coursesOwned),
         OPENBOOK_LIMIT_DOCUMENTS_PER_COURSE: String(config.limits.documentsPerCourse),
         OPENBOOK_LIMIT_UPLOAD_BYTES: String(config.limits.uploadBytes),
         RUST_LOG: 'info',
       },
     });
-    table.grantReadWriteData(apiFunction);
+    // Exactly the item calls the API makes. `grantReadWriteData` would add stream and
+    // export actions that the API never uses.
+    apiFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        sid: 'ApplicationTable',
+        actions: [
+          'dynamodb:BatchGetItem',
+          'dynamodb:BatchWriteItem',
+          'dynamodb:ConditionCheckItem',
+          'dynamodb:DeleteItem',
+          'dynamodb:DescribeTable',
+          'dynamodb:GetItem',
+          'dynamodb:PutItem',
+          'dynamodb:Query',
+          'dynamodb:Scan',
+          'dynamodb:UpdateItem',
+        ],
+        resources: [table.tableArn, `${table.tableArn}/index/*`],
+      }),
+    );
     apiFunction.addToRolePolicy(
       new iam.PolicyStatement({
         sid: 'DocsBucketObjects',
@@ -173,6 +220,7 @@ export class OpenbookStack extends cdk.Stack {
       `img-src 'self' data: blob:`,
       `font-src 'self' data:`,
       `connect-src 'self' https://cognito-idp.${region}.amazonaws.com https://${docsBucketDomain}`,
+      `object-src 'none'`,
       `frame-ancestors 'none'`,
       `base-uri 'self'`,
       `form-action 'self'`,
@@ -197,6 +245,7 @@ export class OpenbookStack extends cdk.Stack {
     });
 
     const spaRewrite = new cloudfront.Function(this, 'SpaRewrite', {
+      functionName: spaRewriteFunctionName(config.stage),
       runtime: cloudfront.FunctionRuntime.JS_2_0,
       code: cloudfront.FunctionCode.fromInline(spaRewriteCode),
     });
@@ -280,18 +329,28 @@ export class OpenbookStack extends cdk.Stack {
     }
 
     // ---- Web deployment ------------------------------------------------------------
-    // Neither deployment prunes. Pruning in the second one would delete every hashed
-    // asset, and old hashed assets are harmless (they keep old tabs working).
-    const assetsDeployment = new s3deploy.BucketDeployment(this, 'DeployAssets', {
-      sources: [s3deploy.Source.asset(config.webAssetDir)],
+    // Only the hashed build assets under `assets/` get the one-year immutable cache. Every
+    // other file (index.html, config.json, the favicon, and so on) is `no-cache`, because
+    // its name does not change when its content does.
+    //
+    // Neither deployment prunes. Pruning in the second one would delete every hashed asset,
+    // and old hashed assets are harmless (they keep old tabs working).
+    //
+    // Both helper functions log to one group, which has the stage retention.
+    const deploymentLogGroup = new logs.LogGroup(this, 'DeploymentLogGroup', {
+      retention: isProd ? logs.RetentionDays.ONE_MONTH : logs.RetentionDays.ONE_WEEK,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+    const assetsDeployment = new s3deploy.BucketDeployment(this, 'OpenbookDeployAssets', {
+      sources: [s3deploy.Source.asset(config.webAssetDir, { exclude: ['*', '!assets', '!assets/**'] })],
       destinationBucket: webBucket,
-      exclude: ['index.html', 'config.json'],
       cacheControl: [s3deploy.CacheControl.fromString(immutableCacheControl)],
       prune: false,
+      logGroup: deploymentLogGroup,
     });
-    const entryDeployment = new s3deploy.BucketDeployment(this, 'DeployEntry', {
+    const entryDeployment = new s3deploy.BucketDeployment(this, 'OpenbookDeployEntry', {
       sources: [
-        s3deploy.Source.asset(config.webAssetDir, { exclude: ['*', '!index.html'] }),
+        s3deploy.Source.asset(config.webAssetDir, { exclude: ['assets', 'config.json'] }),
         s3deploy.Source.jsonData('config.json', {
           stage: config.stage,
           region,
@@ -305,6 +364,7 @@ export class OpenbookStack extends cdk.Stack {
       destinationBucket: webBucket,
       cacheControl: [s3deploy.CacheControl.noCache()],
       prune: false,
+      logGroup: deploymentLogGroup,
       distribution,
       distributionPaths: ['/index.html', '/config.json'],
     });
