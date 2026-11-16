@@ -4,6 +4,7 @@ import { AlertCircle, CircleStop, Globe } from 'lucide-react';
 import { useModels } from '@/services/models/ModelsContext';
 import { MessageContent } from './MessageContent';
 import { SourcesList } from './SourceBadge';
+import { SourceHighlightContext } from './SourceHighlight';
 import type { ChatMessage } from './useChatController';
 
 export function MessageBubble({ message }: { message: ChatMessage }) {
@@ -16,6 +17,7 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
   const waiting = streaming && message.content === '';
 
   return (
+    <SourceHighlightContext.Provider value={{ active: activeSource, onActive: setActiveSource }}>
     <div className={clsx('flex w-full', isUser ? 'justify-end' : 'justify-start')}>
       <div className={clsx('flex min-w-0 max-w-[94%] items-start gap-2.5 sm:max-w-[85%] sm:gap-3', isUser && 'flex-row-reverse')}>
         <div className="mt-1 shrink-0">
@@ -57,20 +59,14 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
                     ))}
                   </div>
                 ) : (
-                  <MessageContent
-                    content={message.content}
-                    sources={message.sources}
-                    activeSource={activeSource}
-                    onActiveSource={setActiveSource}
-                    className="text-text-primary"
-                  />
+                  <MessageContent content={message.content} sources={message.sources} className="text-text-primary" />
                 )}
                 {streaming && !waiting && <span className="stream-caret" aria-hidden="true" />}
               </div>
             )}
 
             {!isUser && message.sources && message.sources.length > 0 && (
-              <SourcesList sources={message.sources} active={activeSource} onActive={setActiveSource} />
+              <SourcesList sources={message.sources} />
             )}
 
             {message.state === 'stopped' && (
@@ -98,5 +94,6 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
         </div>
       </div>
     </div>
+    </SourceHighlightContext.Provider>
   );
 }

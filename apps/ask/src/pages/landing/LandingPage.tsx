@@ -14,6 +14,7 @@ import {
   Users,
 } from 'lucide-react';
 import { SourceButton } from '@/components/chat/SourceBadge';
+import { SourceHighlightContext } from '@/components/chat/SourceHighlight';
 import { buttonStyles } from '@/components/ui/buttonStyles';
 import { Logo } from '@/components/ui/Logo';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
@@ -66,18 +67,18 @@ function DemoText({ text: raw }: { text: string }) {
   let text = raw.replace(/\[\d?$/, '');
   if (((text.match(/\*\*/g) ?? []).length) % 2 === 1) text = text.replace(/\*\*(?!.*\*\*)/, '');
   return (
-    <>
+    <SourceHighlightContext.Provider value={{ active, onActive: setActive }}>
       {text.split('\n\n').map((paragraph, i) => (
         <p key={i} className="my-2 leading-relaxed first:mt-0 last:mb-0">
           {paragraph.split(/(\*\*[^*]+\*\*|\[\d\])/).map((part, j) => {
             if (part.startsWith('**')) return <strong key={j}>{part.slice(2, -2)}</strong>;
             const n = /^\[(\d)\]$/.exec(part)?.[1];
             const source = n ? DEMO_SOURCES.find((x) => x.n === Number(n)) : undefined;
-            return source ? <SourceButton key={j} source={source} variant="badge" active={active} onActive={setActive} /> : part;
+            return source ? <SourceButton key={j} source={source} variant="badge" /> : part;
           })}
         </p>
       ))}
-    </>
+    </SourceHighlightContext.Provider>
   );
 }
 

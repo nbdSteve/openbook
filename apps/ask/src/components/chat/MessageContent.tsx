@@ -18,15 +18,10 @@ const DISALLOWED = ['img'];
 interface MessageContentProps {
   content: string;
   sources?: Source[];
-  /** The highlighted source number, shared with the sources list under the answer. */
-  activeSource?: number | null;
-  onActiveSource?: (n: number | null) => void;
   className?: string;
 }
 
-const noop = () => {};
-
-export function MessageContent({ content, sources, activeSource = null, onActiveSource = noop, className = '' }: MessageContentProps) {
+export function MessageContent({ content, sources, className = '' }: MessageContentProps) {
   const text = useMemo(() => linkCitations(normalizeMath(content), sources), [content, sources]);
 
   const components = useMemo<Components>(
@@ -56,7 +51,7 @@ export function MessageContent({ content, sources, activeSource = null, onActive
         const n = citationNumber(href);
         if (n !== null) {
           const source = sources?.find((s) => s.n === n);
-          if (source) return <SourceButton source={source} variant="badge" active={activeSource} onActive={onActiveSource} />;
+          if (source) return <SourceButton source={source} variant="badge" />;
           // A number with no matching source is plain text, never a broken badge.
           return <>[{n}]</>;
         }
@@ -101,7 +96,7 @@ export function MessageContent({ content, sources, activeSource = null, onActive
       hr: () => <hr className="my-6 border-border" />,
       strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
     }),
-    [sources, activeSource, onActiveSource],
+    [sources],
   );
 
   return (

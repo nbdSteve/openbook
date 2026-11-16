@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { cn } from '@/lib/cn';
 import { sourceLabel } from './citations';
+import { useSourceHighlight } from './SourceHighlight';
 import type { Source } from '@/services/api/types';
 
 interface Position {
@@ -17,9 +18,6 @@ interface SourceButtonProps {
   source: Source;
   /** `badge` is the inline [n] mark. `entry` is a row in the sources list. */
   variant: 'badge' | 'entry';
-  /** The source number that is highlighted (by hover or focus on its badge or its list entry). */
-  active: number | null;
-  onActive: (n: number | null) => void;
 }
 
 /**
@@ -28,7 +26,8 @@ interface SourceButtonProps {
  * and clamped to the viewport, so it never causes horizontal overflow. A badge and its list entry
  * share `active`, so hovering or focusing one highlights the other.
  */
-export function SourceButton({ source, variant, active, onActive }: SourceButtonProps) {
+export function SourceButton({ source, variant }: SourceButtonProps) {
+  const { active, onActive } = useSourceHighlight();
   const [position, setPosition] = useState<Position | null>(null);
   // A click or tap pins the popover open. Touch browsers send mouseenter before click.
   const pinned = useRef(false);
@@ -146,7 +145,7 @@ export function SourceButton({ source, variant, active, onActive }: SourceButton
 }
 
 /** The compact sources list under an answer. */
-export function SourcesList({ sources, active, onActive }: { sources: Source[]; active: number | null; onActive: (n: number | null) => void }) {
+export function SourcesList({ sources }: { sources: Source[] }) {
   return (
     <div className="mt-3 border-t border-border-subtle pt-2.5" data-testid="sources">
       <p className="mb-1.5 text-xs font-medium text-text-muted">
@@ -155,7 +154,7 @@ export function SourcesList({ sources, active, onActive }: { sources: Source[]; 
       <ul className="flex flex-wrap gap-1.5" aria-label="Sources for this answer">
         {sources.map((source) => (
           <li key={source.n} className="min-w-0 max-w-full">
-            <SourceButton source={source} variant="entry" active={active} onActive={onActive} />
+            <SourceButton source={source} variant="entry" />
           </li>
         ))}
       </ul>
