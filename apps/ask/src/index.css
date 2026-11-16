@@ -1,0 +1,193 @@
+@import "tailwindcss";
+
+/* Inter, Latin subset only, self-hosted so every machine renders the same. */
+@font-face {
+  font-family: 'Inter Variable';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url('../node_modules/@fontsource-variable/inter/files/inter-latin-wght-normal.woff2') format('woff2-variations');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  /* Warm palette: light mode defaults. Text colors meet WCAG AA on the page and surface colors. */
+  --color-bg-primary: #FAFAF8;
+  --color-bg-secondary: #F5F3EF;
+  --color-bg-tertiary: #E8E5DF;
+  --color-surface: #FFFFFF;
+  --color-surface-hover: #F0EDE7;
+  --color-text-primary: #1C1917;
+  --color-text-secondary: #44403C;
+  --color-text-tertiary: #57534E;
+  --color-text-muted: #6B645F;
+  --color-border: #D6D3D1;
+  --color-border-strong: #86807A;
+  --color-border-subtle: #E7E5E4;
+  --color-accent: #4F46E5;
+  --color-accent-hover: #4338CA;
+  --color-accent-light: #E0E7FF;
+  --color-accent-subtle: rgba(79, 70, 229, 0.10);
+  --color-on-accent: #FFFFFF;
+  --color-teal: #0B665F;
+  --color-teal-hover: #084F4A;
+  --color-teal-light: #CCFBF1;
+  --color-teal-subtle: rgba(13, 148, 136, 0.12);
+  --color-danger: #B91C1C;
+  --color-danger-solid: #DC2626;
+  --color-danger-light: #FEE2E2;
+  --color-success: #15803D;
+  --color-success-light: #DCFCE7;
+  --color-warning: #B45309;
+  --color-warning-light: #FEF3C7;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.06);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.08);
+}
+
+/* Dark mode overrides */
+.dark {
+  --color-bg-primary: #0F172A;
+  --color-bg-secondary: #1E293B;
+  --color-bg-tertiary: #334155;
+  --color-surface: #243047;
+  --color-surface-hover: #2E3B52;
+  --color-text-primary: #F8FAFC;
+  --color-text-secondary: #CBD5E1;
+  --color-text-tertiary: #B3BFD1;
+  --color-text-muted: #A0AEC3;
+  --color-border: #3B4A63;
+  --color-border-strong: #7585A0;
+  --color-border-subtle: #273449;
+  --color-accent: #A5B4FC;
+  --color-accent-hover: #C7D2FE;
+  --color-accent-light: rgba(129, 140, 248, 0.18);
+  --color-accent-subtle: rgba(129, 140, 248, 0.14);
+  --color-on-accent: #0B1020;
+  --color-teal: #5EEAD4;
+  --color-teal-hover: #99F6E4;
+  --color-teal-light: rgba(45, 212, 191, 0.18);
+  --color-teal-subtle: rgba(45, 212, 191, 0.12);
+  --color-danger: #FCA5A5;
+  --color-danger-solid: #DC2626;
+  --color-danger-light: rgba(239, 68, 68, 0.16);
+  --color-success: #86EFAC;
+  --color-success-light: rgba(34, 197, 94, 0.16);
+  --color-warning: #FCD34D;
+  --color-warning-light: rgba(251, 191, 36, 0.16);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+@layer base {
+  html,
+  body {
+    margin: 0;
+    padding: 0;
+    min-height: 100%;
+  }
+
+  html {
+    font-family: 'Inter Variable', system-ui, -apple-system, 'Segoe UI', sans-serif;
+    color-scheme: light;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  html.dark {
+    color-scheme: dark;
+  }
+
+  body {
+    @apply antialiased;
+    background-color: var(--color-bg-primary);
+    color: var(--color-text-primary);
+    overflow-wrap: anywhere;
+  }
+
+  #root {
+    min-height: 100vh;
+    min-height: 100dvh;
+  }
+
+  /* Visible keyboard focus everywhere. Inputs draw their own ring. */
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    border-radius: 9999px;
+    background-color: var(--color-border);
+  }
+
+  dialog {
+    color: var(--color-text-primary);
+  }
+
+  dialog::backdrop {
+    background: rgba(8, 10, 20, 0.55);
+    backdrop-filter: blur(2px);
+  }
+}
+
+/* Math and code must scroll inside the message, never widen the page. */
+.message-content .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.25rem 0;
+}
+
+.message-content pre,
+.message-content table {
+  max-width: 100%;
+}
+
+/* Blinking caret at the end of a streaming answer. It takes no layout space. */
+.stream-caret {
+  display: inline-block;
+  width: 0;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  border-right: 2px solid var(--color-accent);
+  animation: caret 1s steps(2, start) infinite;
+}
+
+@keyframes caret {
+  to {
+    visibility: hidden;
+  }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0) scale(1); }
+  50% { transform: translateY(-20px) scale(1.05); }
+}
+
+.animate-float { animation: float 6s ease-in-out infinite; }
+.animate-float-delayed { animation: float 8s ease-in-out 2s infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
