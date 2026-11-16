@@ -43,6 +43,7 @@ Error responses always have this shape and a matching status code:
 ## Accounts
 
 The Cognito user pool uses email as the username. Passwords: at least 8 characters, with at least one lower-case letter, one upper-case letter, and one digit. Symbols are allowed but not required. The web app checks the same rules before it calls Cognito.
+The API accepts only ID tokens with `email_verified` equal to `true`. The pool keeps the original email until a new one is verified. Local tests that confirm users with `AdminConfirmSignUp` must also set `email_verified=true` with `AdminUpdateUserAttributes`, because the emulator (like Cognito for admin confirmation) leaves it `false`.
 The web app signs in with the `USER_PASSWORD_AUTH` flow in every stage (the password goes only to Cognito, over HTTPS). The app client allows only `ALLOW_USER_PASSWORD_AUTH` and `ALLOW_REFRESH_TOKEN_AUTH`. AWS Emulator does not implement SRP, and one flow everywhere keeps the local end-to-end tests faithful to production.
 
 ## Types
@@ -169,7 +170,7 @@ Conversations stay with their owners; later reads of a deleted course return `40
 
 `POST /api/courses/{courseId}/invite-code` (owner, empty body) → `200 { "inviteCode": string }`.
 Replaces the invite code. The old code stops working at once.
-Invite codes are 8 characters from `ABCDEFGHJKMNPQRSTUVWXYZ23456789` (no `0`, `O`, `1`, `I`, `L`) and are matched case-insensitively.
+Invite codes are 8 characters from `ABCDEFGHJKMNPQRSTUVWXYZ23456789` (no `0`, `O`, `1`, `I`, `L`). The API matches them case-insensitively and ignores spaces and hyphens. Failed join attempts are limited per user per day (`429 quota_exceeded`).
 
 `POST /api/join` body `{ "inviteCode": string }` → `200 { "course": Course }`.
 Joins as `student`. If the caller is already a member, returns the course with their existing role. Unknown code → `404`.
