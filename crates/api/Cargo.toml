@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 openbook-core.workspace = true
+openbook-search.workspace = true
 axum.workspace = true
 chrono.workspace = true
 futures.workspace = true
@@ -26,6 +27,8 @@ aws-credential-types.workspace = true
 aws-sdk-cognitoidentityprovider = { version = "1", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio"] }
 aws-sdk-dynamodb.workspace = true
 aws-sdk-s3.workspace = true
+aws-sdk-s3vectors.workspace = true
+aws-sdk-sqs.workspace = true
 http-body-util.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 reqwest.workspace = true

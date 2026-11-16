@@ -2,8 +2,9 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use openbook_core::domain::{Document, DocumentStatus, Role};
-use openbook_core::files::{document_prefix, source_key};
+use openbook_core::files::source_key;
 use openbook_core::ids;
+use openbook_core::queue::{Action, IngestMessage};
 use openbook_core::store::StoreError;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -55,6 +56,9 @@ pub async fn create(
         status: DocumentStatus::Uploading,
         error: None,
         page_count: None,
+        chunk_count: None,
+        transcribed_pages: None,
+        warnings: None,
         created_at: now.clone(),
         updated_at: now,
     };
@@ -124,9 +128,19 @@ pub async fn complete(
         Some(_) => {}
     }
 
-    // Phase 2 also sends the ingestion message here.
     let document = match state.store.mark_queued(&course.id, &document.id).await? {
-        Some(queued) => queued,
+        Some(queued) => {
+            let message = IngestMessage::new(Action::Ingest, &course.id, &queued.id);
+            if let Err(error) = state.queue.send(&message).await {
+                // Put the document back, so that the client can call `complete` again.
+                tracing::error!(%error, "could not send the ingest message");
+                if let Err(revert) = state.store.revert_queued(&course.id, &queued.id).await {
+                    tracing::error!(%revert, "could not put the document back to uploading");
+                }
+                return Err(ApiError::Unavailable);
+            }
+            queued
+        }
         // Another request moved it first.
         None => load_document(&state, &course.id, &document.id).await?,
     };
@@ -134,21 +148,35 @@ pub async fn complete(
 }
 
 /// `DELETE /api/courses/{courseId}/documents/{documentId}` (owner)
+/// Sets `deleting` and sends the `delete` message. The worker deletes the vectors, the BM25 entries,
+/// the S3 objects, and the record. Deleting a document that is already `deleting` returns it unchanged.
 pub async fn delete(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
     ApiPath((course_id, document_id)): ApiPath<(String, String)>,
-) -> Result<StatusCode, ApiError> {
+) -> Result<(StatusCode, Json<Value>), ApiError> {
     let (course, _) = state.require_owner(&user, &course_id).await?;
     let document = load_document(&state, &course.id, &document_id).await?;
-    // Phase 2 also deletes the vectors and BM25 entries.
-    state
-        .files
-        .delete_prefix(&document_prefix(&course.id, &document.id))
-        .await?;
-    state
-        .store
-        .delete_document(&course.id, &document.id)
-        .await?;
-    Ok(StatusCode::NO_CONTENT)
+    if document.status == DocumentStatus::Deleting {
+        return Ok((StatusCode::ACCEPTED, Json(json!({ "document": document }))));
+    }
+    let Some(previous) = state.store.mark_deleting(&course.id, &document.id).await? else {
+        // Another request set it first.
+        let document = load_document(&state, &course.id, &document.id).await?;
+        return Ok((StatusCode::ACCEPTED, Json(json!({ "document": document }))));
+    };
+    let message = IngestMessage::new(Action::Delete, &course.id, &document.id);
+    if let Err(error) = state.queue.send(&message).await {
+        tracing::error!(%error, "could not send the delete message");
+        if let Err(restore) = state
+            .store
+            .restore_status(&course.id, &document.id, previous.status)
+            .await
+        {
+            tracing::error!(%restore, "could not restore the document status");
+        }
+        return Err(ApiError::Unavailable);
+    }
+    let document = load_document(&state, &course.id, &document.id).await?;
+    Ok((StatusCode::ACCEPTED, Json(json!({ "document": document }))))
 }

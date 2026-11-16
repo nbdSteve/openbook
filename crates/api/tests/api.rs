@@ -615,31 +615,107 @@ async fn upload_flow_presign_put_complete_and_delete() {
         .json();
     assert_eq!(docs["documents"], json!([]));
 
-    // Delete removes the record and the object.
+    // The ingest message went to the queue.
+    let messages = app.queued_messages().await;
+    assert_eq!(
+        messages,
+        vec![json!({"action": "ingest", "courseId": id, "documentId": doc_id})]
+    );
+
+    // Delete sets `deleting` and sends the `delete` message. The worker does the rest.
+    let reply = app
+        .delete(&format!("/api/courses/{id}/documents/{doc_id}"), &owner)
+        .await;
+    assert_eq!(reply.status, StatusCode::ACCEPTED, "{}", reply.text);
+    assert_eq!(reply.json()["document"]["status"], "deleting");
+    assert_eq!(reply.json()["document"]["id"], doc_id);
+    let again = app
+        .delete(&format!("/api/courses/{id}/documents/{doc_id}"), &owner)
+        .await;
+    assert_eq!(again.status, StatusCode::ACCEPTED);
+    assert_eq!(again.json()["document"]["status"], "deleting");
+    let docs = app
+        .get(&format!("/api/courses/{id}/documents"), &owner)
+        .await
+        .json();
+    assert_eq!(docs["documents"][0]["status"], "deleting");
+    let docs = app
+        .get(&format!("/api/courses/{id}/documents"), &student)
+        .await
+        .json();
+    assert_eq!(docs["documents"], json!([]));
+    let messages = app.queued_messages().await;
+    assert_eq!(
+        messages,
+        vec![json!({"action": "delete", "courseId": id, "documentId": doc_id})],
+        "one delete message, and none for the repeated call"
+    );
+    // The object stays until the worker runs.
     assert_eq!(
         app.objects_under(&format!("courses/{id}/documents/{doc_id}/"))
             .await
             .len(),
         1
     );
+}
+
+#[tokio::test]
+#[ignore = "needs AWS Emulator; run make test-integration"]
+async fn a_failed_queue_send_rolls_back_complete_and_delete() {
+    let app = start().await;
+    let owner = app.user("teacher").await;
+    let course = app.course(&owner, "Queue").await;
+    let id = text(&course, "id");
     let reply = app
-        .delete(&format!("/api/courses/{id}/documents/{doc_id}"), &owner)
+        .post(
+            &format!("/api/courses/{id}/documents"),
+            &owner,
+            json!({"filename": "a.pdf", "sizeBytes": 3, "contentType": "application/pdf"}),
+        )
         .await;
-    assert_eq!(reply.status, StatusCode::NO_CONTENT);
-    assert!(
-        app.objects_under(&format!("courses/{id}/"))
-            .await
-            .is_empty()
+    let doc_id = text(&reply.json()["document"], "id");
+    let put = app
+        .http
+        .put(text(&reply.json()["upload"], "url"))
+        .header("content-type", "application/pdf")
+        .body(vec![1u8, 2, 3])
+        .send()
+        .await
+        .unwrap();
+    assert!(put.status().is_success());
+
+    // The same data, behind a queue that does not exist.
+    let broken = app.router_with_queue("https://127.0.0.1:9/queue-that-is-gone.fifo");
+    let complete = format!("/api/courses/{id}/documents/{doc_id}/complete");
+    let reply = send_to(&broken, Method::POST, &complete, Some(&owner.token), None).await;
+    assert_eq!(
+        reply.status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "{}",
+        reply.text
     );
+    assert_eq!(reply.error_code(), "unavailable");
     let docs = app
         .get(&format!("/api/courses/{id}/documents"), &owner)
         .await
         .json();
-    assert_eq!(docs["documents"], json!([]));
-    let reply = app
-        .delete(&format!("/api/courses/{id}/documents/{doc_id}"), &owner)
-        .await;
-    assert_eq!(reply.status, StatusCode::NOT_FOUND);
+    assert_eq!(docs["documents"][0]["status"], "uploading", "rolled back");
+    assert!(app.queued_messages().await.is_empty());
+
+    // The client can call `complete` again.
+    let ok = app.post_empty(&complete, &owner).await;
+    assert_eq!(ok.status, StatusCode::OK);
+    assert_eq!(ok.json()["document"]["status"], "queued");
+
+    // A failed delete send restores the status.
+    let path = format!("/api/courses/{id}/documents/{doc_id}");
+    let reply = send_to(&broken, Method::DELETE, &path, Some(&owner.token), None).await;
+    assert_eq!(reply.status, StatusCode::SERVICE_UNAVAILABLE);
+    let docs = app
+        .get(&format!("/api/courses/{id}/documents"), &owner)
+        .await
+        .json();
+    assert_eq!(docs["documents"][0]["status"], "queued");
 }
 
 #[tokio::test]

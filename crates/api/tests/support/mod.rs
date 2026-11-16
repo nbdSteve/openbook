@@ -34,11 +34,11 @@ pub const REGION: &str = "us-east-1";
 
 /// The default test catalog: two fake models, so tests can see which one answered.
 pub const TWO_MODELS: &str = r#"[
-  {"id":"fake-a","label":"Fake A","vendor":"openbook","provider":"fake","modelId":"fake-a","residency":"au"},
-  {"id":"fake-b","label":"Fake B","vendor":"openbook","provider":"fake","modelId":"fake-b","residency":"global"}
+  {"id":"fake-a","label":"Fake A","vendor":"openbook","provider":"fake","modelId":"fake-a","residency":"au","vision":true},
+  {"id":"fake-b","label":"Fake B","vendor":"openbook","provider":"fake","modelId":"fake-b","residency":"global","vision":true}
 ]"#;
 pub const ONE_MODEL: &str = r#"[
-  {"id":"fake-a","label":"Fake A","vendor":"openbook","provider":"fake","modelId":"fake-a","residency":"au"}
+  {"id":"fake-a","label":"Fake A","vendor":"openbook","provider":"fake","modelId":"fake-a","residency":"au","vision":true}
 ]"#;
 
 /// Settings that tests change.
@@ -104,6 +104,8 @@ pub struct TestApp {
     pub dynamodb: aws_sdk_dynamodb::Client,
     pub s3: aws_sdk_s3::Client,
     pub http: reqwest::Client,
+    pub queue_url: String,
+    pub vector_bucket: String,
     vars: HashMap<String, String>,
 }
 
@@ -147,6 +149,15 @@ pub async fn start_with_models(options: Options, models: &str) -> TestApp {
         .send()
         .await
         .expect("create bucket");
+    // The ingest queue (FIFO, as in the stack) and the vector bucket.
+    let queue_url = sdk_queue(&sdk, &format!("openbook-test-{suffix}.fifo")).await;
+    let vector_bucket = format!("openbook-test-{suffix}");
+    aws_sdk_s3vectors::Client::new(&sdk)
+        .create_vector_bucket()
+        .vector_bucket_name(&vector_bucket)
+        .send()
+        .await
+        .expect("create vector bucket");
     let pool_id = cognito
         .create_user_pool()
         .pool_name(format!("openbook-test-{suffix}"))
@@ -183,6 +194,9 @@ pub async fn start_with_models(options: Options, models: &str) -> TestApp {
         ("OPENBOOK_CA_BUNDLE", ca.display().to_string()),
         ("AWS_ENDPOINT_URL", endpoint.clone()),
         ("AWS_REGION", REGION.to_owned()),
+        ("OPENBOOK_INGEST_QUEUE_URL", queue_url.clone()),
+        ("OPENBOOK_VECTOR_BUCKET", vector_bucket.clone()),
+        ("OPENBOOK_EMBEDDING_MODEL_ID", "fake".to_owned()),
         ("OPENBOOK_DEFAULT_CHAT_MODEL", "fake-a".to_owned()),
         ("OPENBOOK_FAST_MODEL", "fake-a".to_owned()),
         (
@@ -244,6 +258,8 @@ pub async fn start_with_models(options: Options, models: &str) -> TestApp {
         dynamodb,
         s3,
         http,
+        queue_url,
+        vector_bucket,
         vars,
     }
 }
@@ -260,7 +276,11 @@ fn build_state(
     let verifier = TokenVerifier::from_config(&config).expect("verifier");
     let models = ModelRegistry::from_catalog(config.catalog.clone(), None, fake_delay)
         .expect("model registry");
+    let queue = openbook_core::queue::IngestQueue::new(sdk, config.ingest_queue_url.clone());
+    let vectors = openbook_search::vectors::VectorStore::new(sdk, config.vector_bucket.clone());
     AppState {
+        queue,
+        vectors,
         config: std::sync::Arc::new(config),
         store,
         files,
@@ -268,6 +288,18 @@ fn build_state(
         models,
         chat_timeouts: chat_timeouts.unwrap_or_default(),
     }
+}
+
+async fn sdk_queue(sdk: &aws_config::SdkConfig, name: &str) -> String {
+    aws_sdk_sqs::Client::new(sdk)
+        .create_queue()
+        .queue_name(name)
+        .attributes(aws_sdk_sqs::types::QueueAttributeName::FifoQueue, "true")
+        .send()
+        .await
+        .expect("create queue")
+        .queue_url
+        .expect("queue URL")
 }
 
 async fn create_table(client: &aws_sdk_dynamodb::Client, table: &str) {
@@ -422,6 +454,46 @@ impl TestApp {
         vars.insert("OPENBOOK_DEFAULT_CHAT_MODEL".into(), default.to_owned());
         vars.insert("OPENBOOK_FAST_MODEL".into(), default.to_owned());
         build_router(build_state(&vars, &self.sdk, Duration::ZERO, None))
+    }
+
+    /// A router over the same resources with another ingest queue URL.
+    pub fn router_with_queue(&self, queue_url: &str) -> Router {
+        let mut vars = self.vars.clone();
+        vars.insert("OPENBOOK_INGEST_QUEUE_URL".into(), queue_url.to_owned());
+        build_router(build_state(&vars, &self.sdk, Duration::ZERO, None))
+    }
+
+    /// Takes every message from the ingest queue (and deletes it), as parsed JSON.
+    pub async fn queued_messages(&self) -> Vec<Value> {
+        let sqs = self.state.queue.client();
+        let mut out = Vec::new();
+        for _ in 0..3 {
+            let received = sqs
+                .receive_message()
+                .queue_url(&self.queue_url)
+                .max_number_of_messages(10)
+                .wait_time_seconds(1)
+                .send()
+                .await
+                .expect("receive messages");
+            if received.messages().is_empty() && !out.is_empty() {
+                break;
+            }
+            for message in received.messages() {
+                out.push(
+                    serde_json::from_str(message.body().unwrap_or("null")).expect("JSON message"),
+                );
+                if let Some(handle) = message.receipt_handle() {
+                    let _ = sqs
+                        .delete_message()
+                        .queue_url(&self.queue_url)
+                        .receipt_handle(handle)
+                        .send()
+                        .await;
+                }
+            }
+        }
+        out
     }
 
     /// Signs a new user up, confirms them, and gets a real ID token from the emulator.

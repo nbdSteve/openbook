@@ -589,8 +589,14 @@ async fn deleting_a_course_frees_the_owner_slot_and_a_document_frees_its_slot() 
     let doc_id = text(&doc.json()["document"], "id");
     assert_eq!(
         app.delete(&format!("{path}/{doc_id}"), &owner).await.status,
-        StatusCode::NO_CONTENT
+        StatusCode::ACCEPTED
     );
+    // The slot comes back when the worker deletes the record. Here the test plays the worker.
+    assert_eq!(
+        app.post(&path, &owner, body.clone()).await.status,
+        StatusCode::CONFLICT
+    );
+    app.state.store.delete_document(&id, &doc_id).await.unwrap();
     assert_eq!(
         app.post(&path, &owner, body).await.status,
         StatusCode::CREATED

@@ -9,6 +9,7 @@ use openbook_core::files::course_prefix;
 use openbook_core::ids;
 use openbook_core::quota::usage_date;
 use openbook_core::store::{CoursePatch, StoreError};
+use openbook_search::vectors::index_name;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -179,6 +180,11 @@ pub async fn delete(
         .files
         .delete_prefix(&course_prefix(&course.id))
         .await?;
+    state
+        .vectors
+        .delete_index(&index_name(&course.id))
+        .await
+        .map_err(ApiError::internal)?;
     state.store.delete_course_data(&course).await?;
     Ok(StatusCode::NO_CONTENT)
 }
