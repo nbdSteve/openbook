@@ -48,3 +48,11 @@ all = "warn"
 lto = "thin"
 codegen-units = 1
 strip = true
+
+# Debug builds of the AWS SDK are huge. Line tables keep file and line numbers in backtraces.
+[profile.dev]
+debug = "line-tables-only"
+
+# Dependencies (mostly the AWS SDK) get no debug info at all.
+[profile.dev.package."*"]
+debug = false
