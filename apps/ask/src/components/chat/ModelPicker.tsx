@@ -7,10 +7,12 @@ interface ModelPickerProps {
   value: string;
   onChange: (id: string) => void;
   disabled?: boolean;
+  /** ID of the element that explains the selected model (the global-model note). */
+  describedBy?: string;
 }
 
 /** A compact model picker. Global models carry a label, and a note shows under the input. */
-export function ModelPicker({ value, onChange, disabled }: ModelPickerProps) {
+export function ModelPicker({ value, onChange, disabled, describedBy }: ModelPickerProps) {
   const { models, find } = useModels();
   const id = useId();
   if (models.length < 2) return null;
@@ -29,9 +31,10 @@ export function ModelPicker({ value, onChange, disabled }: ModelPickerProps) {
         id={id}
         value={value}
         disabled={disabled}
+        aria-describedby={global ? describedBy : undefined}
         onChange={(e) => onChange(e.target.value)}
         className={
-          'h-9 min-w-0 max-w-full cursor-pointer appearance-none truncate rounded-lg border border-border bg-surface py-1 pr-8 text-xs font-medium text-text-secondary hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-60 ' +
+          'h-9 min-w-0 max-w-full cursor-pointer appearance-none truncate rounded-lg border border-border-strong bg-surface py-1 pr-8 text-xs font-medium text-text-secondary hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-60 ' +
           (global ? 'pl-8' : 'pl-3')
         }
       >
@@ -48,11 +51,11 @@ export function ModelPicker({ value, onChange, disabled }: ModelPickerProps) {
   );
 }
 
-export function GlobalModelNote({ modelId }: { modelId: string }) {
+export function GlobalModelNote({ modelId, id }: { modelId: string; id?: string }) {
   const { find } = useModels();
   if (find(modelId)?.residency !== 'global') return null;
   return (
-    <p className="mt-1.5 flex items-start gap-1.5 px-1 text-xs text-warning" data-testid="global-note">
+    <p id={id} className="mt-1.5 flex items-start gap-1.5 px-1 text-xs text-warning" data-testid="global-note">
       <Globe className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
       This model may process your messages outside Australia.
     </p>

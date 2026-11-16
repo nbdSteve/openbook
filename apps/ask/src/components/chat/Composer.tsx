@@ -36,9 +36,10 @@ export function Composer({ streaming, usage, model, onModelChange, disabledReaso
     if (!canSend) return;
     const text = value;
     setValue('');
+    // Keep focus in the box: the Send button turns into Stop while the answer streams.
+    textarea.current?.focus();
     const accepted = await onSend(text);
     if (!accepted) setValue((current) => (current === '' ? text : current));
-    textarea.current?.focus();
   };
 
   const onKeyDown = (event: KeyboardEvent) => {
@@ -54,7 +55,7 @@ export function Composer({ streaming, usage, model, onModelChange, disabledReaso
     <form onSubmit={submit}>
       <div
         className={clsx(
-          'flex items-end gap-2 rounded-2xl border border-border bg-surface p-2 shadow-sm transition-colors',
+          'flex items-end gap-2 rounded-2xl border border-border-strong bg-surface p-2 shadow-sm transition-colors',
           'focus-within:border-accent',
         )}
       >
@@ -94,7 +95,7 @@ export function Composer({ streaming, usage, model, onModelChange, disabledReaso
         )}
       </div>
       <div className="mt-1.5 flex items-center justify-between gap-3">
-        <ModelPicker value={model} onChange={onModelChange} disabled={streaming} />
+        <ModelPicker value={model} onChange={onModelChange} disabled={streaming} describedBy={`${labelId}-global`} />
         <p
           className={clsx('min-w-0 shrink-0 px-1 text-right text-xs', remaining <= 5 ? 'text-warning' : 'text-text-muted')}
           aria-live="polite"
@@ -104,7 +105,7 @@ export function Composer({ streaming, usage, model, onModelChange, disabledReaso
           {remaining > 0 && remaining <= 5 ? ` (${remaining} left)` : ''}
         </p>
       </div>
-      <GlobalModelNote modelId={model} />
+      <GlobalModelNote modelId={model} id={`${labelId}-global`} />
     </form>
   );
 }

@@ -25,7 +25,7 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
               You
             </div>
           ) : (
-            <img src="/profile-icon.png" alt="" className="h-8 w-8 rounded-full object-cover shadow-sm" />
+            <img src="/ask-logo.webp" alt="" className="h-8 w-8 rounded-full object-cover shadow-sm" />
           )}
         </div>
         <div className="min-w-0">
@@ -41,9 +41,9 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
             {isUser ? (
               <p className="whitespace-pre-wrap break-words text-[0.95rem] leading-relaxed">{message.content}</p>
             ) : (
-              <div aria-live={streaming ? 'polite' : undefined} aria-busy={streaming || undefined}>
+              <div>
                 {waiting ? (
-                  <div role="status" className="flex h-6 items-center gap-1.5">
+                  <div className="flex h-6 items-center gap-1.5">
                     <span className="sr-only">Ask is thinking</span>
                     {[0, 1, 2].map((i) => (
                       <span

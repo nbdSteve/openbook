@@ -55,14 +55,19 @@ export function useChatController({ courseId, conversationId, courseModel, limit
 
   // The conversation that `messages` shows. A new chat has none until the `meta` event.
   const shownId = useRef<string | undefined>(undefined);
-  const abort = useRef<AbortController | null>(null);
+  // The conversation that a live stream created. Its URL changes to it, but there is nothing to load.
+  const createdId = useRef<string | undefined>(undefined);
+  const streamAbort = useRef<AbortController | null>(null);
 
   useEffect(() => {
-    if (conversationId === shownId.current) return;
-    abort.current?.abort();
+    if (conversationId && conversationId === createdId.current) return;
+    createdId.current = undefined;
+    // Leaving a conversation stops its answer. The server still saves it.
+    streamAbort.current?.abort();
+    streamAbort.current = null;
     shownId.current = conversationId;
+    // This load has its own controller, so React StrictMode (effect, cleanup, effect) loads again.
     const controller = new AbortController();
-    abort.current = controller;
     // A route change resets the chat.
     setMessages([]);
     setLoadError(null);
@@ -87,18 +92,19 @@ export function useChatController({ courseId, conversationId, courseModel, limit
         setStatus('idle');
       },
     );
+    return () => controller.abort();
   }, [conversationId]);
 
-  useEffect(() => () => abort.current?.abort(), []);
+  useEffect(() => () => streamAbort.current?.abort(), []);
 
   const send = useCallback(
     async (text: string): Promise<boolean> => {
       const message = text.trim();
       if (!message) return false;
 
-      abort.current?.abort();
+      streamAbort.current?.abort();
       const controller = new AbortController();
-      abort.current = controller;
+      streamAbort.current = controller;
 
       const userId = localId('user');
       const assistantId = localId('assistant');
@@ -124,6 +130,7 @@ export function useChatController({ courseId, conversationId, courseModel, limit
             case 'meta':
               if (!shownId.current) {
                 shownId.current = event.conversationId;
+                createdId.current = event.conversationId;
                 onConversationCreated(event.conversationId);
               }
               setConversationModel(event.model || undefined);
@@ -168,9 +175,9 @@ export function useChatController({ courseId, conversationId, courseModel, limit
         patch(assistantId, (m) => ({ ...m, state: 'failed', error: describeApiError(error, limits) }));
         return true;
       } finally {
-        if (abort.current === controller) {
+        if (streamAbort.current === controller) {
           setStatus('idle');
-          abort.current = null;
+          streamAbort.current = null;
         }
         onActivity();
       }
@@ -178,7 +185,7 @@ export function useChatController({ courseId, conversationId, courseModel, limit
     [courseId, picked, limits, onConversationCreated, onActivity],
   );
 
-  const stop = useCallback(() => abort.current?.abort(), []);
+  const stop = useCallback(() => streamAbort.current?.abort(), []);
   const dismissSendError = useCallback(() => setSendError(null), []);
 
   const model = picked ?? conversationModel ?? courseModel;
