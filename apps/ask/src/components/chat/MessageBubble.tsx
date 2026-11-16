@@ -28,7 +28,7 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
             <img src="/ask-logo.webp" alt="" className="h-8 w-8 rounded-full object-cover shadow-sm" />
           )}
         </div>
-        <div className="min-w-0">
+        <div className="min-w-0" data-testid={isUser ? 'user-message' : 'assistant-message'}>
           <span className="sr-only">{isUser ? 'You said:' : 'Ask said:'}</span>
           <div
             className={clsx(

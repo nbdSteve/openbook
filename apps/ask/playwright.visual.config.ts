@@ -9,6 +9,10 @@ const port = Number(process.env.OPENBOOK_VISUAL_PORT ?? 5190);
 export default defineConfig({
   testDir: './e2e/visual',
   fullyParallel: true,
+  // The screens load lazy chunks and fonts. A busy machine needs more than the 5 s default.
+  timeout: 60_000,
+  expect: { timeout: 20_000 },
+  workers: 4,
   forbidOnly: !!process.env.CI,
   reporter: 'list',
   use: { ...devices['Desktop Chrome'], baseURL: `http://127.0.0.1:${port}`, trace: 'retain-on-failure' },

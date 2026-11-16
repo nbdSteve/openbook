@@ -1,13 +1,32 @@
 import path from 'node:path';
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
-import { confirmUser, courseIdFromUrl, newUserPage, signIn, signUp, uniqueEmail } from './helpers';
+import {
+  CHAT_TIMEOUT,
+  DEPLOYED,
+  confirmUser,
+  courseIdFromUrl,
+  createDeployedUser,
+  deleteCourseInUi,
+  flushTraces,
+  newContext,
+  newUserPage,
+  problems,
+  signIn,
+  signUp,
+  uniqueEmail,
+} from './helpers';
 
 // One story, run in order: a teacher builds a course, a student joins and chats, an outsider is
-// turned away, and the teacher rotates the code and removes the student. It needs the full local
-// stack (see docs/local-dev.md).
+// turned away, and the teacher rotates the code and removes the student.
+//
+// Local mode (default) needs the full local stack (docs/local-dev.md). Deployed mode
+// (E2E_TARGET=deployed) runs against a real stack: it creates users with the admin API and sends
+// no email, skips the steps that need the local limits or the UI sign-up, and cleans up after itself.
 test.describe.configure({ mode: 'serial' });
 
-const QUESTION = 'What is the Pythagorean theorem?';
+// Real models answer differently each time, so deployed mode asks for a formula and checks structure.
+const QUESTION = DEPLOYED ? 'Write the quadratic formula in LaTeX.' : 'What is the Pythagorean theorem?';
+const COURSE_NAME = 'E2E Geometry';
 
 let teacherContext: BrowserContext;
 let studentContext: BrowserContext;
@@ -22,45 +41,72 @@ let inviteCode = '';
 let conversationUrl = '';
 
 test.beforeAll(async ({ browser }) => {
-  teacherContext = await browser.newContext();
-  studentContext = await browser.newContext();
+  teacherContext = await newContext(browser);
+  studentContext = await newContext(browser);
   teacher = await teacherContext.newPage();
   student = await studentContext.newPage();
 });
 
 test.afterAll(async () => {
+  // Deployed mode: delete the course through the UI as its owner. The global teardown deletes the users.
+  if (DEPLOYED && courseId) {
+    try {
+      await deleteCourseInUi(teacher, courseId, COURSE_NAME);
+    } catch (error) {
+      console.error(`Could not delete course ${courseId}: ${(error as Error).message}`);
+    }
+  }
   await teacherContext.close();
   await studentContext.close();
 });
 
-test('a teacher signs up, confirms, signs in, and creates a course', async () => {
-  await teacher.goto('/');
-  await teacher.getByRole('link', { name: 'Get started' }).click();
-  await signUp(teacher, teacherEmail);
-  await confirmUser(teacherEmail);
+// Every flow must run without a CSP violation or a console error (the deployed site sends the production CSP).
+test.beforeEach(() => {
+  problems.length = 0;
+});
+test.afterEach(async ({ browser }, testInfo) => {
+  void browser;
+  await flushTraces(testInfo.title, testInfo.status !== testInfo.expectedStatus);
+  expect(problems, 'CSP violations, console errors, or page errors').toEqual([]);
+});
 
-  await teacher.getByRole('link', { name: 'Back to sign in' }).click();
+test('a teacher signs up, confirms, signs in, and creates a course', async () => {
+  if (DEPLOYED) {
+    // The deployed pool sends email, so users come from the admin API and sign in through the UI.
+    await createDeployedUser(teacherEmail);
+    await teacher.goto('/login');
+  } else {
+    await teacher.goto('/');
+    await teacher.getByRole('link', { name: 'Get started' }).click();
+    await signUp(teacher, teacherEmail);
+    await confirmUser(teacherEmail);
+    await teacher.getByRole('link', { name: 'Back to sign in' }).click();
+  }
   await signIn(teacher, teacherEmail);
   await expect(teacher).toHaveURL(/\/app$/);
   await expect(teacher.getByRole('heading', { name: 'You have no courses yet' })).toBeVisible();
 
   await teacher.getByRole('button', { name: 'Create a course' }).first().click();
-  await teacher.getByLabel('Course name').fill('E2E Geometry');
+  await teacher.getByLabel('Course name').fill(COURSE_NAME);
   await teacher.getByLabel('Description (optional)').fill('Created by the end-to-end suite');
   await teacher.getByLabel('Tutoring style').selectOption('step_by_step');
   await teacher.getByRole('button', { name: 'Create course' }).click();
 
   await expect(teacher).toHaveURL(/\/app\/c\/[0-9A-Z]{26}\/manage/);
   courseId = courseIdFromUrl(teacher.url());
-  await expect(teacher.getByRole('heading', { name: 'E2E Geometry', level: 1 })).toBeVisible();
+  await expect(teacher.getByRole('heading', { name: COURSE_NAME, level: 1 })).toBeVisible();
   await expect(teacher.getByText('Step by step').first()).toBeVisible();
 });
 
-test('no email address appears in any sign-in URL', async ({ page }) => {
+test('no email address appears in any sign-in URL', async ({ browser }) => {
+  test.skip(DEPLOYED, 'The UI sign-up would send a real email');
+  const context = await newContext(browser);
+  const page = await context.newPage();
   await page.goto('/signup');
   await signUp(page, uniqueEmail('url-check'));
   expect(page.url()).not.toContain('%40');
   expect(page.url()).not.toContain('@');
+  await context.close();
 });
 
 test('the teacher reads the invite code and the invite link', async () => {
@@ -70,15 +116,18 @@ test('the teacher reads the invite code and the invite link', async () => {
   await expect(teacher.getByText(`/join/${inviteCode}`)).toBeVisible();
 });
 
-test('a student signs up from the invite link and joins the course after a click', async () => {
+test('a student signs in from the invite link and joins the course after a click', async () => {
   await student.goto(`/join/${inviteCode}`);
   // Signed out: the invite link sends the student to sign in and keeps the way back.
   await expect(student).toHaveURL(/\/login\?next=%2Fjoin%2F/);
-  await student.getByRole('link', { name: 'Create an account' }).click();
-  await signUp(student, studentEmail);
-  await confirmUser(studentEmail);
-
-  await student.getByRole('link', { name: 'Back to sign in' }).click();
+  if (DEPLOYED) {
+    await createDeployedUser(studentEmail);
+  } else {
+    await student.getByRole('link', { name: 'Create an account' }).click();
+    await signUp(student, studentEmail);
+    await confirmUser(studentEmail);
+    await student.getByRole('link', { name: 'Back to sign in' }).click();
+  }
   await signIn(student, studentEmail);
 
   // Joining needs a click, because the owner will see the student's email.
@@ -86,7 +135,7 @@ test('a student signs up from the invite link and joins the course after a click
   await student.getByRole('button', { name: 'Join course' }).click();
 
   await expect(student).toHaveURL(new RegExp(`/app/c/${courseId}$`));
-  await expect(student.getByRole('heading', { name: 'E2E Geometry', level: 1 })).toBeVisible();
+  await expect(student.getByRole('heading', { name: COURSE_NAME, level: 1 })).toBeVisible();
   // Students see chat only.
   await expect(student.getByRole('link', { name: 'Manage course' })).toHaveCount(0);
   await expect(student.getByRole('button', { name: 'Leave course' })).toBeVisible();
@@ -118,32 +167,39 @@ test('the student chats and sees a streamed answer with math, and it survives a 
   conversationUrl = student.url();
   const main = student.getByRole('main');
   await expect(main.getByText(QUESTION).first()).toBeVisible();
-  await expect(main.locator('.katex').first()).toBeVisible();
-  await expect(student.getByRole('button', { name: 'Stop answer' })).toHaveCount(0);
+  // Streamed text appears, the stream ends, and the answer has math. Real models differ, so no exact text.
+  await expect(student.getByRole('button', { name: 'Stop answer' })).toHaveCount(0, { timeout: CHAT_TIMEOUT });
+  const answer = main.getByTestId('assistant-message').last();
+  await expect(answer).toContainText(/\S/);
+  await expect(answer.locator('.katex').first()).toBeVisible();
   await expect(student.getByTestId('usage')).toContainText('1 /');
 
   await student.reload();
   await expect(student).toHaveURL(conversationUrl);
   await expect(main.getByText(QUESTION).first()).toBeVisible();
+  await expect(main.getByTestId('assistant-message').last()).toContainText(/\S/);
   await expect(main.locator('.katex').first()).toBeVisible();
   await expect(student.getByRole('navigation', { name: 'Conversations' }).getByRole('link')).toHaveCount(1);
 });
 
-test('a member can switch the model for a chat and sees the global note', async () => {
+test('a member can switch the model for a chat', async () => {
   await student.goto(`/app/c/${courseId}`);
   await expect(student.getByRole('heading', { name: 'What would you like to learn?' })).toBeVisible();
   const picker = student.getByLabel('Model for your next message');
-  // The local catalog has two fake models: `fake` (au, default) and `fake-global` (global).
   await expect(picker).toBeVisible();
   await expect(student.getByTestId('global-note')).toHaveCount(0);
 
-  await picker.selectOption('fake-global');
-  await expect(student.getByTestId('global-note')).toBeVisible();
-  const label = (await picker.locator('option[value="fake-global"]').innerText()).replace(/ \(global\)$/, '');
+  // Local catalog: `fake` (au, default) and `fake-global` (global). Deployed: all models are au.
+  const other = DEPLOYED ? 'claude-haiku' : 'fake-global';
+  await picker.selectOption(other);
+  if (DEPLOYED) await expect(student.getByTestId('global-note')).toHaveCount(0);
+  else await expect(student.getByTestId('global-note')).toBeVisible();
+  const label = (await picker.locator(`option[value="${other}"]`).innerText()).replace(/ \(global\)$/, '');
 
   await student.getByLabel('Message to Ask').fill('Give one example of a right triangle.');
   await student.getByRole('button', { name: 'Send message' }).click();
-  await expect(student.getByTestId('message-model').last()).toHaveText(label);
+  await expect(student.getByTestId('message-model').last()).toHaveText(label, { timeout: CHAT_TIMEOUT });
+  await expect(student.getByRole('button', { name: 'Stop answer' })).toHaveCount(0, { timeout: CHAT_TIMEOUT });
 });
 
 test('the teacher sees the student question in Insights', async () => {
@@ -175,7 +231,7 @@ test('a rotated invite code stops working', async ({ browser }) => {
   await page.getByRole('button', { name: 'Join course' }).click();
   await expect(page.getByRole('alert')).toContainText('does not match a course');
 
-  // The new code works, with spaces, a hyphen, and lower case, because the API ignores those.
+  // The new code works, with a hyphen and lower case, because the API ignores those.
   const spaced = `${inviteCode.slice(0, 4)}-${inviteCode.slice(4)}`.toLowerCase();
   await page.goto(`/join/${spaced}`);
   await page.getByRole('button', { name: 'Join course' }).click();
@@ -194,6 +250,7 @@ test('a removed student loses access', async () => {
 });
 
 test('the daily quota stops chat with a clear message', async ({ browser }) => {
+  test.skip(DEPLOYED, 'The deployed stack has a limit of 50 messages. This flow needs the local limit of 8.');
   const { page, context } = await newUserPage(browser, 'quota');
   await page.getByRole('button', { name: 'Create a course' }).first().click();
   await page.getByLabel('Course name').fill('Quota check');
@@ -227,10 +284,20 @@ test('the daily quota stops chat with a clear message', async ({ browser }) => {
   await context.close();
 });
 
-test('signing out returns to the landing page and locks the app', async () => {
-  await teacher.goto(`/app/c/${courseId}`);
-  await teacher.getByRole('button', { name: 'Sign out' }).click();
-  await expect(teacher.getByRole('heading', { name: /answers from your course materials/i })).toBeVisible();
-  await teacher.goto(`/app/c/${courseId}`);
-  await expect(teacher).toHaveURL(/\/login\?next=/);
+test('signing out returns to the landing page and locks the app', async ({ browser }) => {
+  // A second session for the teacher, so the first one stays signed in for the cleanup.
+  const context = await newContext(browser);
+  const page = await context.newPage();
+  await page.goto('/login');
+  await signIn(page, teacherEmail);
+  await expect(page).toHaveURL(/\/app$/);
+  const url = `/app/c/${courseId}`;
+
+  await page.goto(url);
+  await page.getByRole('button', { name: 'Sign out' }).click();
+  await expect(page.getByRole('heading', { name: /answers from your course materials/i })).toBeVisible();
+  await expect(page).toHaveURL(/\/$/);
+  await page.goto(url);
+  await expect(page).toHaveURL(/\/login\?next=/);
+  await context.close();
 });
