@@ -165,7 +165,7 @@ The caller becomes the owner. Default style is `socratic`. Default model is the 
 If a course's stored model leaves the catalog later, reads return the catalog default in `model`, and chat uses it.
 
 `DELETE /api/courses/{courseId}` (owner) → `204`.
-Deletes the course, its memberships, its documents (including S3 objects), its invite code, and its insights.
+Deletes the course, its memberships, its documents (including S3 objects), and its invite code. Its insights questions become unreachable at once and expire by TTL (180 days), so the delete stays fast.
 Conversations stay with their owners; later reads of a deleted course return `404`.
 
 `POST /api/courses/{courseId}/invite-code` (owner, empty body) → `200 { "inviteCode": string }`.
@@ -200,7 +200,7 @@ Missing object → `409 conflict`. Calling it again on a document that is not `u
 
 `GET /api/courses/{courseId}/conversations` (member) → `200 { "conversations": Conversation[] }`: only the caller's own, most recently updated first (at most 100).
 
-`GET /api/conversations/{conversationId}` → `200 { "conversation": Conversation, "messages": Message[] }` (oldest message first). Only the conversation owner; else `404`.
+`GET /api/conversations/{conversationId}` → `200 { "conversation": Conversation, "messages": Message[] }`: the latest 200 messages, oldest first. Only the conversation owner; else `404`.
 
 `DELETE /api/conversations/{conversationId}` → `204`. Only the conversation owner.
 
@@ -213,7 +213,7 @@ Missing object → `409 conflict`. Calling it again on a document that is not `u
 - With `conversationId`, it must belong to the caller and to this course, else `404`.
 - `model` is optional and must be a catalog ID (`GET /api/models`), else `400`. Any member may pick any catalog model. Without it, the API uses the conversation's model, or for a new conversation the course default. The conversation's `model` becomes the model used.
 - The API checks the per-user daily quota and the global daily cap before it calls the model. Those failures, and all validation and auth failures, are normal JSON error responses, not stream events.
-- The server builds the prompt: tutoring style, course name, conversation history (the last 20 messages), and (phase 3) retrieved sources. Clients never send a system prompt, a raw Bedrock model ID, or a token limit; they can only name a catalog model.
+- The server builds the prompt: tutoring style, course name and description, conversation history (the last 20 messages), and (phase 3) retrieved sources. Clients never send a system prompt, a raw Bedrock model ID, or a token limit; they can only name a catalog model.
 
 Stream events, in order (each is `event: <name>` plus one `data: <json>` line):
 
