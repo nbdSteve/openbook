@@ -443,9 +443,9 @@ describe('the spend caps of the stages', () => {
 
   test('prod and dev have the pre-launch caps from cdk.json', () => {
     expect(env(prod).OPENBOOK_LIMIT_DAILY_MESSAGES_GLOBAL).toBe('300');
-    expect(env(prod).OPENBOOK_LIMIT_DAILY_TOKENS_GLOBAL).toBe('300000');
+    expect(env(prod).OPENBOOK_LIMIT_DAILY_TOKENS_GLOBAL).toBe('1500000');
     expect(env(dev).OPENBOOK_LIMIT_DAILY_MESSAGES_GLOBAL).toBe('100');
-    expect(env(dev).OPENBOOK_LIMIT_DAILY_TOKENS_GLOBAL).toBe('100000');
+    expect(env(dev).OPENBOOK_LIMIT_DAILY_TOKENS_GLOBAL).toBe('500000');
   });
 
   test('a context key overrides the stage default, for the launch', () => {
