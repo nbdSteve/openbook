@@ -130,13 +130,15 @@ test('a student signs in from the invite link and joins the course after a click
   }
   await signIn(student, studentEmail);
 
-  // Joining needs a click, because the owner will see the student's email.
+  // Joining needs a click, because the owner sees the student's email and questions.
   await expect(student.getByRole('heading', { name: 'Join this course?' })).toBeVisible();
+  await expect(student.getByText('and the questions you ask in this course')).toBeVisible();
   await student.getByRole('button', { name: 'Join course' }).click();
 
   await expect(student).toHaveURL(new RegExp(`/app/c/${courseId}$`));
   await expect(student.getByRole('heading', { name: COURSE_NAME, level: 1 })).toBeVisible();
-  // Students see chat only.
+  // Students see chat only, and a note that the teacher sees their questions.
+  await expect(student.getByTestId('composer-note')).toBeVisible();
   await expect(student.getByRole('link', { name: 'Manage course' })).toHaveCount(0);
   await expect(student.getByRole('button', { name: 'Leave course' })).toBeVisible();
   await student.goto(`/app/c/${courseId}/manage`);

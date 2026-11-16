@@ -1,6 +1,6 @@
 import { useId, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { clsx } from 'clsx';
-import { Send, Square } from 'lucide-react';
+import { Eye, Send, Square } from 'lucide-react';
 import type { Usage } from '@/services/api/types';
 import { GlobalModelNote, ModelPicker } from './ModelPicker';
 
@@ -12,11 +12,13 @@ interface ComposerProps {
   model: string;
   onModelChange: (id: string) => void;
   disabledReason?: string;
+  /** A calm, always-visible note under the box (students are told their teacher sees their questions). */
+  note?: string;
   onSend: (text: string) => Promise<boolean>;
   onStop: () => void;
 }
 
-export function Composer({ streaming, usage, model, onModelChange, disabledReason, onSend, onStop }: ComposerProps) {
+export function Composer({ streaming, usage, model, onModelChange, disabledReason, note, onSend, onStop }: ComposerProps) {
   const [value, setValue] = useState('');
   const textarea = useRef<HTMLTextAreaElement>(null);
   const labelId = useId();
@@ -106,6 +108,12 @@ export function Composer({ streaming, usage, model, onModelChange, disabledReaso
         </p>
       </div>
       <GlobalModelNote modelId={model} id={`${labelId}-global`} />
+      {note && (
+        <p className="mt-1.5 flex items-start gap-1.5 px-1 text-xs text-text-muted" data-testid="composer-note">
+          <Eye className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+          {note}
+        </p>
+      )}
     </form>
   );
 }

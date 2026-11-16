@@ -101,6 +101,9 @@ export function useChatController({ courseId, conversationId, courseModel, limit
     async (text: string): Promise<boolean> => {
       const message = text.trim();
       if (!message) return false;
+      // Always send the model that the picker shows. After a failed answer the server may still hold the
+      // conversation's old model, so leaving it out could use a different model than the one on screen.
+      const currentModel = picked ?? conversationModel ?? courseModel;
 
       streamAbort.current?.abort();
       const controller = new AbortController();
@@ -123,7 +126,7 @@ export function useChatController({ courseId, conversationId, courseModel, limit
       let began = false;
       let finished = false;
       try {
-        const body = await openChat(courseId, { conversationId: shownId.current, message, ...(picked ? { model: picked } : {}) }, controller.signal);
+        const body = await openChat(courseId, { conversationId: shownId.current, message, model: currentModel }, controller.signal);
         began = true;
         for await (const event of readChatEvents(body)) {
           switch (event.type) {
@@ -182,7 +185,7 @@ export function useChatController({ courseId, conversationId, courseModel, limit
         onActivity();
       }
     },
-    [courseId, picked, limits, onConversationCreated, onActivity],
+    [courseId, picked, conversationModel, courseModel, limits, onConversationCreated, onActivity],
   );
 
   const stop = useCallback(() => streamAbort.current?.abort(), []);
