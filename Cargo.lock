@@ -2380,7 +2380,6 @@ dependencies = [
  "http-body-util",
  "lambda_http",
  "openbook-core",
- "openbook-search",
  "reqwest",
  "serde",
  "serde_json",

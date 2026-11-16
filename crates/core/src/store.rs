@@ -119,6 +119,11 @@ struct CourseItem {
     invite_code: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     bm25_version: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    bm25_key: Option<String>,
+    /// `deleting` while the worker removes the course.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    status: Option<String>,
     created_at: String,
     updated_at: String,
 }
@@ -136,6 +141,8 @@ impl CourseItem {
             owner_id: record.owner_id.clone(),
             invite_code: record.invite_code.clone(),
             bm25_version: record.bm25_version,
+            bm25_key: record.bm25_key.clone(),
+            status: record.deleting.then(|| "deleting".to_owned()),
             created_at: record.created_at.clone(),
             updated_at: record.updated_at.clone(),
         }
@@ -155,6 +162,8 @@ impl CourseItem {
             owner_id: self.owner_id,
             invite_code: self.invite_code,
             bm25_version: self.bm25_version,
+            bm25_key: self.bm25_key,
+            deleting: self.status.as_deref() == Some("deleting"),
             created_at: self.created_at,
             updated_at: self.updated_at,
         }
@@ -248,6 +257,8 @@ struct DocumentItem {
     transcribed_pages: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     warnings: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    planned_chunk_count: Option<u32>,
     created_at: String,
     updated_at: String,
 }
@@ -267,6 +278,7 @@ impl DocumentItem {
             chunk_count: d.chunk_count,
             transcribed_pages: d.transcribed_pages,
             warnings: d.warnings.clone(),
+            planned_chunk_count: d.planned_chunk_count,
             created_at: d.created_at.clone(),
             updated_at: d.updated_at.clone(),
         }
@@ -288,6 +300,7 @@ impl DocumentItem {
             chunk_count: self.chunk_count,
             transcribed_pages: self.transcribed_pages,
             warnings: self.warnings,
+            planned_chunk_count: self.planned_chunk_count,
             created_at: self.created_at,
             updated_at: self.updated_at,
         }
@@ -678,6 +691,8 @@ impl Store {
                 owner_id: owner.user_id.clone(),
                 invite_code: ids::new_invite_code(),
                 bm25_version: None,
+                bm25_key: None,
+                deleting: false,
                 created_at: now.clone(),
                 updated_at: now.clone(),
             };
@@ -1889,13 +1904,15 @@ impl Store {
         Ok(())
     }
 
-    /// Moves the course BM25 version forward. `expected` is the version that the writer started from.
-    /// Returns false when another writer moved it first.
+    /// Moves the course BM25 version forward, with the key of its blob, in one conditional update.
+    /// `expected` is the version that the writer started from. Returns false when another writer
+    /// moved it first.
     pub async fn set_bm25_version(
         &self,
         course_id: &str,
         expected: Option<u64>,
         new: u64,
+        key: &str,
     ) -> Result<bool, StoreError> {
         let mut request = self
             .client
@@ -1903,8 +1920,9 @@ impl Store {
             .table_name(&self.table)
             .key("pk", s(course_pk(course_id)))
             .key("sk", s(META_SK))
-            .update_expression("SET bm25Version = :new")
-            .expression_attribute_values(":new", n(new));
+            .update_expression("SET bm25Version = :new, bm25Key = :key")
+            .expression_attribute_values(":new", n(new))
+            .expression_attribute_values(":key", s(key));
         request = match expected {
             None => request
                 .condition_expression("attribute_exists(pk) AND attribute_not_exists(bm25Version)"),
@@ -1917,6 +1935,91 @@ impl Store {
             Err(e) if is_conditional_failure(&e) => Ok(false),
             Err(e) => Err(internal(e)),
         }
+    }
+
+    /// Marks the course `deleting`. Members get `404` from then on. Returns false when the course
+    /// does not exist.
+    pub async fn mark_course_deleting(&self, course_id: &str) -> Result<bool, StoreError> {
+        let result = self
+            .client
+            .update_item()
+            .table_name(&self.table)
+            .key("pk", s(course_pk(course_id)))
+            .key("sk", s(META_SK))
+            .update_expression("SET #status = :deleting, updatedAt = :now")
+            .condition_expression("attribute_exists(pk)")
+            .expression_attribute_names("#status", "status")
+            .expression_attribute_values(":deleting", s("deleting"))
+            .expression_attribute_values(":now", s(crate::domain::now()))
+            .send()
+            .await;
+        match result {
+            Ok(_) => Ok(true),
+            Err(e) if is_conditional_failure(&e) => Ok(false),
+            Err(e) => Err(internal(e)),
+        }
+    }
+
+    /// Deletes every membership of the course (the owner's too), so the course leaves every list.
+    pub async fn delete_memberships(&self, course_id: &str) -> Result<(), StoreError> {
+        let mut q = Query::new("pk = :pk AND begins_with(sk, :prefix)");
+        q.values = vec![(":pk", s(course_pk(course_id))), (":prefix", s("MEMBER#"))];
+        q.projection = Some("pk, sk");
+        let keys: Vec<(String, String)> = self
+            .query(q)
+            .await?
+            .into_iter()
+            .filter_map(|mut item| match (item.remove("pk"), item.remove("sk")) {
+                (Some(AttributeValue::S(pk)), Some(AttributeValue::S(sk))) => Some((pk, sk)),
+                _ => None,
+            })
+            .collect();
+        self.batch_delete(keys).await
+    }
+
+    /// Records how many chunks the worker is about to write, before the first vector goes out.
+    pub async fn set_planned_chunks(
+        &self,
+        course_id: &str,
+        document_id: &str,
+        planned: u32,
+    ) -> Result<(), StoreError> {
+        let result = self
+            .client
+            .update_item()
+            .table_name(&self.table)
+            .key("pk", s(course_pk(course_id)))
+            .key("sk", s(doc_sk(document_id)))
+            .update_expression("SET plannedChunkCount = :planned")
+            .condition_expression("attribute_exists(pk)")
+            .expression_attribute_values(":planned", n(planned))
+            .send()
+            .await;
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) if is_conditional_failure(&e) => Ok(()),
+            Err(e) => Err(internal(e)),
+        }
+    }
+
+    /// Sets `updatedAt` of a `deleting` document, so a repeated `DELETE` can tell how long ago the
+    /// last `delete` message was sent. Returns false when the document is not `deleting`.
+    pub async fn touch_deleting(
+        &self,
+        course_id: &str,
+        document_id: &str,
+    ) -> Result<bool, StoreError> {
+        let done = self
+            .update_document_status(
+                course_id,
+                document_id,
+                "SET updatedAt = :now",
+                "#status = :deleting",
+                vec![(":deleting", s("deleting"))],
+                None,
+            )
+            .await?;
+        Ok(done.is_some())
     }
 }
 
