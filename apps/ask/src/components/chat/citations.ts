@@ -45,3 +45,8 @@ export function citationNumber(href: string | undefined): number | null {
   const match = href?.match(/^#cite-(\d+)$/);
   return match ? Number(match[1]) : null;
 }
+
+/** "Algebra notes.pdf, p. 12". The page is left out when the source has none. */
+export function sourceLabel(source: Pick<Source, 'documentName' | 'page'>): string {
+  return source.page !== undefined ? `${source.documentName}, p. ${source.page}` : source.documentName;
+}

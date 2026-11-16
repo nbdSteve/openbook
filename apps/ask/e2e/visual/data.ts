@@ -90,6 +90,50 @@ export const MESSAGES: Message[] = [
   },
 ];
 
+// About 2400 characters, the longest passage the API sends. The end marker proves that the whole text can be reached.
+const LONG_SNIPPET = `${'The thylakoid membrane holds the photosystems and the electron transport chain. When light reaches photosystem II, chlorophyll gives up electrons, and water is split to replace them. The electrons pass along the chain and drive a proton pump, so protons build up inside the thylakoid space. The protons flow back through ATP synthase, and the enzyme makes ATP from ADP and phosphate. '.repeat(7)}END-OF-PASSAGE`;
+
+/** One answer with four sources: long document names, a page-less source, and a very long snippet. */
+export const MESSAGES_MANY_SOURCES: Message[] = [
+  { id: '01JMSG00000000000000000MA1', role: 'user', content: 'Where do the light reactions happen, and what do they produce?', createdAt: T },
+  {
+    id: '01JMSG00000000000000000MA2',
+    role: 'assistant',
+    model: 'claude-sonnet',
+    createdAt: T,
+    content: 'The light reactions happen in the thylakoid membranes [1]. They split water and release oxygen [2]. They produce ATP and NADPH [1][3], and the Calvin cycle then uses both [4].',
+    sources: [
+      { n: 1, documentId: 'D1', documentName: 'Lecture 4 - Photosynthesis.pdf', page: 12, snippet: LONG_SNIPPET },
+      { n: 2, documentId: 'D2', documentName: 'Introduction to Plant Biology: Cells, Tissues, and the Chemistry of Life (Third edition, complete course reader).pdf', page: 148, snippet: 'Oxygen is released when water is split in photosystem II.' },
+      { n: 3, documentId: 'D3', documentName: 'Problem set 2.pdf', snippet: 'Line one of the passage.\nLine two has <b>markup</b> & an ampersand, shown as plain text.' },
+      { n: 4, documentId: 'D1', documentName: 'Lecture 4 - Photosynthesis.pdf', page: 14, snippet: 'The Calvin cycle uses ATP and NADPH to fix carbon dioxide into glucose.' },
+    ],
+  },
+];
+
+export const MESSAGES_ONE_SOURCE: Message[] = [
+  { id: '01JMSG00000000000000000OS1', role: 'user', content: 'What is ATP?', createdAt: T },
+  {
+    id: '01JMSG00000000000000000OS2',
+    role: 'assistant',
+    model: 'claude-sonnet',
+    createdAt: T,
+    content: 'ATP is the energy currency of the cell [1].',
+    sources: [{ n: 1, documentId: 'D1', documentName: 'Lecture 4 - Photosynthesis.pdf', page: 9, snippet: 'ATP stores and moves energy inside the cell.' }],
+  },
+];
+
+export const MESSAGES_NO_SOURCES: Message[] = [
+  { id: '01JMSG00000000000000000NS1', role: 'user', content: 'Who won the cricket match?', createdAt: T },
+  {
+    id: '01JMSG00000000000000000NS2',
+    role: 'assistant',
+    model: 'claude-sonnet',
+    createdAt: T,
+    content: 'Your course materials do not seem to cover that question, so I can only answer from general knowledge. I do not have live sports results.',
+  },
+];
+
 export const DOCUMENTS: CourseDocument[] = [
   { id: 'D1', courseId: COURSE_ID, filename: 'Lecture 4 - Photosynthesis.pdf', sizeBytes: 2457600, status: 'ready', pageCount: 38, chunkCount: 112, transcribedPages: 3, warnings: ['Page 7 was not transcribed because the daily transcription limit was reached.'], createdAt: T, updatedAt: T },
   { id: 'D2', courseId: COURSE_ID, filename: 'Lecture 5 - Cellular respiration and the electron transport chain.pdf', sizeBytes: 3145728, status: 'processing', createdAt: T, updatedAt: T },

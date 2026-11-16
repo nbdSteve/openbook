@@ -104,7 +104,68 @@ const SCREENS: Screen[] = [
     },
     act: async (page) => {
       await page.getByRole('button', { name: /Source 1/ }).first().click();
-      await expect(page.getByRole('tooltip')).toBeVisible();
+      await expect(page.getByRole('dialog')).toBeVisible();
+    },
+  },
+  {
+    name: 'chat-sources-many',
+    url: `/app/c/${COURSE_ID}/chat/${CONVERSATIONS[1].id}`,
+    signedIn: true,
+    ready: async (page) => {
+      await expect(page.getByRole('list', { name: 'Sources for this answer' })).toBeVisible();
+      await expect(page.locator('[data-variant="badge"]')).toHaveCount(5);
+    },
+    act: async (page) => {
+      // Open the entry with the long snippet. Hovering its badge highlights both.
+      await page.locator('[data-variant="entry"][data-source-n="1"]').click();
+      const dialog = page.getByRole('dialog', { name: /Source 1/ });
+      await expect(dialog).toContainText('thylakoid membrane holds');
+      // The 2400-character passage scrolls inside the popover, so the end can be read.
+      const scrolls = await dialog.evaluate((el) => el.scrollHeight > el.clientHeight);
+      expect(scrolls).toBe(true);
+      const atEnd = () => dialog.evaluate((el) => el.scrollTop + el.clientHeight >= el.scrollHeight - 1);
+      expect(await atEnd()).toBe(false);
+      await dialog.evaluate((el) => el.scrollTo(0, el.scrollHeight));
+      expect(await atEnd()).toBe(true);
+      await expect(dialog).toContainText('END-OF-PASSAGE');
+      // Escape closes it and the focus returns to the entry.
+      await page.keyboard.press('Escape');
+      await expect(page.getByRole('dialog')).toHaveCount(0);
+      await expect(page.locator('[data-variant="entry"][data-source-n="1"]')).toBeFocused();
+      await page.locator('[data-variant="entry"][data-source-n="1"]').click();
+      await expect(dialog).toBeVisible();
+      await expect(page.locator('[data-variant="badge"][data-source-n="1"]').first()).toHaveClass(/ring-2/);
+    },
+  },
+  {
+    name: 'chat-sources-plain-text',
+    url: `/app/c/${COURSE_ID}/chat/${CONVERSATIONS[1].id}`,
+    signedIn: true,
+    ready: async (page) => {
+      await expect(page.getByRole('list', { name: 'Sources for this answer' })).toBeVisible();
+    },
+    act: async (page) => {
+      // Markup in a snippet is shown as text, never rendered.
+      await page.locator('[data-variant="entry"][data-source-n="3"]').click();
+      await expect(page.getByRole('dialog')).toContainText('<b>markup</b> & an ampersand');
+      await expect(page.getByRole('dialog').locator('b')).toHaveCount(0);
+    },
+  },
+  {
+    name: 'chat-source-one',
+    url: `/app/c/${COURSE_ID}/chat/${CONVERSATIONS[2].id}`,
+    signedIn: true,
+    ready: async (page) => {
+      await expect(page.getByRole('list', { name: 'Sources for this answer' }).getByRole('listitem')).toHaveCount(1);
+    },
+  },
+  {
+    name: 'chat-no-sources',
+    url: `/app/c/${COURSE_ID}/chat/NOSOURCES`,
+    signedIn: true,
+    ready: async (page) => {
+      await expect(page.getByText('do not seem to cover that question')).toBeVisible();
+      await expect(page.getByTestId('sources')).toHaveCount(0);
     },
   },
   {

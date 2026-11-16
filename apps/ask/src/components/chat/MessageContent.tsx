@@ -7,7 +7,7 @@ import 'katex/dist/katex.min.css';
 import type { Source } from '@/services/api/types';
 import { citationNumber, linkCitations, normalizeMath } from './citations';
 import { rehypeKeepMathTogether } from './rehypeKeepMathTogether';
-import { SourceBadge } from './SourceBadge';
+import { SourceButton } from './SourceBadge';
 
 const CodeBlock = lazy(() => import('./CodeBlock'));
 
@@ -51,7 +51,9 @@ export function MessageContent({ content, sources, className = '' }: MessageCont
         const n = citationNumber(href);
         if (n !== null) {
           const source = sources?.find((s) => s.n === n);
-          if (source) return <SourceBadge source={source} label={String(n)} />;
+          if (source) return <SourceButton source={source} variant="badge" />;
+          // A number with no matching source is plain text, never a broken badge.
+          return <>[{n}]</>;
         }
         return (
           <a href={href} target="_blank" rel="noopener noreferrer" className="text-teal underline hover:text-teal-hover">

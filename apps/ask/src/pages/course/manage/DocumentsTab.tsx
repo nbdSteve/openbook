@@ -94,7 +94,7 @@ export function DocumentsTab() {
   const input = useRef<HTMLInputElement>(null);
   const counter = useRef(0);
 
-  // Poll every 5 seconds while a document waits for ingestion. Slow down when nothing changes or a
+  // Poll every 5 seconds while a document waits for ingestion. Slow down a little when nothing changes (at most 10 s, so a document that becomes ready shows soon) and more when a
   // poll fails, and pause while the tab is hidden.
   const waiting = docs.data?.some((d) => d.status === 'queued' || d.status === 'processing' || d.status === 'deleting') ?? false;
   const signature = docs.data?.map((d) => `${d.id}:${d.status}`).join(',') ?? '';
@@ -105,7 +105,7 @@ export function DocumentsTab() {
     r.failures = docs.error !== undefined ? r.failures + 1 : 0;
     r.unchanged = signature === r.signature ? r.unchanged + 1 : 0;
     r.signature = signature;
-    const delay = Math.min(POLL_INTERVAL_MS * 2 ** Math.min(r.unchanged, 3) * 2 ** Math.min(r.failures, 3), 60_000);
+    const delay = Math.min(POLL_INTERVAL_MS * 2 ** Math.min(r.unchanged, 1) * 2 ** Math.min(r.failures, 3), 60_000);
     const poll = () => {
       if (document.hidden) document.addEventListener('visibilitychange', poll, { once: true });
       else reload();

@@ -1,8 +1,10 @@
+import { useState } from 'react';
 import { clsx } from 'clsx';
 import { AlertCircle, CircleStop, Globe } from 'lucide-react';
 import { useModels } from '@/services/models/ModelsContext';
 import { MessageContent } from './MessageContent';
-import { SourceBadge } from './SourceBadge';
+import { SourcesList } from './SourceBadge';
+import { SourceHighlightContext } from './SourceHighlight';
 import type { ChatMessage } from './useChatController';
 
 export function MessageBubble({ message }: { message: ChatMessage }) {
@@ -10,10 +12,12 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
   const isUser = message.role === 'user';
   const modelInfo = message.model ? find(message.model) : undefined;
   const modelLabel = modelInfo?.label ?? message.model;
+  const [activeSource, setActiveSource] = useState<number | null>(null);
   const streaming = message.state === 'streaming';
   const waiting = streaming && message.content === '';
 
   return (
+    <SourceHighlightContext.Provider value={{ active: activeSource, onActive: setActiveSource }}>
     <div className={clsx('flex w-full', isUser ? 'justify-end' : 'justify-start')}>
       <div className={clsx('flex min-w-0 max-w-[94%] items-start gap-2.5 sm:max-w-[85%] sm:gap-3', isUser && 'flex-row-reverse')}>
         <div className="mt-1 shrink-0">
@@ -61,13 +65,8 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
               </div>
             )}
 
-            {!isUser && message.sources && message.sources.length > 0 && message.state !== 'streaming' && (
-              <div className="mt-3 flex flex-wrap items-center gap-x-1 gap-y-1.5 border-t border-border-subtle pt-2.5">
-                <span className="mr-1 text-xs text-text-muted">Sources</span>
-                {message.sources.map((source) => (
-                  <SourceBadge key={source.n} source={source} />
-                ))}
-              </div>
+            {!isUser && message.sources && message.sources.length > 0 && message.state !== 'failed' && (
+              <SourcesList sources={message.sources} />
             )}
 
             {message.state === 'stopped' && (
@@ -95,5 +94,6 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
         </div>
       </div>
     </div>
+    </SourceHighlightContext.Provider>
   );
 }

@@ -27,6 +27,8 @@ test.describe.configure({ mode: 'serial' });
 // Real models answer differently each time, so deployed mode asks for a formula and checks structure.
 const QUESTION = DEPLOYED ? 'Write the quadratic formula in LaTeX.' : 'What is the Pythagorean theorem?';
 const COURSE_NAME = 'E2E Geometry';
+// A question that the uploaded sample.pdf answers, so retrieval finds it.
+const SOURCE_QUESTION = 'What does my document say about the Pythagorean theorem?';
 // The ingest worker reads the PDF in the background. Locally it uses fake transcription and embeddings.
 const READY_TIMEOUT = DEPLOYED ? 180_000 : 60_000;
 const SAMPLE_PDF = path.join(import.meta.dirname, '..', 'fixtures', 'sample.pdf');
@@ -164,21 +166,6 @@ test('a student sees how many documents the course has', async () => {
   await expect(student.getByTestId('materials')).toContainText('1 document');
 });
 
-test('the teacher deletes the document, sees it deleting, and it disappears', async () => {
-  test.setTimeout(READY_TIMEOUT + 60_000);
-  await teacher.goto(`/app/c/${courseId}/manage?tab=documents`);
-  const row = teacher.getByRole('listitem').filter({ hasText: 'sample.pdf' });
-  await row.getByRole('button', { name: 'Delete sample.pdf' }).click();
-  await teacher.getByRole('dialog').getByRole('button', { name: 'Delete document' }).click();
-  // The delete answers 202 with the document in `deleting`. The row has no actions while the worker works.
-  await expect(row.getByText('Deleting', { exact: true })).toBeVisible();
-  await expect(row.getByRole('button', { name: 'Delete sample.pdf' })).toHaveCount(0);
-  await expect(row).toHaveCount(0, { timeout: READY_TIMEOUT });
-
-  await student.goto(`/app/c/${courseId}`);
-  await expect(student.getByTestId('materials')).toContainText('has not added any documents yet');
-});
-
 test('the teacher is told when a file is not a PDF', async () => {
   await teacher.goto(`/app/c/${courseId}/manage?tab=documents`);
   await teacher.getByLabel('Choose PDF files').setInputFiles({ name: 'notes.txt', mimeType: 'text/plain', buffer: Buffer.from('hello') });
@@ -209,6 +196,36 @@ test('the student chats and sees a streamed answer with math, and it survives a 
   await expect(student.getByRole('navigation', { name: 'Conversations' }).getByRole('link')).toHaveCount(1);
 });
 
+test('an answer from the uploaded PDF shows citations and sources, also after a reload', async () => {
+  await student.goto(`/app/c/${courseId}`);
+  await expect(student.getByRole('heading', { name: 'What would you like to learn?' })).toBeVisible();
+  await student.getByLabel('Message to Ask').fill(SOURCE_QUESTION);
+  await student.getByRole('button', { name: 'Send message' }).click();
+  await expect(student).toHaveURL(new RegExp(`/app/c/${courseId}/chat/[0-9A-Z]{26}$`));
+  await expect(student.getByRole('button', { name: 'Stop answer' })).toHaveCount(0, { timeout: CHAT_TIMEOUT });
+
+  const checkSources = async () => {
+    const answer = student.getByTestId('assistant-message').last();
+    const list = answer.getByRole('list', { name: 'Sources for this answer' });
+    await expect(list).toBeVisible();
+    const entry = list.getByRole('button').filter({ hasText: 'sample.pdf' }).first();
+    await expect(entry).toContainText('p. 1');
+    if (!DEPLOYED) {
+      // The fake model cites [1] and [2], and they link to the list entries.
+      await expect(answer.locator('[data-variant="badge"]').first()).toBeVisible();
+    }
+    // Opening a source shows its passage as plain text.
+    await entry.click();
+    await expect(student.getByRole('dialog', { name: /Source 1/ })).toContainText(/Pythagorean|Photosynthesis/);
+    await student.keyboard.press('Escape');
+    await expect(student.getByRole('dialog')).toHaveCount(0);
+  };
+  await checkSources();
+  await student.reload();
+  await expect(student.getByTestId('assistant-message').last()).toContainText(/\S/);
+  await checkSources();
+});
+
 test('a member can switch the model for a chat', async () => {
   await student.goto(`/app/c/${courseId}`);
   await expect(student.getByRole('heading', { name: 'What would you like to learn?' })).toBeVisible();
@@ -234,6 +251,30 @@ test('the teacher sees the student question in Insights', async () => {
   const row = teacher.getByRole('listitem').filter({ hasText: QUESTION });
   await expect(row).toBeVisible();
   await expect(row.getByText(studentEmail)).toBeVisible();
+});
+
+test('the teacher deletes the document, sees it deleting, and it disappears', async () => {
+  test.setTimeout(READY_TIMEOUT + 60_000);
+  await teacher.goto(`/app/c/${courseId}/manage?tab=documents`);
+  const row = teacher.getByRole('listitem').filter({ hasText: 'sample.pdf' });
+  await row.getByRole('button', { name: 'Delete sample.pdf' }).click();
+  await teacher.getByRole('dialog').getByRole('button', { name: 'Delete document' }).click();
+  // The delete answers 202 with the document in `deleting`. The row has no actions while the worker works.
+  await expect(row.getByText('Deleting', { exact: true })).toBeVisible();
+  await expect(row.getByRole('button', { name: 'Delete sample.pdf' })).toHaveCount(0);
+  await expect(row).toHaveCount(0, { timeout: READY_TIMEOUT });
+
+  await student.goto(`/app/c/${courseId}`);
+  await expect(student.getByTestId('materials')).toContainText('has not added any documents yet');
+
+  // With no ready document there is nothing to cite: the answer shows no sources.
+  await student.getByLabel('Message to Ask').fill('What does my document say about triangles?');
+  await student.getByRole('button', { name: 'Send message' }).click();
+  await expect(student.getByRole('button', { name: 'Stop answer' })).toHaveCount(0, { timeout: CHAT_TIMEOUT });
+  const answer = student.getByTestId('assistant-message').last();
+  await expect(answer).toContainText(/\S/);
+  await expect(answer.getByTestId('sources')).toHaveCount(0);
+  await expect(answer.locator('[data-variant="badge"]')).toHaveCount(0);
 });
 
 test('a user who is not a member gets the not-found screen', async ({ browser }) => {

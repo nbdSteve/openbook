@@ -13,7 +13,8 @@ import {
   UserRound,
   Users,
 } from 'lucide-react';
-import { SourceBadge } from '@/components/chat/SourceBadge';
+import { SourceButton } from '@/components/chat/SourceBadge';
+import { SourceHighlightContext } from '@/components/chat/SourceHighlight';
 import { buttonStyles } from '@/components/ui/buttonStyles';
 import { Logo } from '@/components/ui/Logo';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
@@ -61,22 +62,23 @@ function SectionHeading({ title, subtitle }: { title: string; subtitle: string }
 
 /** The demo answer needs only bold text and citation badges, so it skips the Markdown and KaTeX libraries. */
 function DemoText({ text: raw }: { text: string }) {
+  const [active, setActive] = useState<number | null>(null);
   // While the text types out, hide a half-typed "**" or "[1" instead of showing it.
   let text = raw.replace(/\[\d?$/, '');
   if (((text.match(/\*\*/g) ?? []).length) % 2 === 1) text = text.replace(/\*\*(?!.*\*\*)/, '');
   return (
-    <>
+    <SourceHighlightContext.Provider value={{ active, onActive: setActive }}>
       {text.split('\n\n').map((paragraph, i) => (
         <p key={i} className="my-2 leading-relaxed first:mt-0 last:mb-0">
           {paragraph.split(/(\*\*[^*]+\*\*|\[\d\])/).map((part, j) => {
             if (part.startsWith('**')) return <strong key={j}>{part.slice(2, -2)}</strong>;
             const n = /^\[(\d)\]$/.exec(part)?.[1];
             const source = n ? DEMO_SOURCES.find((x) => x.n === Number(n)) : undefined;
-            return source ? <SourceBadge key={j} source={source} /> : part;
+            return source ? <SourceButton key={j} source={source} variant="badge" /> : part;
           })}
         </p>
       ))}
-    </>
+    </SourceHighlightContext.Provider>
   );
 }
 
