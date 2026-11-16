@@ -15,7 +15,9 @@ stack_log() { printf '[stack] %s\n' "$*"; }
 stack_start() {
   local label="$1"
   shift
-  { "$@" 2>&1 | awk -v p="[${label}] " '{ print p $0; fflush() }'; } &
+  # Job control gives a background job the terminal. A program that reads stdin (Vite does)
+  # would then get SIGTTIN and freeze when the user presses a key. Give it /dev/null instead.
+  { "$@" < /dev/null 2>&1 | awk -v p="[${label}] " '{ print p $0; fflush() }'; } &
   stack_pids+=("$!")
 }
 
@@ -33,6 +35,8 @@ stack_stop() {
   local pid
   for pid in ${stack_pids[@]+"${stack_pids[@]}"}; do
     kill -TERM -- "-${pid}" 2> /dev/null || kill -TERM "$pid" 2> /dev/null || true
+    # A stopped job (SIGTTIN, SIGTSTP) does not act on SIGTERM until it continues.
+    kill -CONT -- "-${pid}" 2> /dev/null || true
   done
   local waited=0
   while [ "$waited" -lt 20 ]; do
@@ -81,31 +85,35 @@ stack_wait_url() {
   return 1
 }
 
-# stack_run_api <env-file> <port>: run the API with only the variables of the env file.
-# Every AWS_* variable of the caller is dropped, so a real AWS profile cannot leak into
-# the local API.
+# stack_run_api <env-file>: run the API with only the variables of the env file plus a short
+# allowlist that cargo needs. Nothing else of the caller's environment gets through, so an
+# exported OPENBOOK_LIMIT_* value, an AWS profile, or a real credential cannot change the
+# local API.
 stack_run_api() {
-  local env_file="$1"
-  (
-    while IFS= read -r name; do
-      unset "$name"
-    done < <(env | sed -n 's/^\(AWS_[A-Za-z0-9_]*\)=.*/\1/p')
-    set -a
-    # shellcheck disable=SC1090 # the file is written by scripts/bootstrap-local.sh
-    . "$env_file"
-    set +a
-    exec cargo run --quiet -p openbook-api
-  )
+  local env_file="$1" entry name
+  local allowed=()
+  while IFS= read -r -d '' entry; do
+    name="${entry%%=*}"
+    case "$name" in
+      PATH | HOME | USER | LOGNAME | TERM | TMPDIR | LANG | LC_* | CARGO_* | RUSTUP_* | RUSTFLAGS | RUSTC | RUSTC_* | RUSTDOC | SDKROOT | DEVELOPER_DIR | CC | CXX | CFLAGS | LDFLAGS | XDG_*)
+        allowed+=("$entry")
+        ;;
+    esac
+  done < <(env -0)
+  # shellcheck disable=SC2016 # $1 is for the inner bash
+  exec env -i ${allowed[@]+"${allowed[@]}"} bash -c 'set -a; . "$1"; set +a; exec cargo run --quiet -p openbook-api' _ "$env_file"
 }
 
-# stack_run_web <emulator-port> <api-port> <web-port>: run the Vite dev server.
+# stack_run_web <emulator-port> <api-port> <web-port> <web-config-file>: run the Vite dev server.
+# The dev server serves the web config file as /config.json.
 stack_run_web() {
-  local emulator_port="$1" api_port="$2" web_port="$3"
+  local emulator_port="$1" api_port="$2" web_port="$3" web_config="$4"
   (
     export NODE_EXTRA_CA_CERTS="${HOME}/.aws/emulator/${emulator_port}/ca.pem"
     export OPENBOOK_EMULATOR_PORT="$emulator_port"
     export OPENBOOK_API_PORT="$api_port"
     export OPENBOOK_WEB_PORT="$web_port"
+    export OPENBOOK_WEB_CONFIG="$web_config"
     exec npm --prefix apps/ask run dev
   )
 }

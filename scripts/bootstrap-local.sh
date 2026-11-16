@@ -3,12 +3,16 @@
 # See docs/local-dev.md. Safe to run twice.
 #
 #   scripts/bootstrap-local.sh [--emulator-port N] [--web-port N] [--api-port N]
-#                              [--env-file PATH] [--web-config PATH]
+#                              [--stack-dir DIR] [--env-file PATH] [--web-config PATH]
+#                              [--daily-messages-per-user N]
 #
 # Defaults: OPENBOOK_EMULATOR_PORT (9297), OPENBOOK_WEB_PORT (5173), OPENBOOK_API_PORT (8787),
-# .local/api.env, apps/ask/public/config.json. If OPENBOOK_BEDROCK_PROFILE is set, the API
+# and the stack folder .local/dev. The API environment goes to <stack-dir>/api.env and the web
+# runtime config to <stack-dir>/web-config.json (the dev server serves it as /config.json
+# when OPENBOOK_WEB_CONFIG names it). Each stack has its own folder, so `make dev` and
+# `make e2e-local` do not share a file. If OPENBOOK_BEDROCK_PROFILE is set, the API
 # environment gets the deployed model catalog from infra/cdk.json (real Bedrock) instead of
-# the single fake model.
+# the two fake models.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -16,12 +20,14 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 emulator_port="${OPENBOOK_EMULATOR_PORT:-9297}"
 web_port="${OPENBOOK_WEB_PORT:-5173}"
 api_port="${OPENBOOK_API_PORT:-8787}"
-env_file="${repo_root}/.local/api.env"
-web_config="${repo_root}/apps/ask/public/config.json"
+stack_dir="${repo_root}/.local/dev"
+env_file=""
+web_config=""
+daily_messages_per_user=""
 bedrock_profile="${OPENBOOK_BEDROCK_PROFILE:-}"
 
 usage() {
-  sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+  sed -n '2,18p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
   exit 2
 }
 
@@ -30,6 +36,8 @@ while [ $# -gt 0 ]; do
     --emulator-port) emulator_port="${2:?--emulator-port needs a value}"; shift 2 ;;
     --web-port) web_port="${2:?--web-port needs a value}"; shift 2 ;;
     --api-port) api_port="${2:?--api-port needs a value}"; shift 2 ;;
+    --stack-dir) stack_dir="${2:?--stack-dir needs a value}"; shift 2 ;;
+    --daily-messages-per-user) daily_messages_per_user="${2:?--daily-messages-per-user needs a value}"; shift 2 ;;
     --env-file) env_file="${2:?--env-file needs a value}"; shift 2 ;;
     --web-config) web_config="${2:?--web-config needs a value}"; shift 2 ;;
     -h | --help) usage ;;
@@ -37,9 +45,12 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-for value in "$emulator_port" "$web_port" "$api_port"; do
+env_file="${env_file:-${stack_dir}/api.env}"
+web_config="${web_config:-${stack_dir}/web-config.json}"
+
+for value in "$emulator_port" "$web_port" "$api_port" ${daily_messages_per_user:+"$daily_messages_per_user"}; do
   if [[ ! "$value" =~ ^[0-9]+$ ]]; then
-    echo "error: ports must be numbers, got '$value'" >&2
+    echo "error: ports and limits must be numbers, got '$value'" >&2
     exit 2
   fi
 done
@@ -172,7 +183,7 @@ if [ -z "$client_id" ]; then
     --user-pool-id "$pool_id" \
     --client-name "$client_name" \
     --no-generate-secret \
-    --explicit-auth-flows ALLOW_USER_SRP_AUTH ALLOW_USER_PASSWORD_AUTH ALLOW_REFRESH_TOKEN_AUTH \
+    --explicit-auth-flows ALLOW_USER_PASSWORD_AUTH ALLOW_REFRESH_TOKEN_AUTH \
     --prevent-user-existence-errors ENABLED \
     --query 'UserPoolClient.ClientId' --output text)"
 else
@@ -227,6 +238,10 @@ write_atomic() { # write_atomic <path> <mode>; the content comes from stdin
   mv "$tmp" "$target"
 }
 
+# Quote a value for a file that Bash sources: single quotes, with each inner quote written
+# as '\''. The catalog is JSON, which has double quotes and may have anything else.
+sq() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
+
 if [ -n "$bedrock_profile" ]; then
   # Hybrid mode: the deployed catalog on real Bedrock. Everything else stays on the emulator.
   models="$(jq -c '.context.models' "${repo_root}/infra/cdk.json")"
@@ -234,10 +249,12 @@ if [ -n "$bedrock_profile" ]; then
   fast_model="$(jq -r '.context.fastModel' "${repo_root}/infra/cdk.json")"
   log "model catalog: deployed (real Bedrock through AWS profile ${bedrock_profile})"
 else
-  models='[{"id":"fake","label":"Local fake model","vendor":"openbook","provider":"fake","modelId":"fake","residency":"au","maxOutputTokens":2000}]'
+  # `fake` is the default chat and fast model (residency au). `fake-global` has residency
+  # global, so the model picker and its global label can be tested.
+  models='[{"id":"fake","label":"Local fake model","vendor":"openbook","provider":"fake","modelId":"fake","residency":"au","maxOutputTokens":2000},{"id":"fake-global","label":"Local fake global model","vendor":"openbook","provider":"fake","modelId":"fake-global","residency":"global","maxOutputTokens":2000}]'
   default_chat="fake"
   fast_model="fake"
-  log "model catalog: one fake model"
+  log "model catalog: two fake models (fake, fake-global)"
 fi
 
 {
@@ -249,14 +266,21 @@ fi
   echo "OPENBOOK_COGNITO_CLIENT_ID=${client_id}"
   echo "OPENBOOK_COGNITO_REGION=us-east-1"
   echo "OPENBOOK_COGNITO_JWKS_URL=${endpoint}/${pool_id}/.well-known/jwks.json"
-  echo "OPENBOOK_MODELS='${models}'"
+  echo "OPENBOOK_MODELS=$(sq "$models")"
   echo "OPENBOOK_DEFAULT_CHAT_MODEL=${default_chat}"
   echo "OPENBOOK_FAST_MODEL=${fast_model}"
+  if [ -n "$daily_messages_per_user" ]; then
+    echo "OPENBOOK_LIMIT_DAILY_MESSAGES_PER_USER=${daily_messages_per_user}"
+  fi
   if [ -n "$bedrock_profile" ]; then
-    echo "OPENBOOK_BEDROCK_PROFILE=${bedrock_profile}"
+    echo "OPENBOOK_BEDROCK_PROFILE=$(sq "$bedrock_profile")"
+  else
+    # No AWS profile or credentials file can leak into the local API.
+    echo "AWS_CONFIG_FILE=/dev/null"
+    echo "AWS_SHARED_CREDENTIALS_FILE=/dev/null"
   fi
   echo "OPENBOOK_LISTEN_ADDR=127.0.0.1:${api_port}"
-  echo "OPENBOOK_CA_BUNDLE=${ca_pem}"
+  echo "OPENBOOK_CA_BUNDLE=$(sq "$ca_pem")"
   echo "OPENBOOK_PRESIGN_ENDPOINT=http://localhost:${web_port}/__aws"
   echo "AWS_ENDPOINT_URL=${endpoint}"
   echo "AWS_REGION=us-east-1"
@@ -265,7 +289,7 @@ fi
   echo "RUST_LOG=${RUST_LOG:-info}"
 } | write_atomic "$env_file" 600
 
-jq -n --arg pool "$pool_id" --arg client "$client_id" --arg endpoint "http://localhost:${web_port}/__aws/" \
+jq -n --arg pool "$pool_id" --arg client "$client_id" --arg endpoint "/__aws/" \
   '{stage: "local", region: "us-east-1", cognito: {userPoolId: $pool, clientId: $client, endpoint: $endpoint}}' \
   | write_atomic "$web_config" 644
 

@@ -44,8 +44,16 @@ check: ## Run every formatter check, linter, type check, and unit test
 	$(call part,rust fmt,Cargo.toml,cargo fmt --all --check)
 	$(call part,rust clippy,Cargo.toml,cargo clippy --workspace --all-targets -- -D warnings)
 	$(call part,rust test,Cargo.toml,cargo test --workspace)
-	$(call npm_check,apps/ask,web,lint typecheck test)
+	$(call npm_check,apps/ask,web,lint typecheck test build)
 	$(call npm_check,infra,infra,lint typecheck build test)
+	@echo "==> shellcheck"
+	@if command -v shellcheck > /dev/null; then \
+	  shellcheck -x scripts/*.sh scripts/lib/stack.sh infra/scripts/*.sh; \
+	elif [ -n "$${CI:-}" ]; then \
+	  echo "error: shellcheck is not installed" >&2; exit 1; \
+	else \
+	  echo "shellcheck: skipped (not installed; CI runs it)"; \
+	fi
 
 .PHONY: fmt
 fmt: ## Format the Rust code

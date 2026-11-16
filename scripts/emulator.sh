@@ -94,8 +94,11 @@ case "$command" in
     rm -rf "$emulator_dir"
     mkdir -p "$emulator_dir"
     chmod 700 "$emulator_dir"
+    # Run as the caller. The folder is mode 700 and owned by the caller (the runner is uid
+    # 1001 on GitHub, not the uid 1000 of the image), so the container user must match it.
     docker run -d \
       --name "$name" \
+      --user "$(id -u):$(id -g)" \
       --label openbook.emulator=true \
       -p "127.0.0.1:${port}:${port}" \
       -e "EMULATOR_TELEMETRY=${EMULATOR_TELEMETRY:-off}" \

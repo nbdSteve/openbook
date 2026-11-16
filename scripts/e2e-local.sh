@@ -3,9 +3,8 @@
 # the Playwright `flows` project, then a full stop even when the tests fail. The exit code
 # is the test result.
 #
-# The ports differ from `make dev`, so both can run at once. One file is shared: the web
-# runtime config at apps/ask/public/config.json. This script saves the file first and puts
-# it back at the end, so a running `make dev` keeps its own file afterwards.
+# The ports and the files (.local/e2e) differ from `make dev` (.local/dev), so both can run
+# at once.
 # shellcheck disable=SC2031 # the subshells in scripts/lib/stack.sh export on purpose
 # shellcheck disable=SC2329 # cleanup runs from the EXIT trap
 set -euo pipefail
@@ -20,20 +19,12 @@ cd "$repo_root"
 emulator_port="${OPENBOOK_E2E_EMULATOR_PORT:-9310}"
 api_port="${OPENBOOK_E2E_API_PORT:-8790}"
 web_port="${OPENBOOK_E2E_WEB_PORT:-5180}"
-web_config="apps/ask/public/config.json"
-saved_config=""
-had_config=0
+stack_dir=".local/e2e"
 
 cleanup() {
   trap '' INT TERM
   stack_stop 2> /dev/null
   scripts/emulator.sh down "$emulator_port" || true
-  if [ "$had_config" -eq 1 ]; then
-    cp "$saved_config" "$web_config"
-  else
-    rm -f "$web_config"
-  fi
-  if [ -n "$saved_config" ]; then rm -f "$saved_config"; fi
 }
 trap cleanup EXIT
 trap 'exit 130' INT
@@ -42,12 +33,6 @@ trap 'exit 143' TERM
 stack_port_free "$api_port" "API"
 stack_port_free "$web_port" "web"
 
-saved_config="$(mktemp)"
-if [ -f "$web_config" ]; then
-  cp "$web_config" "$saved_config"
-  had_config=1
-fi
-
 # A fresh emulator every time, so no test depends on an earlier run.
 scripts/emulator.sh down "$emulator_port"
 scripts/emulator.sh up "$emulator_port"
@@ -55,10 +40,10 @@ scripts/emulator.sh up "$emulator_port"
 # The e2e run never uses real Bedrock, even when the caller has the variable set.
 OPENBOOK_BEDROCK_PROFILE="" scripts/bootstrap-local.sh \
   --emulator-port "$emulator_port" --web-port "$web_port" --api-port "$api_port" \
-  --env-file .local/e2e/api.env --web-config "$web_config"
+  --stack-dir "$stack_dir" --daily-messages-per-user 8
 
-stack_start api stack_run_api .local/e2e/api.env
-stack_start web stack_run_web "$emulator_port" "$api_port" "$web_port"
+stack_start api stack_run_api "${stack_dir}/api.env"
+stack_start web stack_run_web "$emulator_port" "$api_port" "$web_port" "${repo_root}/${stack_dir}/web-config.json"
 
 stack_wait_url "API" "http://127.0.0.1:${api_port}/api/health" 900
 stack_wait_url "web" "http://localhost:${web_port}/config.json" 120

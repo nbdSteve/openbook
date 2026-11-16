@@ -42,8 +42,10 @@ else
   started_emulator=1
 fi
 
+stack_dir=".local/dev"
 scripts/bootstrap-local.sh \
-  --emulator-port "$emulator_port" --web-port "$web_port" --api-port "$api_port"
+  --emulator-port "$emulator_port" --web-port "$web_port" --api-port "$api_port" \
+  --stack-dir "$stack_dir"
 
 if [ -n "${OPENBOOK_BEDROCK_PROFILE:-}" ]; then
   stack_log "chat uses real Bedrock through AWS profile '${OPENBOOK_BEDROCK_PROFILE}'"
@@ -51,8 +53,8 @@ else
   stack_log "chat uses the fake model (set OPENBOOK_BEDROCK_PROFILE to use real Bedrock)"
 fi
 
-stack_start api stack_run_api .local/api.env
-stack_start web stack_run_web "$emulator_port" "$api_port" "$web_port"
+stack_start api stack_run_api "${stack_dir}/api.env"
+stack_start web stack_run_web "$emulator_port" "$api_port" "$web_port" "${repo_root}/${stack_dir}/web-config.json"
 
 # The first API start compiles the Rust workspace, which can take a few minutes.
 stack_wait_url "API" "http://127.0.0.1:${api_port}/api/health" 900
