@@ -1,12 +1,16 @@
+import { spawnSync } from 'child_process';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { parse } from 'yaml';
-import { describe, expect, test } from 'vitest';
+import { afterAll, describe, expect, test } from 'vitest';
+import { copyAgnosticAssembly } from './helpers';
 
 const root = path.resolve(__dirname, '..', '..');
 const read = (file: string): string => fs.readFileSync(path.join(root, file), 'utf8');
 
 interface Step {
+  id?: string;
   name?: string;
   uses?: string;
   run?: string;
@@ -15,6 +19,7 @@ interface Step {
   'working-directory'?: string;
 }
 interface Job {
+  outputs?: Record<string, string>;
   environment?: string;
   permissions?: Record<string, string>;
   steps: Step[];
@@ -180,8 +185,16 @@ describe('the deploy workflow', () => {
     expect(runs).toContain('npx cdk synth --quiet -c stage=prod');
     expect(build.steps.some((s) => s.uses?.startsWith('aws-actions/'))).toBe(false);
     expect(deploy.wf.env?.CARGO_LAMBDA_VERSION).toMatch(/^\d+\.\d+\.\d+$/);
+    // The assembly travels as one tar, because the artifact actions save every file as 644
+    // and the Lambda bootstrap must stay executable. The tar's hash is a job output.
+    const pack = build.steps.find((s) => s.name === 'pack the cloud assembly');
+    expect(pack?.run).toContain('tar -C infra -cf cdk-assembly.tar cdk.out');
+    expect(pack?.run).toContain('sha256sum cdk-assembly.tar');
+    expect(pack?.id).toBe('pack');
+    expect(build.outputs).toEqual({ assembly_sha256: '${{ steps.pack.outputs.sha256 }}' });
     const upload = build.steps.find((s) => s.uses?.startsWith('actions/upload-artifact@'));
-    expect(upload?.with).toMatchObject({ name: 'cdk-out', path: 'infra/cdk.out' });
+    expect(upload?.with).toMatchObject({ name: 'cdk-assembly', path: 'cdk-assembly.tar' });
+    expect(build.steps.indexOf(pack as Step)).toBeLessThan(build.steps.indexOf(upload as Step));
   });
 
   test('the deploy job builds and tests nothing: it downloads the artifact and installs without scripts', () => {
@@ -190,11 +203,14 @@ describe('the deploy workflow', () => {
     expect(deployRuns).toContain('npm ci --ignore-scripts');
     expect(deployRuns.filter((r) => /^npm ci\b/.test(r) && !r.includes('--ignore-scripts'))).toEqual([]);
     const download = deploySteps.find((s) => s.uses?.startsWith('actions/download-artifact@'));
-    expect(download?.with).toMatchObject({ name: 'cdk-out', path: 'infra/cdk.out' });
-    // The install and the download come before the credentials, and the deploy after.
+    expect(download?.with).toMatchObject({ name: 'cdk-assembly', path: 'assembly' });
+    // The install, the download, and the validation come before the credentials, and the
+    // deploy after. A refused assembly never meets a token.
     const assume = names.indexOf('assume the deployment role');
+    const validate = names.indexOf('verify, unpack, and validate the cloud assembly');
     expect(deployRuns.indexOf('npm ci --ignore-scripts')).toBeLessThan(assume);
-    expect(deploySteps.indexOf(download as Step)).toBeLessThan(assume);
+    expect(deploySteps.indexOf(download as Step)).toBeLessThan(validate);
+    expect(validate).toBeLessThan(assume);
     expect(names.indexOf('deploy')).toBeGreaterThan(assume);
   });
 
@@ -257,5 +273,118 @@ describe('the gitignore', () => {
     const ignore = read('.gitignore');
     expect(ignore).toContain('cdk-outputs.json');
     expect(ignore).toContain('/infra/iam/rendered/');
+  });
+});
+
+describe('the verify, unpack, and validate step', () => {
+  const step = (deploy.wf.jobs.deploy as Job).steps.find((x) => x.name === 'verify, unpack, and validate the cloud assembly');
+  const root = path.resolve(__dirname, '..', '..');
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'openbook-verify-'));
+  let counter = 0;
+
+  afterAll(() => fs.rmSync(work, { recursive: true, force: true }));
+
+  // The step runs on Ubuntu, which has sha256sum. macOS has shasum only, so give the test a shim.
+  const bin = path.join(work, 'bin');
+  fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(bin, 'sha256sum'), '#!/bin/sh\nexec shasum -a 256 "$@"\n', { mode: 0o755 });
+
+  const sha = (file: string): string =>
+    spawnSync('shasum', ['-a', '256', file], { encoding: 'utf8' }).stdout.split(' ')[0];
+
+  /** Lays out a runner folder, runs the step body in it, and returns the result. */
+  function runStep(options: {
+    prepare?: (cdkOut: string, parent: string) => void;
+    tarOf?: (parent: string, tar: string) => void;
+    expectedHash?: (actual: string) => string;
+  }): { status: number | null; output: string; dir: string } {
+    counter += 1;
+    const dir = path.join(work, `run-${counter}`);
+    const parent = path.join(dir, 'build', 'infra');
+    fs.mkdirSync(path.join(dir, 'infra', 'scripts'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'assembly'), { recursive: true });
+    fs.copyFileSync(
+      path.join(root, 'infra', 'scripts', 'validate-assembly.js'),
+      path.join(dir, 'infra', 'scripts', 'validate-assembly.js'),
+    );
+    const cdkOut = path.join(parent, 'cdk.out');
+    copyAgnosticAssembly(cdkOut);
+    options.prepare?.(cdkOut, parent);
+    const tar = path.join(dir, 'assembly', 'cdk-assembly.tar');
+    if (options.tarOf) options.tarOf(parent, tar);
+    else spawnSync('tar', ['-C', parent, '-cf', tar, 'cdk.out']);
+    const expected = options.expectedHash ? options.expectedHash(sha(tar)) : sha(tar);
+    const result = spawnSync('bash', ['-e', '-c', step?.run ?? ''], {
+      cwd: dir,
+      encoding: 'utf8',
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, EXPECTED_SHA256: expected },
+    });
+    return { status: result.status, output: result.stdout + result.stderr, dir };
+  }
+
+  const bootstrapOf = (cdkOut: string): string => {
+    const hit = fs.readdirSync(cdkOut).find((d) => fs.existsSync(path.join(cdkOut, d, 'bootstrap')));
+    return path.join(cdkOut, hit ?? 'none', 'bootstrap');
+  };
+
+  test('the fixture Lambda binary is executable in the repository', () => {
+    // If git stored it as 644, every other check in this describe would prove nothing.
+    expect(fs.statSync(path.join(root, 'infra', 'test', 'fixtures', 'api', 'bootstrap')).mode & 0o111).not.toBe(0);
+  });
+
+  test('accepts the assembly that the build job packed, and the unpacked bootstrap is still executable', () => {
+    const result = runStep({});
+    expect(result.output).toContain('expected shape');
+    expect(result.status).toBe(0);
+    const unpacked = bootstrapOf(path.join(result.dir, 'infra', 'cdk.out'));
+    expect(fs.statSync(unpacked).mode & 0o111).not.toBe(0);
+  });
+
+  test('refuses a bootstrap that lost its execute bit, as the artifact actions would make it', () => {
+    const result = runStep({ prepare: (cdkOut) => fs.chmodSync(bootstrapOf(cdkOut), 0o644) });
+    expect(result.status).not.toBe(0);
+    expect(result.output).toContain('not executable');
+  });
+
+  test('refuses a tar whose hash is not the one that the build job recorded', () => {
+    const result = runStep({ expectedHash: (actual) => actual.replace(/^./, (c) => (c === '0' ? '1' : '0')) });
+    expect(result.status).not.toBe(0);
+    expect(result.output).toContain('not the one that the build job packed');
+  });
+
+  test('refuses an empty recorded hash', () => {
+    const result = runStep({ expectedHash: () => '' });
+    expect(result.status).not.toBe(0);
+  });
+
+  test('refuses a tar with an entry outside cdk.out', () => {
+    const result = runStep({
+      prepare: (_cdkOut, parent) => fs.writeFileSync(path.join(parent, 'evil'), 'x'),
+      tarOf: (parent, tar) => spawnSync('tar', ['-C', parent, '-cf', tar, 'cdk.out', 'evil']),
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.output).toContain('outside cdk.out');
+  });
+
+  test('refuses a tar with a symbolic link', () => {
+    const result = runStep({
+      prepare: (cdkOut) => fs.symlinkSync('/etc/passwd', path.join(cdkOut, 'link')),
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.output).toContain('not a plain file or directory');
+  });
+
+  test('refuses an assembly that has an executable asset, even when the hash and the tar are fine', () => {
+    const result = runStep({
+      prepare: (cdkOut) => {
+        const file = path.join(cdkOut, 'Openbook-prod.assets.json');
+        const assets = JSON.parse(fs.readFileSync(file, 'utf8')) as { files: Record<string, { source: Record<string, unknown> }> };
+        const first = Object.values(assets.files)[0];
+        first.source = { executable: ['sh', '-c', 'echo pwned'], packaging: 'file' };
+        fs.writeFileSync(file, JSON.stringify(assets));
+      },
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.output).toContain('cloud assembly refused');
   });
 });

@@ -24,9 +24,6 @@ export interface OpenbookStackProps extends cdk.StackProps {
   certificate?: acm.ICertificate;
 }
 
-/** The local dev origin that the docs bucket CORS allows in dev only. */
-export const devWebOrigin = 'http://localhost:5173';
-
 /** The one-year cache for hashed, immutable build assets. */
 export const immutableCacheControl = 'public, max-age=31536000, immutable';
 
@@ -157,21 +154,20 @@ export class OpenbookStack extends cdk.Stack {
         RUST_LOG: 'info',
       },
     });
-    // Exactly the item calls the API makes. `grantReadWriteData` would add stream and
-    // export actions that the API never uses.
+    // The item calls that the API makes (crates/core/src/store.rs), and no more.
+    // `grantReadWriteData` would add stream, export, scan, and describe actions. A transaction
+    // needs the permission of each of its operations, and the API uses no ConditionCheck.
+    // Add an action here, and to the boundary template, when the API starts to call it.
     apiFunction.addToRolePolicy(
       new iam.PolicyStatement({
         sid: 'ApplicationTable',
         actions: [
           'dynamodb:BatchGetItem',
           'dynamodb:BatchWriteItem',
-          'dynamodb:ConditionCheckItem',
           'dynamodb:DeleteItem',
-          'dynamodb:DescribeTable',
           'dynamodb:GetItem',
           'dynamodb:PutItem',
           'dynamodb:Query',
-          'dynamodb:Scan',
           'dynamodb:UpdateItem',
         ],
         resources: [table.tableArn, `${table.tableArn}/index/*`],
@@ -296,7 +292,6 @@ export class OpenbookStack extends cdk.Stack {
     // ---- Docs bucket ---------------------------------------------------------------
     const siteOrigins = [`https://${distribution.distributionDomainName}`];
     if (config.domain) siteOrigins.push(`https://${config.domain.domainName}`);
-    if (!isProd) siteOrigins.push(devWebOrigin);
 
     const docsBucket = new s3.Bucket(this, 'DocsBucket', {
       bucketName: docsBucketName,

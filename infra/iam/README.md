@@ -42,9 +42,11 @@ Both write to `iam/rendered/`. The renderer writes only to a folder that git ign
 
 `--example` uses `example-values.json`: the account `000000000000` and synthetic identifiers.
 
-`../test/snapshots/iam-*.json` hold the example rendering of every template. A change to a template fails a test until you review the diff and run `npx vitest run -u`.
+`../test/snapshots/iam-*.json` hold the rendering of every template with the account `111111111111` (the fake account that the stack tests use) and the other values of `example-values.json`. The Bedrock resources of the boundary come from the catalog in `cdk.json`. A change to a template or to the catalog fails a test until you review the diff and run `npx vitest run -u`. `stack-policies.prod.json` holds every statement of the roles that the stack creates.
 
 ## Apply (out of band)
+
+The render script writes the Bedrock resources of the boundary from the model catalog in `cdk.json`, so a catalog change needs a new boundary version (see below) before the deploy that uses the new models.
 
 Use admin credentials for the target account in your own terminal. Use the same execution role name here that you render with. Order matters: the boundary policy must exist before the first deploy creates a role with it.
 
@@ -62,6 +64,10 @@ To change a document later, edit the template, run the tests, update the snapsho
 
 - The execution role action list comes from the committed stack, not from a deployment. The first prod deploy may find a missing action. That fails as a denied CloudFormation call and a rollback, not as a half-deployed stack. Add the action to the template, snapshot, and apply it again.
 - `iam:UpdateAssumeRolePolicy` is not conditioned on the boundary, because AWS does not support that condition for it. A role can still only do what its boundary allows.
-- If an Openbook change needs a new kind of permission for a stack role (a new AWS service, say), add it to the boundary template and apply the new policy version first.
+- If an Openbook change needs a new kind of permission for a stack role (a new AWS service, say) or a new model in the catalog, render the boundary again and apply the new policy version first.
+- Residual risk: the execution role can `CreateRole` with any trust policy (for example one that trusts another account). AWS has no condition key for the content of a trust document, so IAM cannot prevent it. The boundary caps what such a role could do to the application table, the stack buckets, the Openbook assets, the catalog's Bedrock models, CloudFront invalidation, and logs, and it allows no IAM action. A role that trusts a stranger still cannot do more than that. Only a change to the stack (a merge to `main` that passes the checks) can create such a role.
+- The Lambda grants have conditions: `lambda:AddPermission` only for the principal `cloudfront.amazonaws.com`, and function URLs only with `AWS_IAM` auth, so no template can make a function public. The `DeletionPolicy: Retain` resources of prod (table, buckets, user pool) outlive the stack, so also review changes to them as data changes.
+- The user pool grants carry the condition `aws:ResourceTag/aws:cloudformation:stack-name` = `Openbook-prod`. CloudFormation tags the pool, but this was not tested against a real deploy. If the first deploy is denied on a Cognito action, check that tag first, and remove the condition as a last resort. `CreateUserPool` itself takes no resource and no usable condition.
+- The deploy role cannot call `DeleteStack` and cannot create import change sets (an explicit Deny on `ChangeSetType` `IMPORT`). It keeps `UpdateTerminationProtection`, because the CDK CLI sets protection on the first deploy of a stack that has it. If a first deploy fails and leaves the stack in `ROLLBACK_COMPLETE`, delete that stack yourself with your admin credentials, then run the deploy again.
 - The deploy role can list only the `openbook-prod/` prefix of the bootstrap bucket. If cdk-assets treats the resulting `403` on a missing object as an error, the first publish shows it. The fix is a wider `ListBucket` grant, not a wider object grant.
 - A custom domain needs more than this: a Route 53 grant, an ACM certificate stack in `us-east-1`, and cross-Region reference permissions. Add them to the templates when you turn the domain on.

@@ -155,8 +155,9 @@ describe.each([
     // Lambda allows 4 KB of environment variables in total.
     expect(JSON.stringify(env).length).toBeLessThan(4096);
     expect(env.OPENBOOK_LIMIT_DAILY_MESSAGES_PER_USER).toBe('50');
-    expect(env.OPENBOOK_LIMIT_DAILY_MESSAGES_GLOBAL).toBe('500');
-    expect(env.OPENBOOK_LIMIT_DAILY_TOKENS_GLOBAL).toBe('3000000');
+    // The spend caps until the public launch (stageLimits in cdk.json), well below the API defaults.
+    expect(env.OPENBOOK_LIMIT_DAILY_MESSAGES_GLOBAL).toBe(_stage === 'prod' ? '300' : '100');
+    expect(env.OPENBOOK_LIMIT_DAILY_TOKENS_GLOBAL).toBe(_stage === 'prod' ? '300000' : '100000');
     expect(env.OPENBOOK_LIMIT_FAILED_JOINS_PER_DAY).toBe('20');
     expect(env.OPENBOOK_LIMIT_COURSES_OWNED).toBe('10');
     expect(env.OPENBOOK_LIMIT_DOCUMENTS_PER_COURSE).toBe('50');
@@ -427,17 +428,16 @@ describe('stage differences', () => {
     });
   });
 
-  test('only dev lets the local Vite origin upload to the docs bucket', () => {
-    const origins = (s: ReturnType<typeof synth>): unknown[] => {
-      const docs = Object.values(s.json.Resources).find(
+  test('no stage lets a localhost origin upload to the docs bucket (local dev uses the Vite proxy)', () => {
+    for (const stage of [dev, prod]) {
+      const docs = Object.values(stage.json.Resources).find(
         (r) => r.Type === 'AWS::S3::Bucket' && r.Properties?.CorsConfiguration,
       );
-      return (docs?.Properties?.CorsConfiguration as { CorsRules: { AllowedOrigins: unknown[] }[] }).CorsRules[0]
+      const origins = (docs?.Properties?.CorsConfiguration as { CorsRules: { AllowedOrigins: unknown[] }[] }).CorsRules[0]
         .AllowedOrigins;
-    };
-    expect(origins(dev)).toContain('http://localhost:5173');
-    expect(JSON.stringify(origins(prod))).not.toContain('localhost');
-    expect(JSON.stringify(origins(prod))).toContain('"DomainName"');
+      expect(JSON.stringify(origins)).not.toContain('localhost');
+      expect(JSON.stringify(origins)).toContain('"DomainName"');
+    }
   });
 });
 

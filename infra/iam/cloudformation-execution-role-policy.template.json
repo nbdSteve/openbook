@@ -29,9 +29,7 @@
       "Sid": "LambdaFunctions",
       "Effect": "Allow",
       "Action": [
-        "lambda:AddPermission",
         "lambda:CreateFunction",
-        "lambda:CreateFunctionUrlConfig",
         "lambda:DeleteFunction",
         "lambda:DeleteFunctionConcurrency",
         "lambda:DeleteFunctionUrlConfig",
@@ -49,13 +47,43 @@
         "lambda:TagResource",
         "lambda:UntagResource",
         "lambda:UpdateFunctionCode",
-        "lambda:UpdateFunctionConfiguration",
-        "lambda:UpdateFunctionUrlConfig"
+        "lambda:UpdateFunctionConfiguration"
       ],
       "Resource": [
         "arn:aws:lambda:ap-southeast-2:${ACCOUNT_ID}:function:Openbook-prod-*",
         "arn:aws:lambda:ap-southeast-2:${ACCOUNT_ID}:function:Openbook-prod-*:*"
       ]
+    },
+    {
+      "Sid": "AddOnlyCloudFrontInvokePermissions",
+      "Effect": "Allow",
+      "Action": "lambda:AddPermission",
+      "Resource": [
+        "arn:aws:lambda:ap-southeast-2:${ACCOUNT_ID}:function:Openbook-prod-*",
+        "arn:aws:lambda:ap-southeast-2:${ACCOUNT_ID}:function:Openbook-prod-*:*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "lambda:Principal": "cloudfront.amazonaws.com"
+        }
+      }
+    },
+    {
+      "Sid": "FunctionUrlsOnlyWithIamAuth",
+      "Effect": "Allow",
+      "Action": [
+        "lambda:CreateFunctionUrlConfig",
+        "lambda:UpdateFunctionUrlConfig"
+      ],
+      "Resource": [
+        "arn:aws:lambda:ap-southeast-2:${ACCOUNT_ID}:function:Openbook-prod-*",
+        "arn:aws:lambda:ap-southeast-2:${ACCOUNT_ID}:function:Openbook-prod-*:*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "lambda:FunctionUrlAuthType": "AWS_IAM"
+        }
+      }
     },
     {
       "Sid": "InvokeTheBucketDeploymentProvider",
@@ -228,7 +256,12 @@
         "cognito-idp:UpdateUserPool",
         "cognito-idp:UpdateUserPoolClient"
       ],
-      "Resource": "arn:aws:cognito-idp:ap-southeast-2:${ACCOUNT_ID}:userpool/*"
+      "Resource": "arn:aws:cognito-idp:ap-southeast-2:${ACCOUNT_ID}:userpool/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/aws:cloudformation:stack-name": "Openbook-prod"
+        }
+      }
     },
     {
       "Sid": "CloudFrontSite",

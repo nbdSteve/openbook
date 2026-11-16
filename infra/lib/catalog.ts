@@ -42,6 +42,9 @@ export const auDestinationRegions = ['ap-southeast-2', 'ap-southeast-4'] as cons
  */
 export const allowedVendors = ['anthropic', 'openai', 'amazon', 'meta', 'mistral', 'cohere', 'deepseek', 'qwen'] as const;
 
+/** The largest `maxOutputTokens` that the API accepts (MAX_OUTPUT_TOKENS_LIMIT in catalog.rs). */
+export const maxOutputTokensLimit = 64_000;
+
 const idPattern = /^[a-z0-9-]{1,40}$/;
 const modelIdPattern = new RegExp(`^(?:(au|global)\\.)?(?:${allowedVendors.join('|')})\\.[A-Za-z0-9][A-Za-z0-9._:-]*$`);
 
@@ -104,10 +107,17 @@ export function validateCatalog(raw: unknown, defaultChatModel: unknown, fastMod
     if (residency !== expected) {
       fail(`"${id}" has residency "${residency}" but modelId "${modelId}" is "${expected}"`);
     }
-    if (maxOutputTokens !== undefined && (!Number.isInteger(maxOutputTokens) || (maxOutputTokens as number) <= 0)) {
-      fail(`"${id}" maxOutputTokens must be a positive integer`);
+    // The same ranges as crates/core/src/catalog.rs, so a bad value fails the synth and not the
+    // start of the Lambda.
+    if (
+      maxOutputTokens !== undefined &&
+      (typeof maxOutputTokens !== 'number' || !Number.isInteger(maxOutputTokens) || maxOutputTokens < 1 || maxOutputTokens > maxOutputTokensLimit)
+    ) {
+      fail(`"${id}" maxOutputTokens must be an integer from 1 to ${maxOutputTokensLimit}`);
     }
-    if (temperature !== undefined && typeof temperature !== 'number') fail(`"${id}" temperature must be a number`);
+    if (temperature !== undefined && (typeof temperature !== 'number' || !Number.isFinite(temperature) || temperature < 0 || temperature > 2)) {
+      fail(`"${id}" temperature must be a number from 0 to 2`);
+    }
     out.push({
       id,
       label,
@@ -204,4 +214,23 @@ export function bedrockStatements(models: CatalogModel[], partition: string, acc
     }
   }
   return statements;
+}
+
+/**
+ * Every Bedrock resource ARN that the catalog needs, as strings, with `account` in the
+ * inference-profile ARNs. This is the same list as `bedrockStatements` (a test compares them).
+ * The boundary template takes its Bedrock resources from here, so the boundary allows what
+ * the catalog uses and nothing else.
+ */
+export function bedrockResourceArns(models: CatalogModel[], account: string, partition = 'aws'): string[] {
+  const out: string[] = [];
+  for (const model of models) {
+    const { prefix, foundationModel } = parseModelId(model.modelId);
+    const profile = `arn:${partition}:bedrock:${sourceRegion}:${account}:inference-profile/${model.modelId}`;
+    const fm = (region: string): string => `arn:${partition}:bedrock:${region}::foundation-model/${foundationModel}`;
+    if (prefix === 'au') out.push(profile, ...auDestinationRegions.map(fm));
+    else if (prefix === 'none') out.push(fm(sourceRegion));
+    else out.push(profile, fm(sourceRegion), fm(''));
+  }
+  return [...new Set(out)];
 }

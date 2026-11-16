@@ -15,6 +15,7 @@
 import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
+import { bedrockResourceArns, validateCatalog } from '../lib/catalog';
 
 export const iamDir = path.join(__dirname, '..', 'iam');
 export const templateSuffix = '.template.json';
@@ -28,6 +29,29 @@ export const placeholderRules: Record<string, RegExp> = {
   // GitHub's immutable subject form: both identities are canonical positive integers.
   GITHUB_REPOSITORY_IDENTITY: /^nbdSteve@[1-9][0-9]*\/openbook@[1-9][0-9]*$/,
 };
+
+/**
+ * A placeholder that the script fills itself, not from a supplied value. `${BEDROCK_RESOURCES}`
+ * must be a whole JSON string, and becomes the array of Bedrock ARNs of the model catalog in
+ * `cdk.json` (the same ARNs that the stack's own Bedrock policy has). The boundary therefore
+ * allows exactly the catalog and nothing wider.
+ */
+export const builtinPlaceholders = ['BEDROCK_RESOURCES'];
+
+export function catalogResources(): string[] {
+  const context = (JSON.parse(fs.readFileSync(path.join(iamDir, '..', 'cdk.json'), 'utf8')) as { context: Record<string, unknown> }).context;
+  const catalog = validateCatalog(context.models, context.defaultChatModel, context.fastModel);
+  // The account stays a placeholder: the next step substitutes the supplied account.
+  return bedrockResourceArns(catalog.models, '${ACCOUNT_ID}');
+}
+
+function expandBuiltins(text: string): string {
+  const expanded = text.replace('"${BEDROCK_RESOURCES}"', () => JSON.stringify(catalogResources()));
+  if (expanded.includes('BEDROCK_RESOURCES')) {
+    throw new Error('${BEDROCK_RESOURCES} may appear only as a whole JSON string');
+  }
+  return expanded;
+}
 
 const placeholderPattern = /\$\{([A-Za-z0-9_]+)\}/g;
 
@@ -48,7 +72,7 @@ export function readTemplate(name: string): string {
 }
 
 export function placeholdersIn(text: string): Set<string> {
-  return new Set([...text.matchAll(placeholderPattern)].map((m) => m[1]));
+  return new Set([...text.matchAll(placeholderPattern)].map((m) => m[1]).filter((name) => !builtinPlaceholders.includes(name)));
 }
 
 export function exampleValues(): Values {
@@ -56,7 +80,8 @@ export function exampleValues(): Values {
 }
 
 /** Substitutes `values` into one template and returns canonical JSON. */
-export function renderIamDocument(text: string, values: Values): string {
+export function renderIamDocument(rawText: string, values: Values): string {
+  const text = expandBuiltins(rawText);
   for (const placeholder of placeholdersIn(text)) {
     if (!has(placeholderRules, placeholder)) {
       throw new Error(`unknown placeholder \${${placeholder}}`);

@@ -49,9 +49,24 @@ describe('catalog validation fails the synth', () => {
     ['a bad id', model({ id: 'Bad_ID' }), /must match/],
     ['an unknown residency', model({ residency: 'eu' }), /residency must be/],
     ['a model ID without a vendor', model({ modelId: 'sonnet' }), /is not allowed/],
-    ['a negative token limit', model({ maxOutputTokens: -1 }), /positive integer/],
+    ['a negative token limit', model({ maxOutputTokens: -1 }), /maxOutputTokens must be an integer from 1 to 64000/],
+    ['a zero token limit', model({ maxOutputTokens: 0 }), /maxOutputTokens/],
+    ['a token limit above the API maximum', model({ maxOutputTokens: 64001 }), /maxOutputTokens/],
+    ['a fractional token limit', model({ maxOutputTokens: 10.5 }), /maxOutputTokens/],
+    ['a token limit that is a string', model({ maxOutputTokens: '2000' }), /maxOutputTokens/],
+    ['a temperature below 0', model({ temperature: -0.1 }), /temperature must be a number from 0 to 2/],
+    ['a temperature above 2', model({ temperature: 2.1 }), /temperature/],
+    ['a temperature that is a string', model({ temperature: '0.5' }), /temperature/],
   ])('refuses %s', (_name, bad, message) => {
     expect(withCatalog([bad])).toThrow(message);
+  });
+
+  test.each([
+    [1, 0],
+    [64000, 2],
+    [2000, 0.2],
+  ])('accepts maxOutputTokens %s and temperature %s', (maxOutputTokens, temperature) => {
+    expect(withCatalog([model({ maxOutputTokens, temperature })])).not.toThrow();
   });
 
   test('refuses duplicate IDs', () => {

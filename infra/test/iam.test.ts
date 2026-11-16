@@ -117,7 +117,7 @@ describe('the GitHub deployment role policy', () => {
   });
 
   test('grants on every resource only calls that take no resource', () => {
-    const star = deployPolicy.Statement.filter((s) => resources(s).includes('*'));
+    const star = deployPolicy.Statement.filter((s) => resources(s).includes('*') && s.Effect === 'Allow');
     expect(star).toHaveLength(1);
     expect(actions(star[0]).sort()).toEqual([
       'cloudformation:GetTemplateSummary',

@@ -48,7 +48,17 @@
       }
     ],
     "defaultChatModel": "claude-sonnet",
-    "fastModel": "claude-haiku"
+    "fastModel": "claude-haiku",
+    "stageLimits": {
+      "dev": {
+        "limitDailyMessagesGlobal": 100,
+        "limitDailyTokensGlobal": 100000
+      },
+      "prod": {
+        "limitDailyMessagesGlobal": 300,
+        "limitDailyTokensGlobal": 300000
+      }
+    }
   },
   "cli-telemetry": false
 }
