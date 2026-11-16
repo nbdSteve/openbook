@@ -1,0 +1,98 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "WriteTheStackLogs",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+      ],
+      "Resource": [
+        "arn:aws:logs:ap-southeast-2:${ACCOUNT_ID}:log-group:Openbook-prod-*",
+        "arn:aws:logs:ap-southeast-2:${ACCOUNT_ID}:log-group:Openbook-prod-*:*",
+        "arn:aws:logs:ap-southeast-2:${ACCOUNT_ID}:log-group:/aws/lambda/Openbook-prod-*",
+        "arn:aws:logs:ap-southeast-2:${ACCOUNT_ID}:log-group:/aws/lambda/Openbook-prod-*:*"
+      ]
+    },
+    {
+      "Sid": "CreateTheLambdaLogGroups",
+      "Effect": "Allow",
+      "Action": "logs:CreateLogGroup",
+      "Resource": [
+        "arn:aws:logs:ap-southeast-2:${ACCOUNT_ID}:log-group:Openbook-prod-*",
+        "arn:aws:logs:ap-southeast-2:${ACCOUNT_ID}:log-group:/aws/lambda/Openbook-prod-*"
+      ]
+    },
+    {
+      "Sid": "UseTheApplicationTable",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable",
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:Query",
+        "dynamodb:Scan",
+        "dynamodb:UpdateItem"
+      ],
+      "Resource": [
+        "arn:aws:dynamodb:ap-southeast-2:${ACCOUNT_ID}:table/Openbook-prod-*",
+        "arn:aws:dynamodb:ap-southeast-2:${ACCOUNT_ID}:table/Openbook-prod-*/index/*"
+      ]
+    },
+    {
+      "Sid": "UseTheStackBuckets",
+      "Effect": "Allow",
+      "Action": [
+        "s3:Abort*",
+        "s3:DeleteObject*",
+        "s3:GetBucket*",
+        "s3:GetObject*",
+        "s3:List*",
+        "s3:PutObject*"
+      ],
+      "Resource": [
+        "arn:aws:s3:::openbook-prod-*",
+        "arn:aws:s3:::openbook-prod-*/*"
+      ]
+    },
+    {
+      "Sid": "ReadTheStackAssets",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetBucket*",
+        "s3:GetObject*",
+        "s3:List*"
+      ],
+      "Resource": [
+        "arn:aws:s3:::cdk-hnb659fds-assets-${ACCOUNT_ID}-ap-southeast-2",
+        "arn:aws:s3:::cdk-hnb659fds-assets-${ACCOUNT_ID}-ap-southeast-2/openbook-prod/*"
+      ]
+    },
+    {
+      "Sid": "InvokeBedrockModels",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock:InvokeModel",
+        "bedrock:InvokeModelWithResponseStream"
+      ],
+      "Resource": [
+        "arn:aws:bedrock:ap-southeast-2:${ACCOUNT_ID}:inference-profile/*",
+        "arn:aws:bedrock:*::foundation-model/*"
+      ]
+    },
+    {
+      "Sid": "InvalidateTheSite",
+      "Effect": "Allow",
+      "Action": [
+        "cloudfront:CreateInvalidation",
+        "cloudfront:GetInvalidation"
+      ],
+      "Resource": "arn:aws:cloudfront::${ACCOUNT_ID}:distribution/*"
+    }
+  ]
+}

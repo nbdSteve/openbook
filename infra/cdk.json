@@ -1,0 +1,54 @@
+{
+  "app": "npx tsx bin/openbook.ts",
+  "output": "cdk.out",
+  "watch": {
+    "include": [
+      "bin/**",
+      "lib/**"
+    ],
+    "exclude": [
+      "node_modules/**",
+      "cdk.out/**",
+      "dist/**",
+      "test/**"
+    ]
+  },
+  "context": {
+    "@aws-cdk/aws-iam:minimizePolicies": true,
+    "@aws-cdk/core:target-partitions": [
+      "aws"
+    ],
+    "models": [
+      {
+        "id": "claude-sonnet",
+        "label": "Claude Sonnet 4.6",
+        "vendor": "anthropic",
+        "provider": "bedrock",
+        "modelId": "au.anthropic.claude-sonnet-4-6",
+        "residency": "au",
+        "maxOutputTokens": 2000
+      },
+      {
+        "id": "claude-haiku",
+        "label": "Claude Haiku 4.5",
+        "vendor": "anthropic",
+        "provider": "bedrock",
+        "modelId": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+        "residency": "au",
+        "maxOutputTokens": 2000
+      },
+      {
+        "id": "gpt-oss-120b",
+        "label": "gpt-oss-120b",
+        "vendor": "openai",
+        "provider": "bedrock",
+        "modelId": "openai.gpt-oss-120b-1:0",
+        "residency": "au",
+        "maxOutputTokens": 2000
+      }
+    ],
+    "defaultChatModel": "claude-sonnet",
+    "fastModel": "claude-haiku"
+  },
+  "cli-telemetry": false
+}

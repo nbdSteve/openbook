@@ -1,0 +1,119 @@
+[
+  {
+    "policy": "ApiFunctionServiceRoleDefaultPolicy",
+    "statement": {
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable",
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:Query",
+        "dynamodb:Scan",
+        "dynamodb:UpdateItem"
+      ],
+      "Resource": [
+        "arn:aws:dynamodb:ap-southeast-2:111111111111:table/Openbook-prod-Table",
+        "arn:aws:dynamodb:ap-southeast-2:111111111111:table/Openbook-prod-Table/index/*"
+      ]
+    }
+  },
+  {
+    "policy": "ApiFunctionServiceRoleDefaultPolicy",
+    "statement": {
+      "Effect": "Allow",
+      "Action": [
+        "s3:DeleteObject",
+        "s3:GetObject",
+        "s3:PutObject"
+      ],
+      "Resource": [
+        "arn:aws:s3:::openbook-prod-docs-111111111111-ap-southeast-2/*"
+      ]
+    }
+  },
+  {
+    "policy": "ApiFunctionServiceRoleDefaultPolicy",
+    "statement": {
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListBucket"
+      ],
+      "Resource": [
+        "arn:aws:s3:::openbook-prod-docs-111111111111-ap-southeast-2"
+      ]
+    }
+  },
+  {
+    "policy": "ApiFunctionServiceRoleDefaultPolicy",
+    "statement": {
+      "Effect": "Allow",
+      "Action": [
+        "bedrock:InvokeModel",
+        "bedrock:InvokeModelWithResponseStream"
+      ],
+      "Resource": [
+        "arn:aws:bedrock:ap-southeast-2:111111111111:inference-profile/au.anthropic.claude-haiku-4-5-20251001-v1:0",
+        "arn:aws:bedrock:ap-southeast-2:111111111111:inference-profile/au.anthropic.claude-sonnet-4-6",
+        "arn:aws:bedrock:ap-southeast-2::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0",
+        "arn:aws:bedrock:ap-southeast-2::foundation-model/anthropic.claude-sonnet-4-6",
+        "arn:aws:bedrock:ap-southeast-2::foundation-model/openai.gpt-oss-120b-1:0",
+        "arn:aws:bedrock:ap-southeast-4::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0",
+        "arn:aws:bedrock:ap-southeast-4::foundation-model/anthropic.claude-sonnet-4-6"
+      ]
+    }
+  },
+  {
+    "policy": "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756CServiceRoleDefaultPolicy",
+    "statement": {
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetBucket*",
+        "s3:GetObject*",
+        "s3:List*"
+      ],
+      "Resource": [
+        "arn:aws:s3:::cdk-hnb659fds-assets-111111111111-ap-southeast-2",
+        "arn:aws:s3:::cdk-hnb659fds-assets-111111111111-ap-southeast-2/*"
+      ]
+    }
+  },
+  {
+    "policy": "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756CServiceRoleDefaultPolicy",
+    "statement": {
+      "Effect": "Allow",
+      "Action": [
+        "s3:Abort*",
+        "s3:DeleteObject*",
+        "s3:GetBucket*",
+        "s3:GetObject*",
+        "s3:List*",
+        "s3:PutObject",
+        "s3:PutObjectLegalHold",
+        "s3:PutObjectRetention",
+        "s3:PutObjectTagging",
+        "s3:PutObjectVersionTagging"
+      ],
+      "Resource": [
+        "arn:aws:s3:::openbook-prod-webbucket",
+        "arn:aws:s3:::openbook-prod-webbucket/*"
+      ]
+    }
+  },
+  {
+    "policy": "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756CServiceRoleDefaultPolicy",
+    "statement": {
+      "Effect": "Allow",
+      "Action": [
+        "cloudfront:CreateInvalidation",
+        "cloudfront:GetInvalidation"
+      ],
+      "Resource": [
+        "*"
+      ]
+    }
+  }
+]
