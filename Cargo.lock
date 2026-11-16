@@ -2426,6 +2426,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "openbook-eval"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "aws-config",
+ "aws-sdk-bedrockruntime",
+ "futures",
+ "openbook-api",
+ "openbook-core",
+ "openbook-ingest",
+ "openbook-search",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "zstd",
+]
+
+[[package]]
 name = "openbook-ingest"
 version = "0.1.0"
 dependencies = [

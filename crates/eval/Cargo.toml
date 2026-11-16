@@ -1,0 +1,34 @@
+[package]
+name = "openbook-eval"
+description = "Openbook retrieval evaluation: metrics, the offline run, the regression check, and the cache refresh"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "openbook-eval"
+path = "src/main.rs"
+
+[dependencies]
+openbook-api = { path = "../api" }
+openbook-core.workspace = true
+openbook-ingest = { path = "../ingest" }
+openbook-search = { workspace = true, features = ["bm25"] }
+async-trait.workspace = true
+aws-config.workspace = true
+aws-sdk-bedrockruntime.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.11"
+tempfile = "3"
+thiserror.workspace = true
+tokio.workspace = true
+zstd.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true
