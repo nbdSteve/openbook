@@ -1,0 +1,12 @@
+{
+  "app": "npx tsx bin/openbook.ts",
+  "output": "cdk.out",
+  "watch": {
+    "include": ["bin/**", "lib/**"],
+    "exclude": ["node_modules/**", "cdk.out/**", "dist/**", "test/**"]
+  },
+  "context": {
+    "@aws-cdk/aws-iam:minimizePolicies": true,
+    "@aws-cdk/core:target-partitions": ["aws"]
+  }
+}
