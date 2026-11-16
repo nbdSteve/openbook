@@ -362,6 +362,9 @@ struct MessageItem {
     content: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     sources: Option<Vec<Source>>,
+    /// The retrieval trace as a JSON string (under 32 KB). Not part of the API.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    trace: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     model: Option<String>,
     #[serde(default)]
@@ -437,6 +440,8 @@ pub struct NewMessage {
     pub content: String,
     pub created_at: String,
     pub sources: Option<Vec<Source>>,
+    /// The retrieval trace as JSON text. Assistant messages only.
+    pub trace: Option<String>,
     /// Assistant messages only.
     pub model: Option<String>,
     pub usage: TokenUsage,
@@ -1361,6 +1366,7 @@ impl Store {
             role: message.role,
             content: message.content.clone(),
             sources: message.sources.clone(),
+            trace: message.trace.clone(),
             model: message.model.clone(),
             input_tokens: message.usage.input_tokens,
             output_tokens: message.usage.output_tokens,

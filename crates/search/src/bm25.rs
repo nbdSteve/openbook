@@ -432,6 +432,148 @@ impl Bm25Store {
     }
 }
 
+/// Most courses whose readers the API keeps.
+pub const READER_CACHE_MAX_COURSES: usize = 8;
+/// Most bytes of unpacked index files that the API keeps in `/tmp`.
+pub const READER_CACHE_MAX_BYTES: u64 = 1 << 30;
+
+/// One cached reader.
+struct CachedReader {
+    course_id: String,
+    key: String,
+    reader: std::sync::Arc<Bm25Reader>,
+    bytes: u64,
+}
+
+/// The eviction policy: at most `max_courses` entries and `max_bytes` bytes, least recently used first.
+/// Entries are ordered with the most recently used first.
+struct Lru {
+    entries: Vec<CachedReader>,
+    max_courses: usize,
+    max_bytes: u64,
+}
+
+impl Lru {
+    fn get(&mut self, course_id: &str, key: &str) -> Option<std::sync::Arc<Bm25Reader>> {
+        let position = self
+            .entries
+            .iter()
+            .position(|e| e.course_id == course_id && e.key == key)?;
+        let entry = self.entries.remove(position);
+        let reader = entry.reader.clone();
+        self.entries.insert(0, entry);
+        Some(reader)
+    }
+
+    /// Adds an entry (a course has one entry: an older blob of the same course goes). Returns the
+    /// course IDs that were evicted, whose files can be deleted.
+    fn insert(&mut self, entry: CachedReader) -> Vec<String> {
+        let mut evicted = Vec::new();
+        self.entries.retain(|e| e.course_id != entry.course_id);
+        self.entries.insert(0, entry);
+        while self.entries.len() > 1
+            && (self.entries.len() > self.max_courses
+                || self.entries.iter().map(|e| e.bytes).sum::<u64>() > self.max_bytes)
+        {
+            if let Some(old) = self.entries.pop() {
+                evicted.push(old.course_id);
+            }
+        }
+        evicted
+    }
+}
+
+/// Readers for the API: an in-memory LRU over the files in `/tmp` that `Bm25Cache` keeps.
+/// It is keyed by course and blob key, holds at most 8 courses and 1 GB, and drops the least
+/// recently used course first. A new blob key for a course replaces its old reader.
+pub struct Bm25ReaderCache {
+    files: Bm25Cache,
+    root: PathBuf,
+    state: tokio::sync::Mutex<Lru>,
+}
+
+impl Bm25ReaderCache {
+    pub fn new(s3: S3Client, bucket: String, root: PathBuf) -> Self {
+        Self::with_limits(
+            s3,
+            bucket,
+            root,
+            READER_CACHE_MAX_COURSES,
+            READER_CACHE_MAX_BYTES,
+        )
+    }
+
+    pub fn with_limits(
+        s3: S3Client,
+        bucket: String,
+        root: PathBuf,
+        max_courses: usize,
+        max_bytes: u64,
+    ) -> Self {
+        Self {
+            files: Bm25Cache::new(s3, bucket, root.clone()),
+            root,
+            state: tokio::sync::Mutex::new(Lru {
+                entries: Vec::new(),
+                max_courses,
+                max_bytes,
+            }),
+        }
+    }
+
+    /// The reader for the blob `key` of the course. A miss downloads and unpacks the blob.
+    pub async fn reader(
+        &self,
+        course_id: &str,
+        key: &str,
+    ) -> Result<std::sync::Arc<Bm25Reader>, Bm25Error> {
+        let mut state = self.state.lock().await;
+        if let Some(reader) = state.get(course_id, key) {
+            return Ok(reader);
+        }
+        let reader = std::sync::Arc::new(self.files.open(course_id, key).await?);
+        let dir = self.root.join(course_id);
+        let bytes = tokio::task::spawn_blocking(move || dir_size(&dir))
+            .await
+            .map_err(index_err)?;
+        let evicted = state.insert(CachedReader {
+            course_id: course_id.to_owned(),
+            key: key.to_owned(),
+            reader: reader.clone(),
+            bytes,
+        });
+        for course in evicted {
+            let _ = std::fs::remove_dir_all(self.root.join(course));
+        }
+        Ok(reader)
+    }
+
+    /// The courses that have a reader now, most recently used first.
+    pub async fn cached_courses(&self) -> Vec<String> {
+        self.state
+            .lock()
+            .await
+            .entries
+            .iter()
+            .map(|e| e.course_id.clone())
+            .collect()
+    }
+}
+
+fn dir_size(dir: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|e| match e.metadata() {
+            Ok(m) if m.is_dir() => dir_size(&e.path()),
+            Ok(m) => m.len(),
+            Err(_) => 0,
+        })
+        .sum()
+}
+
 /// Opens a given version of a course index with a local cache (for warm Lambda invocations).
 pub struct Bm25Cache {
     s3: S3Client,
@@ -711,5 +853,73 @@ mod tests {
         unpack(&pack(&dir).unwrap(), &target).unwrap();
         assert!(!target.join("somewhere.lock").exists());
         assert!(target.join("meta.json").exists());
+    }
+
+    fn cached(course: &str, key: &str, bytes: u64) -> CachedReader {
+        let dir = temp_dir();
+        build(&dir, &[chunk("D", 0, 1, "", "text")]);
+        CachedReader {
+            course_id: course.into(),
+            key: key.into(),
+            reader: std::sync::Arc::new(Bm25Reader::open(&dir).unwrap()),
+            bytes,
+        }
+    }
+
+    fn lru(max_courses: usize, max_bytes: u64) -> Lru {
+        Lru {
+            entries: Vec::new(),
+            max_courses,
+            max_bytes,
+        }
+    }
+
+    #[test]
+    fn the_cache_keeps_at_most_eight_courses_and_drops_the_least_recently_used() {
+        let mut cache = lru(READER_CACHE_MAX_COURSES, READER_CACHE_MAX_BYTES);
+        for n in 0..8 {
+            assert!(cache.insert(cached(&format!("C{n}"), "k", 10)).is_empty());
+        }
+        // C0 is the oldest. Using it makes C1 the oldest.
+        assert!(cache.get("C0", "k").is_some());
+        let evicted = cache.insert(cached("C8", "k", 10));
+        assert_eq!(evicted, vec!["C1".to_owned()]);
+        assert_eq!(cache.entries.len(), 8);
+        assert!(cache.get("C1", "k").is_none());
+        assert!(cache.get("C0", "k").is_some());
+    }
+
+    #[test]
+    fn the_cache_keeps_at_most_one_gigabyte() {
+        let mut cache = lru(8, READER_CACHE_MAX_BYTES);
+        let gb = READER_CACHE_MAX_BYTES;
+        assert!(cache.insert(cached("A", "k", gb / 2)).is_empty());
+        assert!(cache.insert(cached("B", "k", gb / 2)).is_empty());
+        assert_eq!(cache.insert(cached("C", "k", gb / 4)), vec!["A".to_owned()]);
+        // One course bigger than the limit still stays: it is the one in use.
+        let mut small = lru(8, 100);
+        assert!(small.insert(cached("Big", "k", 1000)).is_empty());
+        assert_eq!(small.entries.len(), 1);
+    }
+
+    #[test]
+    fn a_new_blob_key_replaces_the_old_reader_of_the_course() {
+        let mut cache = lru(8, 1 << 30);
+        cache.insert(cached("C", "v1", 10));
+        assert!(cache.get("C", "v1").is_some());
+        cache.insert(cached("C", "v2", 10));
+        assert_eq!(cache.entries.len(), 1);
+        assert!(cache.get("C", "v1").is_none());
+        assert!(cache.get("C", "v2").is_some());
+    }
+
+    #[test]
+    fn directory_sizes_add_up() {
+        let dir = temp_dir();
+        std::fs::write(dir.join("a"), vec![0u8; 100]).unwrap();
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub/b"), vec![0u8; 50]).unwrap();
+        assert_eq!(dir_size(&dir), 150);
+        assert_eq!(dir_size(&dir.join("missing")), 0);
     }
 }

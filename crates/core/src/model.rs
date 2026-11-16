@@ -14,6 +14,7 @@ use futures::stream::{self, BoxStream, StreamExt};
 
 use crate::catalog::{Catalog, ModelEntry, ProviderKind};
 use crate::domain::MessageRole;
+use crate::prompt::{NOT_COVERED_NOTICE, REWRITE_LAST_MESSAGE_MARKER, REWRITE_SYSTEM_PROMPT};
 
 /// One earlier or new message in the conversation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,11 +24,15 @@ pub struct ChatTurn {
 }
 
 /// Everything the server decides for one model call.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ChatRequest {
     pub system: String,
     /// Starts with a user turn, alternates roles, and ends with the new user turn.
     pub turns: Vec<ChatTurn>,
+    /// Replaces the output limit of the catalog entry (the query rewrite uses a small one).
+    pub max_tokens: Option<i32>,
+    /// Replaces the temperature of the catalog entry.
+    pub temperature: Option<f32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -97,9 +102,20 @@ impl FakeChat {
 
     /// The full answer for a question.
     pub fn answer(model: &str, question: &str) -> String {
+        Self::answer_with(model, question, "")
+    }
+
+    /// The answer with a paragraph about the course materials (empty for none).
+    pub fn answer_with(model: &str, question: &str, materials: &str) -> String {
+        let materials = if materials.is_empty() {
+            String::new()
+        } else {
+            format!("{materials}\n\n")
+        };
         format!(
             "You asked: \"{question}\"\n\n\
              Here is a short **fake** answer in Markdown from the model `{model}`.\n\n\
+             {materials}\
              - Inline formula: $a^2 + b^2 = c^2$\n\
              - Block formula:\n\n\
              $$\\int_0^1 x^2 \\, dx = \\frac{{1}}{{3}}$$\n\n\
@@ -107,14 +123,87 @@ impl FakeChat {
         )
     }
 
+    /// What the fake model says about the course materials, from the system prompt.
+    /// With sources it quotes a few words of the first source and cites `[1]`, and of the second and
+    /// cites `[2]` when there are two or more. When the prompt says that the materials do not cover
+    /// the question, it says so too.
+    pub fn materials_paragraph(system: &str) -> String {
+        let sources = parse_sources(system);
+        if sources.is_empty() {
+            return if system.contains(NOT_COVERED_NOTICE) {
+                "The course materials do not cover this question.".to_owned()
+            } else {
+                String::new()
+            };
+        }
+        sources
+            .iter()
+            .take(2)
+            .enumerate()
+            .map(|(i, text)| {
+                let quote: Vec<&str> = text.split_whitespace().take(6).collect();
+                format!(
+                    "The course materials say \"{}\" [{}].",
+                    quote.join(" "),
+                    i + 1
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    }
+
+    /// The text of a request: a rewrite, an answer with the materials paragraph, or the plain answer.
+    fn reply(model: &str, request: &ChatRequest, question: &str) -> String {
+        if request.system == REWRITE_SYSTEM_PROMPT {
+            // The "rewrite" is the last student message itself.
+            return question
+                .rsplit(REWRITE_LAST_MESSAGE_MARKER)
+                .next()
+                .unwrap_or(question)
+                .trim()
+                .to_owned();
+        }
+        Self::answer_with(model, question, &Self::materials_paragraph(&request.system))
+    }
+
     /// The answer split into the deltas that the stream sends.
     pub fn deltas(model: &str, question: &str) -> Vec<String> {
-        let chars: Vec<char> = Self::answer(model, question).chars().collect();
+        Self::chunks(&Self::answer(model, question))
+    }
+
+    fn chunks(text: &str) -> Vec<String> {
+        let chars: Vec<char> = text.chars().collect();
         chars
             .chunks(Self::CHUNK_CHARS)
             .map(|c| c.iter().collect())
             .collect()
     }
+}
+
+/// The passage texts in `<source n="..." ...>` tags of a system prompt, unescaped, in order.
+fn parse_sources(system: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = system;
+    while let Some(start) = rest.find("<source n=\"") {
+        let after = &rest[start..];
+        let Some(open_end) = after.find('>') else {
+            break;
+        };
+        let body = &after[open_end + 1..];
+        let Some(close) = body.find("</source>") else {
+            break;
+        };
+        let text = body[..close]
+            .trim()
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", "\"")
+            .replace("&#39;", "'")
+            .replace("&amp;", "&");
+        out.push(text);
+        rest = &body[close + "</source>".len()..];
+    }
+    out
 }
 
 /// What a fake model does instead of answering, chosen by a marker in the question.
@@ -158,7 +247,7 @@ impl ChatModel for FakeChat {
                 .iter()
                 .map(|t| t.text.chars().count())
                 .sum::<usize>();
-        let deltas = Self::deltas(&self.model, &question);
+        let deltas = Self::chunks(&Self::reply(&self.model, &request, &question));
         let output_chars: usize = deltas.iter().map(|d| d.chars().count()).sum();
         let usage = TokenUsage {
             input_tokens: estimate_tokens(input_chars),
@@ -269,8 +358,8 @@ impl ChatModel for BedrockChat {
             .set_messages(Some(messages))
             .inference_config(
                 InferenceConfiguration::builder()
-                    .max_tokens(self.max_tokens)
-                    .set_temperature(self.temperature)
+                    .max_tokens(request.max_tokens.unwrap_or(self.max_tokens))
+                    .set_temperature(request.temperature.or(self.temperature))
                     .build(),
             )
             .send()
@@ -376,6 +465,16 @@ impl ModelRegistry {
         })
     }
 
+    /// Replaces the provider of a catalog entry. Tests use it to put a scripted model in place.
+    pub fn with_provider(self, id: &str, provider: Arc<dyn ChatModel>) -> Self {
+        let mut providers = (*self.providers).clone();
+        providers.insert(id.to_owned(), provider);
+        Self {
+            catalog: self.catalog,
+            providers: Arc::new(providers),
+        }
+    }
+
     pub fn catalog(&self) -> &Catalog {
         &self.catalog
     }
@@ -397,6 +496,7 @@ mod tests {
                 role: MessageRole::User,
                 text: question.into(),
             }],
+            ..ChatRequest::default()
         }
     }
 
@@ -465,5 +565,107 @@ mod tests {
         assert_eq!(estimate_tokens(4), 1);
         assert_eq!(estimate_tokens(5), 2);
         assert_eq!(estimate_tokens(400), 100);
+    }
+
+    fn system_with(sources: &[&str]) -> String {
+        let mut text = String::from("You are a tutor.");
+        for (i, source) in sources.iter().enumerate() {
+            text.push_str(&format!(
+                "\n<source n=\"{}\" document=\"d.pdf\" page=\"2\">\n{source}\n</source>\n",
+                i + 1
+            ));
+        }
+        text
+    }
+
+    async fn say(model: &FakeChat, system: &str, question: &str) -> String {
+        let mut request = request(question);
+        request.system = system.to_owned();
+        let mut stream = model.stream(request).await.unwrap();
+        let mut out = String::new();
+        while let Some(event) = stream.next().await {
+            if let ModelEvent::Delta(d) = event.unwrap() {
+                out.push_str(&d);
+            }
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn with_one_source_the_fake_answer_quotes_it_and_cites_one() {
+        let model = FakeChat::with_delay("fake", Duration::ZERO);
+        let system = system_with(&[
+            "The Pythagorean theorem relates the sides of a right triangle &amp; more.",
+        ]);
+        let answer = say(&model, &system, "What is it?").await;
+        assert!(
+            answer.contains("\"The Pythagorean theorem relates the sides\" [1]."),
+            "{answer}"
+        );
+        assert!(!answer.contains("[2]"));
+        assert!(answer.contains("You asked: \"What is it?\""));
+    }
+
+    #[tokio::test]
+    async fn with_two_sources_it_cites_one_and_two() {
+        let model = FakeChat::with_delay("fake", Duration::ZERO);
+        let system = system_with(&[
+            "First passage about triangles and angles.",
+            "Second passage about circles.",
+        ]);
+        let answer = say(&model, &system, "q").await;
+        assert!(
+            answer.contains("\"First passage about triangles and angles.\" [1]."),
+            "{answer}"
+        );
+        assert!(
+            answer.contains("\"Second passage about circles.\" [2]."),
+            "{answer}"
+        );
+        let three = system_with(&["a b", "c d", "e f"]);
+        assert!(!say(&model, &three, "q").await.contains("[3]"));
+    }
+
+    #[tokio::test]
+    async fn without_sources_the_fake_says_so_only_when_the_prompt_asks_for_it() {
+        let model = FakeChat::with_delay("fake", Duration::ZERO);
+        let gated = format!("tutor\n\n{NOT_COVERED_NOTICE}");
+        assert!(
+            say(&model, &gated, "q")
+                .await
+                .contains("The course materials do not cover this question.")
+        );
+        // No retrieval at all: the plain answer, as before.
+        assert_eq!(
+            say(&model, "tutor", "q").await,
+            FakeChat::answer("fake", "q")
+        );
+    }
+
+    #[tokio::test]
+    async fn the_fake_rewrite_returns_the_last_student_message() {
+        let model = FakeChat::with_delay("fake", Duration::ZERO);
+        let mut request =
+            request("Earlier messages:\nStudent: hi\n\nLast student message: Why does it work?");
+        request.system = REWRITE_SYSTEM_PROMPT.to_owned();
+        request.max_tokens = Some(100);
+        let mut stream = model.stream(request).await.unwrap();
+        let mut out = String::new();
+        while let Some(event) = stream.next().await {
+            if let ModelEvent::Delta(d) = event.unwrap() {
+                out.push_str(&d);
+            }
+        }
+        assert_eq!(out, "Why does it work?");
+    }
+
+    #[test]
+    fn source_parsing_survives_odd_input() {
+        assert!(parse_sources("no sources here").is_empty());
+        assert!(parse_sources("<source n=\"1\" ").is_empty());
+        assert_eq!(
+            parse_sources("<source n=\"1\">x &lt;b&gt; &quot;q&quot;</source>"),
+            vec!["x <b> \"q\"".to_owned()]
+        );
     }
 }
