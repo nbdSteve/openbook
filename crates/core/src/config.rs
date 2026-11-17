@@ -67,6 +67,19 @@ pub struct LimitsConfig {
     pub daily_tokens_global: u64,
 }
 
+/// The public demo (`docs/api.md`, "Demo"). It is off unless `OPENBOOK_DEMO_ENABLED` says so.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DemoConfig {
+    /// The kill switch. Off means `POST /api/demo/chat` returns `404`.
+    pub enabled: bool,
+    /// Questions per visitor in a fixed 10-minute window.
+    pub visitor_per_window: u32,
+    /// Questions per visitor per day (UTC).
+    pub visitor_per_day: u32,
+    /// Model calls per day for the whole demo.
+    pub global_per_day: u32,
+}
+
 /// The full API configuration.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -97,6 +110,7 @@ pub struct Config {
     pub aws_endpoint_url: Option<String>,
     pub aws_region: Option<String>,
     pub limits: LimitsConfig,
+    pub demo: DemoConfig,
     pub listen_addr: SocketAddr,
 }
 
@@ -280,6 +294,35 @@ impl Config {
             ),
         };
 
+        let demo_enabled = match get("OPENBOOK_DEMO_ENABLED").as_deref() {
+            None | Some("false" | "0") => false,
+            Some("true" | "1") => true,
+            Some(other) => {
+                problems.push(format!(
+                    "OPENBOOK_DEMO_ENABLED must be true or false (got {other:?})"
+                ));
+                false
+            }
+        };
+        let demo = DemoConfig {
+            enabled: demo_enabled,
+            visitor_per_window: to_u32(number(
+                &mut problems,
+                "OPENBOOK_DEMO_LIMIT_VISITOR_PER_10_MIN",
+                5,
+            )),
+            visitor_per_day: to_u32(number(
+                &mut problems,
+                "OPENBOOK_DEMO_LIMIT_VISITOR_PER_DAY",
+                20,
+            )),
+            global_per_day: to_u32(number(
+                &mut problems,
+                "OPENBOOK_DEMO_LIMIT_GLOBAL_PER_DAY",
+                200,
+            )),
+        };
+
         let listen_raw = get("OPENBOOK_LISTEN_ADDR").unwrap_or_else(|| "127.0.0.1:8787".into());
         let listen_addr = listen_raw.parse::<SocketAddr>().unwrap_or_else(|_| {
             problems.push(format!(
@@ -332,6 +375,7 @@ impl Config {
             aws_endpoint_url: get("AWS_ENDPOINT_URL"),
             aws_region,
             limits,
+            demo,
             listen_addr,
         })
     }
@@ -418,6 +462,37 @@ mod tests {
         let mut v = base();
         v.insert("AWS_LAMBDA_RUNTIME_API".into(), "127.0.0.1:9001".into());
         v
+    }
+
+    #[test]
+    fn the_demo_is_off_unless_it_is_switched_on() {
+        let c = Config::from_vars(&base()).unwrap();
+        assert_eq!(
+            c.demo,
+            DemoConfig {
+                enabled: false,
+                visitor_per_window: 5,
+                visitor_per_day: 20,
+                global_per_day: 200
+            }
+        );
+        let mut v = base();
+        v.insert("OPENBOOK_DEMO_ENABLED".into(), "true".into());
+        v.insert("OPENBOOK_DEMO_LIMIT_VISITOR_PER_10_MIN".into(), "2".into());
+        v.insert("OPENBOOK_DEMO_LIMIT_VISITOR_PER_DAY".into(), "3".into());
+        v.insert("OPENBOOK_DEMO_LIMIT_GLOBAL_PER_DAY".into(), "4".into());
+        let demo = Config::from_vars(&v).unwrap().demo;
+        assert_eq!((demo.enabled, demo.visitor_per_window), (true, 2));
+        assert_eq!((demo.visitor_per_day, demo.global_per_day), (3, 4));
+        for bad in ["yes", "TRUE", "2"] {
+            let mut v = base();
+            v.insert("OPENBOOK_DEMO_ENABLED".into(), bad.into());
+            let error = Config::from_vars(&v).unwrap_err();
+            assert!(error.to_string().contains("OPENBOOK_DEMO_ENABLED"), "{bad}");
+        }
+        let mut v = base();
+        v.insert("OPENBOOK_DEMO_LIMIT_GLOBAL_PER_DAY".into(), "0".into());
+        assert!(Config::from_vars(&v).is_err());
     }
 
     #[test]

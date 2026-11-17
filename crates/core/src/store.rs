@@ -24,6 +24,8 @@ use crate::ids;
 use crate::model::TokenUsage;
 use crate::quota::{PageCounter, UsageCounter, UsageScope, usage_date, usage_month};
 
+mod demo;
+
 type Item = HashMap<String, AttributeValue>;
 
 const DAILY_USAGE_TTL_DAYS: i64 = 40;
@@ -940,23 +942,26 @@ impl Store {
                 .map_err(internal)?;
             Ok(TransactWriteItem::builder().delete(delete).build())
         };
-        let counter = Update::builder()
-            .table_name(&self.table)
-            .key("pk", s(user_pk(&course.owner_id)))
-            .key("sk", s(COUNTERS_SK))
-            .update_expression("ADD #c :minusOne")
-            .expression_attribute_names("#c", "courses")
-            .expression_attribute_values(":minusOne", n(-1))
-            .build()
-            .map_err(internal)?;
-        let result = self
+        let mut transaction = self
             .client
             .transact_write_items()
             .transact_items(delete(META_SK, Some("attribute_exists(pk)"))?)
-            .transact_items(delete(&owner_member, None)?)
-            .transact_items(TransactWriteItem::builder().update(counter).build())
-            .send()
-            .await;
+            .transact_items(delete(&owner_member, None)?);
+        // The demo owner is not a user and has no course counter.
+        if course.owner_id != crate::demo::OWNER_ID {
+            let counter = Update::builder()
+                .table_name(&self.table)
+                .key("pk", s(user_pk(&course.owner_id)))
+                .key("sk", s(COUNTERS_SK))
+                .update_expression("ADD #c :minusOne")
+                .expression_attribute_names("#c", "courses")
+                .expression_attribute_values(":minusOne", n(-1))
+                .build()
+                .map_err(internal)?;
+            transaction =
+                transaction.transact_items(TransactWriteItem::builder().update(counter).build());
+        }
+        let result = transaction.send().await;
         match result {
             Ok(_) => Ok(()),
             // The course item is already gone: an earlier run finished.

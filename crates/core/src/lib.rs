@@ -5,6 +5,7 @@ pub mod auth;
 pub mod aws;
 pub mod catalog;
 pub mod config;
+pub mod demo;
 pub mod domain;
 pub mod files;
 pub mod ids;
