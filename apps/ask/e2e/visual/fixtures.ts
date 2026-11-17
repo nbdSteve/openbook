@@ -74,6 +74,8 @@ export interface MockOptions {
   demo?: 'on' | 'off';
   demoMode?: DemoMode;
   courses?: typeof COURSES;
+  /** The SSE body for POST /api/courses/{id}/chat. The default is a short answer. */
+  chatStream?: string;
   /** Return a response to replace the default fixture for a request. */
   override?: (path: string, method: string) => { status: number; body?: unknown } | undefined;
 }
@@ -142,7 +144,7 @@ export async function mockBackend(page: Page, options: MockOptions = {}) {
     if (path.endsWith('/members')) return json(route, { members: MEMBERS });
     if (path.endsWith('/insights')) return json(route, INSIGHTS);
     if (path.endsWith('/chat')) {
-      return route.fulfill({ status: 200, contentType: 'text/event-stream', body: CHAT_STREAM });
+      return route.fulfill({ status: 200, contentType: 'text/event-stream', body: options.chatStream ?? CHAT_STREAM });
     }
     return json(route, { error: { code: 'not_found', message: `No fixture for ${method} ${path}` } }, 404);
   });

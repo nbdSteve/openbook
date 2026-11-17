@@ -95,7 +95,7 @@ export function ChatPage() {
       <div role="status" aria-live="polite" className="sr-only">
         {announcement}
       </div>
-      <div ref={scroller} onScroll={onScroll} className="@container min-h-0 flex-1 overflow-y-auto">
+      <div ref={scroller} onScroll={onScroll} className="@container relative min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex min-h-full w-full max-w-[60rem] flex-col px-4 py-6 sm:px-8 sm:py-8">
           {chat.status === 'loading' && <Spinner label="Loading conversation" />}
           {chat.loadError && (

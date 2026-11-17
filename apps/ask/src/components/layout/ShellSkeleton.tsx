@@ -8,7 +8,7 @@ function Bar({ className }: { className: string }) {
  */
 export function ShellSkeleton({ label = 'Loading' }: { label?: string }) {
   return (
-    <div role="status" className="flex h-dvh overflow-hidden bg-bg-primary">
+    <div role="status" className="relative flex h-dvh overflow-hidden bg-bg-primary">
       <span className="sr-only">{label}</span>
       <aside className="hidden w-72 shrink-0 flex-col gap-3 border-r border-border bg-bg-secondary p-4 lg:flex">
         <Bar className="h-8 w-24" />

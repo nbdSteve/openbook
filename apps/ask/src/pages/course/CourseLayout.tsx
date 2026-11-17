@@ -146,7 +146,7 @@ function CourseShell({ course, setCourse, conversationId }: CourseShellProps) {
   };
 
   return (
-    <div className="flex h-dvh overflow-hidden bg-bg-primary">
+    <div className="relative flex h-dvh overflow-hidden bg-bg-primary">
       {sidebarOpen && <div className="fixed inset-0 z-30 bg-black/50 lg:hidden" onClick={() => setOpenAt(null)} aria-hidden="true" />}
       <CourseSidebar
         course={course}

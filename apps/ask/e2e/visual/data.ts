@@ -201,6 +201,24 @@ export const CHAT_STREAM = [
   'event: done\ndata: {"usage":{"inputTokens":10,"outputTokens":8},"stopReason":"end_turn"}\n\n',
 ].join('');
 
+/**
+ * A long streamed answer: headings, lists, inline and display math, and a table. Two of them in one
+ * conversation made the chat column taller than the window (see layout.spec.ts).
+ */
+export const LONG_CHAT_STREAM = [
+  'event: meta\ndata: {"conversationId":"01JCONV000000000000000000N","userMessageId":"01JMSG0000000000000000000U","assistantMessageId":"01JMSG0000000000000000000V","title":"Top-p sampling","model":"claude-sonnet"}\n\n',
+  ...[
+    '## Greedy decoding\n\nThe model picks the most likely token. The probability is $p_i = \\frac{e^{z_i}}{\\sum_j e^{z_j}}$.\n\n',
+    ...Array.from(
+      { length: 12 },
+      (_, i) =>
+        `### Step ${i + 1}\n\nNucleus sampling keeps the smallest set of tokens whose probability adds up to $p$. Lorem ipsum dolor sit amet, consectetur adipiscing elit.\n\n- When the model is **uncertain**, $V(p)$ is large.\n\n---\n\n$$\\sum_{i=1}^{${i + 2}} p_i \\ge p$$\n\n`,
+    ),
+    '| | Greedy | Top-p |\n|---|---|---|\n| Picks | best token | sample |\n| Diversity | none | yes |\n\nDoes that make sense?',
+  ].map((text) => `event: delta\ndata: ${JSON.stringify({ text })}\n\n`),
+  'event: done\ndata: {"usage":{"inputTokens":10,"outputTokens":8},"stopReason":"end_turn"}\n\n',
+].join('');
+
 // The public demo on the landing page (POST /api/demo/chat). The shapes follow the demo contract.
 
 export const DEMO_CONFIG = {
