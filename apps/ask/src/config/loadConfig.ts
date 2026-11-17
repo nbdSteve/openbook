@@ -1,3 +1,18 @@
+export interface DemoSource {
+  title: string;
+  license: string;
+  url: string;
+}
+
+/** The public demo on the landing page. Missing or `enabled: false` means the page shows a static example. */
+export interface DemoConfig {
+  enabled: boolean;
+  sources: DemoSource[];
+  examples: string[];
+  /** The model that answers demo questions. */
+  model?: { label: string };
+}
+
 export interface AppConfig {
   stage: string;
   region: string;
@@ -7,6 +22,7 @@ export interface AppConfig {
     /** `null` for deployed stages. Locally it points at the Vite proxy for AWS Emulator. */
     endpoint: string | null;
   };
+  demo?: DemoConfig;
 }
 
 export class ConfigError extends Error {
@@ -18,6 +34,25 @@ export class ConfigError extends Error {
 
 function isString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
+}
+
+/**
+ * Read the optional demo block. A bad or partial block never stops the app: the demo is then off
+ * and the landing page shows its static example.
+ */
+export function parseDemo(value: unknown): DemoConfig | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const v = value as Record<string, unknown>;
+  if (v.enabled !== true) return undefined;
+  const sources = Array.isArray(v.sources)
+    ? v.sources.flatMap((item): DemoSource[] => {
+        const s = item as Partial<DemoSource> | null;
+        return s && isString(s.title) ? [{ title: s.title, license: typeof s.license === 'string' ? s.license : '', url: typeof s.url === 'string' ? s.url : '' }] : [];
+      })
+    : [];
+  const examples = Array.isArray(v.examples) ? v.examples.filter((e): e is string => isString(e)) : [];
+  const model = v.model as { label?: unknown } | null | undefined;
+  return { enabled: true, sources, examples, ...(model && isString(model.label) ? { model: { label: model.label } } : {}) };
 }
 
 /** Check that a parsed JSON value has the shape in docs/api.md. */
@@ -33,10 +68,12 @@ export function parseConfig(value: unknown): AppConfig {
   if (c.endpoint !== null && c.endpoint !== undefined && !isString(c.endpoint)) {
     throw new ConfigError('The Cognito endpoint must be a string or null.');
   }
+  const demo = parseDemo((value as { demo?: unknown }).demo);
   return {
     stage: v.stage,
     region: v.region,
     cognito: { userPoolId: c.userPoolId, clientId: c.clientId, endpoint: c.endpoint ?? null },
+    ...(demo ? { demo } : {}),
   };
 }
 

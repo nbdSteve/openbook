@@ -22,7 +22,6 @@
     "@fontsource-variable/newsreader": "^5.3.0",
     "amazon-cognito-identity-js": "^6.3.22",
     "clsx": "^2.1.1",
-    "framer-motion": "^12",
     "katex": "^0.16",
     "lucide-react": "^1",
     "react": "^19",

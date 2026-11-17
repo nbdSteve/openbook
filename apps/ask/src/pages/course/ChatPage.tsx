@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router';
-import { Sparkles, X } from 'lucide-react';
+import { X } from 'lucide-react';
+import { Mascot } from '@/components/ui/Mascot';
 import { Alert } from '@/components/ui/Alert';
 import { Spinner } from '@/components/ui/Spinner';
 import { Composer } from '@/components/chat/Composer';
@@ -94,8 +95,8 @@ export function ChatPage() {
       <div role="status" aria-live="polite" className="sr-only">
         {announcement}
       </div>
-      <div ref={scroller} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col px-3 py-4 sm:px-4">
+      <div ref={scroller} onScroll={onScroll} className="@container min-h-0 flex-1 overflow-y-auto">
+        <div className="mx-auto flex min-h-full w-full max-w-[60rem] flex-col px-4 py-6 sm:px-8 sm:py-8">
           {chat.status === 'loading' && <Spinner label="Loading conversation" />}
           {chat.loadError && (
             <Alert tone="error" className="mt-4">
@@ -107,17 +108,15 @@ export function ChatPage() {
           )}
           {empty && !chat.loadError && (
             <div className="my-auto py-10 text-center">
-              <div className="mx-auto mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-accent-subtle">
-                <Sparkles className="h-7 w-7 text-accent" aria-hidden="true" />
-              </div>
-              <h2 className="text-2xl font-bold text-text-primary sm:text-3xl">What would you like to learn?</h2>
-              <p className="mx-auto mt-3 max-w-md text-text-secondary">
+              <Mascot mood="idle" size={96} className="mx-auto mb-4" />
+              <h2 className="font-serif text-title font-medium text-text-primary">What would you like to learn?</h2>
+              <p className="mx-auto mt-3 max-w-md font-serif text-lg text-text-secondary">
                 Ask anything about {course.name}. The tutor uses the {styleName(course.tutoringStyle)} style.
               </p>
               <CourseMaterials courseId={course.id} role={course.role} />
             </div>
           )}
-          <div className="space-y-4">
+          <div className="space-y-8">
             {chat.messages.map((message) => (
               <MessageBubble key={message.id} message={message} />
             ))}

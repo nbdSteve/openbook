@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components -- a dev-only preview file that mixes data and components */
 import type { ReactNode } from 'react';
 import katex from 'katex';
 import 'katex/dist/katex.min.css';

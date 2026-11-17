@@ -57,17 +57,17 @@ export function MessageContent({ content, sources, className = '' }: MessageCont
           return <>[{n}]</>;
         }
         return (
-          <a href={href} target="_blank" rel="noopener noreferrer" className="text-teal underline hover:text-teal-hover">
+          <a href={href} target="_blank" rel="noopener noreferrer" className="text-accent underline underline-offset-2 hover:text-accent-hover">
             {children}
           </a>
         );
       },
       blockquote: ({ children }) => (
-        <blockquote className="my-4 rounded-r-xl border-l-4 border-accent bg-bg-secondary py-2 pl-4">{children}</blockquote>
+        <blockquote className="my-4 rounded-r-xl border-l-2 border-accent/50 bg-bg-secondary py-2 pl-4 italic">{children}</blockquote>
       ),
       table: ({ children }) => (
         <div className="my-4 max-w-full overflow-x-auto rounded-xl border border-border">
-          <table className="min-w-full border-separate border-spacing-0 bg-surface text-sm [overflow-wrap:normal] [&_tr:last-child_td]:border-b-0">
+          <table className="min-w-full border-separate border-spacing-0 bg-surface font-sans text-sm [overflow-wrap:normal] [&_tr:last-child_td]:border-b-0">
             {children}
           </table>
         </div>
@@ -77,13 +77,13 @@ export function MessageContent({ content, sources, className = '' }: MessageCont
       td: ({ children }) => <td className="border-b border-border-subtle px-3 py-2 text-text-secondary">{children}</td>,
       ul: ({ children }) => <ul className="my-3 list-disc space-y-1 pl-6">{children}</ul>,
       ol: ({ children }) => <ol className="my-3 list-decimal space-y-1 pl-6">{children}</ol>,
-      h1: ({ children }) => <h3 className="mb-2 mt-5 border-b border-border pb-1 text-xl font-bold text-text-primary">{children}</h3>,
-      h2: ({ children }) => <h4 className="mb-2 mt-4 text-lg font-bold text-text-primary">{children}</h4>,
+      h1: ({ children }) => <h3 className="mb-2 mt-6 border-b border-border pb-1 text-2xl font-semibold text-text-primary">{children}</h3>,
+      h2: ({ children }) => <h4 className="mb-2 mt-5 text-xl font-semibold text-text-primary">{children}</h4>,
       h3: ({ children }) => <h5 className="mb-1.5 mt-3 text-base font-semibold text-text-primary">{children}</h5>,
       h4: ({ children }) => <h6 className="mb-1.5 mt-3 text-base font-semibold text-text-primary">{children}</h6>,
       h5: ({ children }) => <h6 className="mb-1 mt-3 text-sm font-semibold text-text-primary">{children}</h6>,
       h6: ({ children }) => <h6 className="mb-1 mt-3 text-sm font-semibold text-text-secondary">{children}</h6>,
-      p: ({ children }) => <p className="my-3 leading-relaxed first:mt-0 last:mb-0">{children}</p>,
+      p: ({ children }) => <p className="my-4 first:mt-0 last:mb-0">{children}</p>,
       // Wide equations scroll sideways, so keyboard users must be able to focus them.
       span({ node, className, children, ...props }) {
         void node;
@@ -101,7 +101,7 @@ export function MessageContent({ content, sources, className = '' }: MessageCont
   );
 
   return (
-    <div className={`message-content min-w-0 text-[0.95rem] ${className}`}>
+    <div className={`message-content min-w-0 font-serif text-reading ${className}`}>
       <ReactMarkdown
         remarkPlugins={remarkPlugins}
         rehypePlugins={[rehypeKatex, rehypeKeepMathTogether]}

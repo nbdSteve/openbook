@@ -144,15 +144,15 @@ export function SourceButton({ source, variant }: SourceButtonProps) {
       <>
         <span
           className={cn(
-            'flex h-5 min-w-5 shrink-0 items-center justify-center rounded-md px-1 text-[11px] font-bold',
-            variant === 'other' ? 'bg-bg-tertiary text-text-muted' : 'bg-teal-subtle text-teal',
+            'mt-px flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full px-1 font-sans text-[11px] font-semibold',
+            variant === 'other' ? 'bg-bg-tertiary text-text-muted' : 'bg-accent-subtle text-accent',
           )}
         >
           {source.n}
         </span>
-        <span className="flex min-w-0 gap-1.5">
-          <span className="truncate">{chipName(source.documentName)}</span>
-          {source.page !== undefined && <span className="shrink-0 text-text-muted">p. {source.page}</span>}
+        <span className="min-w-0 flex-1">
+          <span className="line-clamp-2 break-words font-serif italic">{chipName(source.documentName)}</span>
+          {source.page !== undefined && <span className="block font-sans text-[0.6875rem] not-italic text-text-muted">p. {source.page}</span>}
         </span>
       </>
     );
@@ -188,12 +188,13 @@ export function SourceButton({ source, variant }: SourceButtonProps) {
         aria-label={variant === 'badge' ? `Source ${source.n}: ${sourceLabel(source)}` : undefined}
         className={cn(
           variant === 'badge'
-            ? 'mx-0.5 inline-flex h-5 min-w-5 items-center justify-center rounded-md bg-teal-subtle px-1 align-baseline text-[11px] font-bold text-teal transition-colors hover:bg-teal-light'
+            ? 'ml-[0.12em] inline-flex h-[1.45em] min-w-[1.45em] -translate-y-[0.4em] items-center justify-center rounded-full bg-accent-subtle px-[0.3em] align-baseline font-sans text-[0.68em] font-semibold text-accent transition-colors hover:bg-accent-light'
             : variant === 'entry'
-              ? 'inline-flex min-h-8 max-w-full items-center gap-2 rounded-lg border border-border bg-bg-secondary px-2 py-1 text-left text-xs text-text-secondary transition-colors hover:bg-surface-hover'
-              : // A passage that was found but not cited: no border and muted text, so it does not look like evidence.
-                'inline-flex min-h-8 max-w-full items-center gap-2 rounded-lg px-2 py-1 text-left text-xs text-text-muted transition-colors hover:bg-surface-hover',
-          highlighted && (variant === 'badge' ? 'bg-teal-light ring-2 ring-teal' : 'bg-teal-subtle text-text-primary ring-1 ring-teal'),
+              ? // A margin note: a rule on the left, the book in italics, and the page.
+                'flex min-h-8 w-full items-start gap-2 rounded-r-lg border-l-2 border-accent/40 py-1.5 pl-3 pr-2 text-left text-[0.875rem] leading-snug text-text-secondary transition-colors hover:bg-accent-subtle'
+              : // A passage that was found but not cited: no accent rule and muted text, so it does not look like evidence.
+                'flex min-h-8 w-full items-start gap-2 rounded-r-lg border-l-2 border-border py-1.5 pl-3 pr-2 text-left text-[0.8125rem] leading-snug text-text-muted transition-colors hover:bg-surface-hover',
+          highlighted && (variant === 'badge' ? 'bg-accent-light ring-2 ring-accent' : 'bg-accent-subtle text-text-primary ring-1 ring-accent'),
         )}
       >
         {content}
@@ -218,14 +219,14 @@ export function SourceButton({ source, variant }: SourceButtonProps) {
               if (isPinned && !popover.current?.contains(next) && next !== button.current) hide();
             }}
             style={{ position: 'fixed', left: position.left, width: position.width, top: position.top, bottom: position.bottom, maxHeight: position.maxHeight }}
-            className="z-[70] overflow-y-auto overscroll-contain rounded-xl border border-border bg-surface p-3 text-left shadow-lg"
+            className="z-[70] overflow-y-auto overscroll-contain rounded-xl border border-border bg-surface p-3.5 text-left shadow-lg"
           >
-            <p className="mb-1.5 break-words text-xs font-semibold text-teal">
+            <p className="mb-1.5 break-words font-sans text-xs font-semibold text-accent">
               {source.documentName}
               {source.page !== undefined && <span className="font-normal text-text-muted"> · Page {source.page}</span>}
             </p>
             {/* Plain text: React escapes it, and `whitespace-pre-wrap` keeps the line breaks. */}
-            <p data-testid="snippet" className="whitespace-pre-wrap break-words text-xs leading-relaxed text-text-secondary">
+            <p data-testid="snippet" className="whitespace-pre-wrap break-words font-serif text-[0.9375rem] leading-relaxed text-text-secondary">
               {source.snippet}
             </p>
           </div>,
@@ -262,11 +263,11 @@ export function SourcesList({ cited, other, streaming = false }: SourcesListProp
       : `${plural(other.length, 'more passage', 'more passages')} found`;
 
   return (
-    <div className="mt-3 border-t border-border pt-2.5" data-testid="sources">
+    <div data-testid="sources">
       {cited.length > 0 && (
         <>
-          <p className="mb-1.5 text-xs font-medium text-text-muted">Sources</p>
-          <ul role="list" className="flex flex-wrap gap-1.5" aria-label="Sources for this answer">
+          <p className="mb-2 font-sans text-[0.6875rem] font-semibold uppercase tracking-[0.1em] text-text-muted">Sources</p>
+          <ul role="list" className="flex flex-col gap-2" aria-label="Sources for this answer">
             {cited.map((source) => (
               <li key={source.n} className="min-w-0 max-w-full">
                 <SourceButton source={source} variant="entry" />
@@ -284,7 +285,7 @@ export function SourcesList({ cited, other, streaming = false }: SourcesListProp
             data-testid="other-sources-toggle"
             onClick={() => setExpanded((value) => !value)}
             className={cn(
-              '-ml-1 inline-flex min-h-8 items-start gap-1 rounded-lg px-1 py-2 text-left text-xs leading-4 text-text-muted transition-colors hover:text-text-secondary',
+              '-ml-1 inline-flex min-h-8 items-start gap-1 rounded-lg px-1 py-2 text-left font-sans text-xs leading-4 text-text-muted transition-colors hover:text-text-secondary',
               cited.length > 0 && 'mt-1',
             )}
           >
@@ -293,7 +294,7 @@ export function SourcesList({ cited, other, streaming = false }: SourcesListProp
           </button>
           <div id={otherId} hidden={!expanded}>
             {expanded && (
-              <ul role="list" className="mt-1 flex flex-wrap gap-1" aria-label="Passages found">
+              <ul role="list" className="mt-1 flex flex-col gap-1" aria-label="Passages found">
                 {other.map((source) => (
                   <li key={source.n} className="min-w-0 max-w-full">
                     <SourceButton source={source} variant="other" />

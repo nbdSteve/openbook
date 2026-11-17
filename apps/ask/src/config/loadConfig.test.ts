@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ConfigError, loadConfig, parseConfig } from './loadConfig';
+import { ConfigError, loadConfig, parseConfig, parseDemo } from './loadConfig';
 
 const valid = {
   stage: 'dev',
@@ -45,5 +45,32 @@ describe('loadConfig', () => {
   it('fails when required fields are missing', async () => {
     await expect(loadConfig(respond(JSON.stringify({ stage: 'dev' })))).rejects.toThrow(/wrong shape/);
     await expect(loadConfig(respond(JSON.stringify({ ...valid, cognito: { userPoolId: 'x' } })))).rejects.toThrow(/missing/);
+  });
+});
+
+describe('parseDemo', () => {
+  it('reads an enabled demo block', () => {
+    const demo = parseDemo({
+      enabled: true,
+      sources: [{ title: 'College Algebra', license: 'CC BY 4.0', url: 'https://openstax.org/details/books/college-algebra' }, { nope: 1 }],
+      examples: ['Factor x^2 - 5x + 6', 7],
+      model: { label: 'Claude Sonnet 4.6' },
+    });
+    expect(demo).toEqual({
+      enabled: true,
+      sources: [{ title: 'College Algebra', license: 'CC BY 4.0', url: 'https://openstax.org/details/books/college-algebra' }],
+      examples: ['Factor x^2 - 5x + 6'],
+      model: { label: 'Claude Sonnet 4.6' },
+    });
+  });
+
+  it('turns the demo off when it is disabled, missing, or not an object', () => {
+    expect(parseDemo({ enabled: false, sources: [], examples: [] })).toBeUndefined();
+    expect(parseDemo(undefined)).toBeUndefined();
+    expect(parseDemo('yes')).toBeUndefined();
+  });
+
+  it('keeps the config valid when the demo block is bad', () => {
+    expect(parseConfig({ ...valid, demo: 12 }).demo).toBeUndefined();
   });
 });

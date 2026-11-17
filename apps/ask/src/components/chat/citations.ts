@@ -73,7 +73,9 @@ function citeInTree(tree: Root, known: Set<number>): number[] {
         for (const match of child.value.matchAll(MARKER)) {
           const n = Number(match[1]);
           if (!known.has(n)) continue;
-          if (match.index > last) children.push({ type: 'text', value: child.value.slice(last, match.index) });
+          // A marker is a footnote number: it sits tight against the word, so the space before it goes.
+          const before = child.value.slice(last, match.index).replace(/[ \t]+$/, '');
+          if (before !== '') children.push({ type: 'text', value: before });
           children.push({ type: 'link', url: `#cite-${n}`, children: [{ type: 'text', value: String(n) }] });
           note(n);
           last = match.index + match[0].length;

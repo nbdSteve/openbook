@@ -1,9 +1,37 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
+import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import type { Plugin } from 'vite';
+
+const REAL_BENCHMARKS = fileURLToPath(new URL('../../evals/benchmarks.json', import.meta.url));
+const FIXTURE_BENCHMARKS = fileURLToPath(new URL('./src/benchmarks/benchmarks.fixture.json', import.meta.url));
+
+/**
+ * `virtual:benchmarks` is evals/benchmarks.json, read at build time, so the landing page shows the
+ * numbers of the commit it is built from. Without the file, a developer machine falls back to the
+ * fixture in src/benchmarks. In CI a missing file fails the build: a page must never ship sample numbers.
+ */
+function benchmarksPlugin(): Plugin {
+  const id = 'virtual:benchmarks';
+  const resolved = `\0${id}`;
+  return {
+    name: 'openbook-benchmarks',
+    resolveId: (name) => (name === id ? resolved : undefined),
+    load(name) {
+      if (name !== resolved) return undefined;
+      const real = existsSync(REAL_BENCHMARKS);
+      if (!real && process.env.CI) {
+        this.error('evals/benchmarks.json is missing. The landing page shows its numbers. Run "make eval" to create it, and commit it.');
+      }
+      const file = real ? REAL_BENCHMARKS : FIXTURE_BENCHMARKS;
+      this.addWatchFile(file);
+      return `import data from ${JSON.stringify(file)};\nexport default data;\nexport const source = ${JSON.stringify(real ? 'real' : 'fixture')};`;
+    },
+  };
+}
 
 const webPort = Number(process.env.OPENBOOK_WEB_PORT ?? 5173);
 const apiPort = process.env.OPENBOOK_API_PORT ?? '8787';
@@ -36,7 +64,7 @@ function webConfigPlugin(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [react(), tailwindcss(), webConfigPlugin()],
+  plugins: [react(), tailwindcss(), webConfigPlugin(), benchmarksPlugin()],
   define: {
     // amazon-cognito-identity-js expects a Node-style `global`.
     global: 'globalThis',
@@ -49,6 +77,8 @@ export default defineConfig({
   server: {
     port: webPort,
     strictPort: true,
+    // The landing page reads evals/benchmarks.json, which is outside this app.
+    fs: { allow: ['../..'] },
     proxy: {
       '/api': {
         target: `http://127.0.0.1:${apiPort}`,

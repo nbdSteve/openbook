@@ -201,6 +201,15 @@
   }
 }
 
+/* KaTeX sets its own size (1.21em). Match it to the reading text, so inline math sits on the same baseline and height. */
+.message-content .katex {
+  font-size: 1.05em;
+}
+
+.message-content .katex-display > .katex {
+  font-size: 1.15em;
+}
+
 /* Math and code must scroll inside the message, never widen the page. */
 .message-content .katex-display {
   overflow-x: auto;
