@@ -9,7 +9,6 @@ import { ShellSkeleton } from '@/components/layout/ShellSkeleton';
 import { CourseSidebar } from '@/components/layout/CourseSidebar';
 import { NotFoundScreen } from '@/components/layout/NotFoundScreen';
 import { useChatController } from '@/components/chat/useChatController';
-import { styleName } from '@/lib/constants';
 import { useDocumentTitle } from '@/lib/useDocumentTitle';
 import { useMediaQuery } from '@/lib/useMediaQuery';
 import { useResource } from '@/lib/useResource';
@@ -178,10 +177,6 @@ function CourseShell({ course, setCourse, conversationId }: CourseShellProps) {
             <Menu className="h-5 w-5" aria-hidden="true" />
           </button>
           <h1 className="min-w-0 flex-1 truncate font-serif text-xl font-semibold text-text-primary">{course.name}</h1>
-          <Badge tone="accent" className="shrink-0">
-            <span className="sr-only">Tutoring style: </span>
-            {styleName(course.tutoringStyle)}
-          </Badge>
           {course.role === 'owner' && (
             <Badge tone="teal" className="hidden shrink-0 sm:inline-flex">
               Owner

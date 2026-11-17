@@ -59,8 +59,7 @@ export function PortalCourseLayout() {
           <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
             <h1 className="min-w-0 break-words font-serif text-title font-medium text-text-primary">{course.data.name}</h1>
             <Badge tone="accent">
-              <span className="sr-only">Tutoring style: </span>
-              {styleName(course.data.tutoringStyle)}
+              Default: {styleName(course.data.tutoringStyle)}
             </Badge>
           </div>
           <Link to={`/ask/courses/${course.data.id}`} className={buttonStyles('secondary', 'sm')}>
