@@ -48,6 +48,21 @@ const DEMO_SCREENS: Screen[] = [
     fullPage: true,
   },
   {
+    name: 'landing-demo-start-over',
+    url: '/',
+    signedIn: false,
+    ready: heading(/answers from it/i),
+    act: async (page) => {
+      await ask(page);
+      await expect(page.getByTestId('demo-thread').getByText('Which root would you like to check first?')).toBeVisible();
+      await page.getByRole('button', { name: 'Start over' }).click();
+      // The example comes back, and the focus is in the box, so the visitor can type at once.
+      await expect(page.getByLabel('Your question')).toBeFocused();
+      await expect(page.getByTestId('demo-thread').locator('.katex').first()).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Start over' })).toHaveCount(0);
+    },
+  },
+  {
     name: 'landing-demo-streaming',
     url: '/',
     signedIn: false,
@@ -56,7 +71,7 @@ const DEMO_SCREENS: Screen[] = [
     act: async (page) => {
       await ask(page);
       await expect(page.getByRole('button', { name: 'Stop answer' })).toBeVisible();
-      await expect(page.getByText('Ask is thinking')).toBeAttached();
+      await expect(page.getByText('The tutor is thinking')).toBeAttached();
     },
   },
   {
@@ -417,6 +432,11 @@ const SCREENS: Screen[] = [
   { name: 'manage-settings', url: `/portal/courses/${COURSE_ID}?tab=settings`, signedIn: true, ready: (p) => expect(p.getByLabel('Course name').first()).toBeVisible() },
   { name: 'manage-insights', url: `/portal/courses/${COURSE_ID}?tab=insights`, signedIn: true, ready: (p) => expect(p.getByText('Latest student questions')).toBeVisible() },
 ];
+
+test.afterEach(async ({ page }) => {
+  // The slow demo route waits. Do not let it answer after the page is gone.
+  await page.unrouteAll({ behavior: 'ignoreErrors' });
+});
 
 for (const theme of ['light', 'dark'] as Theme[]) {
   for (const viewport of VIEWPORTS) {

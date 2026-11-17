@@ -24,6 +24,8 @@ async function collect(options: Parameters<typeof askDemo>[0]): Promise<ChatEven
 }
 
 const errorBody = (code: string, extra: Record<string, unknown> = {}) => JSON.stringify({ error: { code, message: `${code} message`, ...extra } });
+// The demo route sets this header on every response it makes.
+const FROM_DEMO = { 'x-openbook-demo': '1' };
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -55,17 +57,40 @@ describe('askDemo', () => {
     [503, 'demo_busy', {}, 'busy'],
     [503, 'demo_unavailable', {}, 'unavailable'],
     [400, 'invalid_request', {}, 'invalid'],
-    [404, 'not_found', {}, 'gone'],
+    [404, 'demo_unavailable', {}, 'unavailable'],
   ])('maps %i %s to %s', async (status, code, extra, kind) => {
-    stubFetch(new Response(errorBody(code, extra), { status }));
+    stubFetch(new Response(errorBody(code, extra), { status, headers: FROM_DEMO }));
     const error = await collect({ message: 'x' }).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(DemoError);
     expect((error as DemoError).kind).toBe(kind);
     if (code === 'demo_rate_limited') expect((error as DemoError).retryAfterSeconds).toBe(42);
   });
 
+  it('treats a 503 without a JSON error body as busy (a CloudFront function rewrites Lambda throttles)', async () => {
+    stubFetch(new Response('<html>Service Unavailable</html>', { status: 503, headers: FROM_DEMO }));
+    expect(((await collect({ message: 'x' }).catch((e: unknown) => e)) as DemoError).kind).toBe('busy');
+  });
+
+  it.each([
+    ['Lambda 429 (a throttle)', 429, '{"message":"Rate Exceeded."}'],
+    ['CloudFront 502', 502, '<html>Bad Gateway</html>'],
+    ['CloudFront 504', 504, '<html>Gateway Timeout</html>'],
+    ['a 503 page', 503, '<html>Service Unavailable</html>'],
+    ['a 500 with a JSON error from another layer', 500, errorBody('internal')],
+  ])('treats %s without the demo header as busy', async (_name, status, body) => {
+    stubFetch(new Response(body, { status }));
+    const error = (await collect({ message: 'x' }).catch((e: unknown) => e)) as DemoError;
+    expect(error).toBeInstanceOf(DemoError);
+    expect(error.kind).toBe('busy');
+  });
+
+  it('keeps the rate limit of the demo itself (with the header) apart from a throttle', async () => {
+    stubFetch(new Response(errorBody('demo_rate_limited', { retryAfterSeconds: 9 }), { status: 429, headers: FROM_DEMO }));
+    expect(((await collect({ message: 'x' }).catch((e: unknown) => e)) as DemoError).kind).toBe('rate_limited');
+  });
+
   it('reads Retry-After when the body has no retryAfterSeconds', async () => {
-    stubFetch(new Response(errorBody('demo_rate_limited'), { status: 429, headers: { 'retry-after': '30' } }));
+    stubFetch(new Response(errorBody('demo_rate_limited'), { status: 429, headers: { ...FROM_DEMO, 'retry-after': '30' } }));
     const error = (await collect({ message: 'x' }).catch((e: unknown) => e)) as DemoError;
     expect(error.retryAfterSeconds).toBe(30);
   });

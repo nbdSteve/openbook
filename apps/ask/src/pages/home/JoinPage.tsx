@@ -6,6 +6,7 @@ import { buttonStyles } from '@/components/ui/buttonStyles';
 import { Logo } from '@/components/ui/Logo';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
 import { normalizeInviteCode } from '@/lib/format';
+import { useDocumentTitle } from '@/lib/useDocumentTitle';
 import { ApiError } from '@/services/api/client';
 import { describeApiError } from '@/services/api/errors';
 import { joinCourse } from '@/services/api/routes';
@@ -17,6 +18,7 @@ import { useAuth } from '@/services/auth/AuthContext';
  * link to this address.
  */
 export function JoinPage() {
+  useDocumentTitle('Join a course');
   const { inviteCode = '' } = useParams();
   const { user } = useAuth();
   const navigate = useNavigate();

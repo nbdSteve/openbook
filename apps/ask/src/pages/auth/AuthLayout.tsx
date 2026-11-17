@@ -1,8 +1,10 @@
 import type { ReactNode } from 'react';
 import { Logo } from '@/components/ui/Logo';
+import { useDocumentTitle } from '@/lib/useDocumentTitle';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
 
 export function AuthLayout({ title, subtitle, children, footer }: { title: string; subtitle?: ReactNode; children: ReactNode; footer?: ReactNode }) {
+  useDocumentTitle(title);
   return (
     <div className="flex min-h-dvh flex-col bg-bg-primary">
       <header className="flex h-16 items-center justify-between px-4 sm:px-6">

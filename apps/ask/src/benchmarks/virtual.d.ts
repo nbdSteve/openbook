@@ -1,5 +1,5 @@
 declare module 'virtual:benchmarks' {
-  const data: unknown;
+  import type { LandingBenchmarks } from './parse';
+  const data: LandingBenchmarks;
   export default data;
-  export const source: 'real' | 'fixture';
 }

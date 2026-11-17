@@ -19,7 +19,7 @@ export function PortalCourseLayout() {
   const { courseId = '' } = useParams();
   const course = useResource(`course:${courseId}`, (signal) => getCourse(courseId, signal));
   const name = course.data?.name;
-  useDocumentTitle(name ? `${name} - Portal` : 'Portal');
+  useDocumentTitle(name ? `${name} (Portal)` : 'Portal');
 
   if (course.loading) return <ShellSkeleton label="Loading course" />;
   if (!course.data) {

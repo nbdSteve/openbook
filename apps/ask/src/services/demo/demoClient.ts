@@ -15,7 +15,7 @@ export const DEMO_MAX_QUESTION = 300;
 export const DEMO_MAX_TURNS = 10;
 export const DEMO_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
-export type DemoErrorKind = 'rate_limited' | 'busy' | 'unavailable' | 'invalid' | 'gone' | 'network' | 'other';
+export type DemoErrorKind = 'rate_limited' | 'busy' | 'unavailable' | 'invalid' | 'network' | 'other';
 
 export class DemoError extends Error {
   readonly kind: DemoErrorKind;
@@ -29,12 +29,18 @@ export class DemoError extends Error {
   }
 }
 
-function kindOf(status: number, code: string): DemoErrorKind {
+/** The demo route sets this header on every response it makes. A response without it came from somewhere else. */
+const DEMO_HEADER = 'x-openbook-demo';
+
+function kindOf(status: number, code: string, fromDemo: boolean): DemoErrorKind {
+  // Lambda's own 429 (a throttle), or a 502 or 504 page of CloudFront: the demo function did not answer, so it is busy.
+  if (!fromDemo && (status === 429 || status >= 500)) return 'busy';
   if (code === 'demo_rate_limited' || status === 429) return 'rate_limited';
   if (code === 'demo_busy') return 'busy';
-  if (code === 'demo_unavailable' || status === 503) return 'unavailable';
-  // The conversation is too old or does not exist any more: the caller starts a new one.
-  if (code === 'not_found' || code === 'conflict' || status === 404 || status === 409) return 'gone';
+  if (code === 'demo_unavailable') return 'unavailable';
+  // A CloudFront function rewrites a Lambda throttle or timeout to 503. When the body is not our JSON
+  // error, the demo is busy (docs/api.md, "Demo").
+  if (status === 503) return code ? 'unavailable' : 'busy';
   if (code === 'invalid_request' || status === 400) return 'invalid';
   return 'other';
 }
@@ -55,7 +61,7 @@ async function toDemoError(response: Response): Promise<DemoError> {
     const header = Number(response.headers.get('retry-after'));
     if (Number.isFinite(header) && header > 0) retry = header;
   }
-  return new DemoError(kindOf(response.status, code), message || `The demo failed with status ${response.status}`, retry);
+  return new DemoError(kindOf(response.status, code, response.headers.has(DEMO_HEADER)), message || `The demo failed with status ${response.status}`, retry);
 }
 
 /**

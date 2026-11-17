@@ -254,3 +254,23 @@ describe('answer sources', () => {
     });
   });
 });
+
+describe('mascot mood', () => {
+  const moods = (container: HTMLElement) => [...container.querySelectorAll('[data-mood]')].map((el) => el.getAttribute('data-mood'));
+
+  it('is thinking while the answer streams', () => {
+    expect(moods(renderAnswer('Part [1]', 'streaming').container)).toEqual(['thinking', 'thinking']);
+  });
+
+  it('is happy when the answer cites a source', () => {
+    expect(moods(renderAnswer('Claim [1].').container)).toEqual(['happy', 'happy']);
+  });
+
+  it('is puzzled when passages were found but the answer cites none of them', () => {
+    expect(moods(renderAnswer('The materials do not cover that.').container)).toEqual(['puzzled', 'puzzled']);
+  });
+
+  it('is puzzled when there are no sources at all', () => {
+    expect(moods(renderAnswer('A general answer.', undefined, []).container)).toEqual(['puzzled', 'puzzled']);
+  });
+});

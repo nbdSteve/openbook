@@ -79,7 +79,7 @@ export function LandingPage() {
               </a>
             </div>
             <ThemeToggle className="hidden h-10 w-10 items-center justify-center rounded-xl text-text-tertiary transition-colors hover:bg-surface-hover hover:text-text-primary sm:inline-flex" />
-            <Link to="/login" className={buttonStyles('ghost', 'sm')}>
+            <Link to="/signin" className={buttonStyles('ghost', 'sm')}>
               Sign in
             </Link>
             <Link to="/signup" className={buttonStyles('primary', 'sm')}>

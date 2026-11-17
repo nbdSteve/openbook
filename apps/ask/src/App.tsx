@@ -8,6 +8,7 @@ import { AuthProvider } from '@/services/auth/AuthProvider';
 import { useAuth } from '@/services/auth/AuthContext';
 import { PublicOnly, RequireAuth } from '@/routes/guards';
 import { LegacyRedirect } from '@/routes/legacy';
+import { RouteFocus } from '@/routes/RouteFocus';
 import { LEGACY_ROUTES } from '@/routes/legacyRoutes';
 import { ThemeProvider } from '@/theme/ThemeProvider';
 import { ForgotPage } from '@/pages/auth/ForgotPage';
@@ -37,6 +38,7 @@ export default function App() {
       <ErrorBoundary>
         <AuthProvider>
           <BrowserRouter>
+            <RouteFocus />
             <Suspense fallback={<FullPageSpinner />}>
               <Routes>
                 <Route path="/" element={<Home />} />

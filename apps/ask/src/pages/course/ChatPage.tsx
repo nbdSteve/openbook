@@ -62,7 +62,7 @@ export function ChatPage() {
   const [previousStatus, setPreviousStatus] = useState(chat.status);
   if (previousStatus !== chat.status) {
     setPreviousStatus(chat.status);
-    if (chat.status === 'streaming') setAnnouncement('Ask is answering.');
+    if (chat.status === 'streaming') setAnnouncement('The tutor is answering.');
     else if (previousStatus === 'streaming') {
       setAnnouncement(chat.messages[chat.messages.length - 1]?.state === 'failed' ? 'The answer failed.' : 'The answer is ready.');
     }

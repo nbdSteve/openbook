@@ -1,4 +1,4 @@
-import { Link, NavLink } from 'react-router';
+import { Link } from 'react-router';
 import { clsx } from 'clsx';
 import { ArrowLeft, LogOut, MessageSquare, Plus, Settings2, Trash2, UserMinus, X } from 'lucide-react';
 import { AreaSwitch } from '@/components/layout/AreaSwitch';
@@ -72,19 +72,14 @@ export function CourseSidebar({
           New chat
         </Link>
         {course.role === 'owner' && (
-          <NavLink
+          <Link
             to={`/portal/courses/${course.id}`}
             onClick={onClose}
-            className={({ isActive }) =>
-              clsx(
-                'flex items-center gap-2 rounded-xl px-3 py-2.5 text-sm transition-colors',
-                isActive ? 'bg-accent-subtle font-medium text-accent' : 'text-text-secondary hover:bg-surface-hover hover:text-text-primary',
-              )
-            }
+            className="flex items-center gap-2 rounded-xl px-3 py-2.5 text-sm text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary"
           >
             <Settings2 className="h-4 w-4" aria-hidden="true" />
             Manage course
-          </NavLink>
+          </Link>
         )}
       </div>
 

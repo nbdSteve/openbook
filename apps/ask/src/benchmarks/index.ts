@@ -1,16 +1,14 @@
-import raw, { source } from 'virtual:benchmarks';
-import { parseBenchmarks } from './parse';
+import landing from 'virtual:benchmarks';
 
-export type { Benchmarks, RetrievalMode } from './parse';
+export type { LandingBenchmarks, RetrievalMode } from './parse';
 export { percent } from './parse';
 
 /**
- * The retrieval numbers of this build. The build reads evals/benchmarks.json (see
- * `benchmarksPlugin` in vite.config.ts), so the page shows the numbers of the deployed commit.
- * `source` is `fixture` only on a machine without the file. In CI a missing file fails the build.
+ * The retrieval numbers of this build. The Vite plugin `benchmarksPlugin` (vite.config.ts) reads
+ * evals/benchmarks.json, checks it with `parseBenchmarks`, and emits only the numbers that the
+ * landing page shows. A missing file or a changed schema fails the build, never the visitor's page.
  */
-export const benchmarks = parseBenchmarks(raw);
-export const benchmarksSource: 'real' | 'fixture' = source;
+export const benchmarks = landing;
 
 /** The method, on GitHub. */
 export const METHOD_URL = 'https://github.com/nbdSteve/openbook/blob/main/docs/evaluation.md';

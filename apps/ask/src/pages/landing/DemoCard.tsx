@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState, type FormEvent } from 'react';
+import { lazy, Suspense, useRef, useState, type FormEvent } from 'react';
 import { Link } from 'react-router';
 import { ArrowUp, RotateCcw, Square } from 'lucide-react';
 import { buttonStyles } from '@/components/ui/buttonStyles';
@@ -6,44 +6,62 @@ import { Mascot } from '@/components/ui/Mascot';
 import { cn } from '@/lib/cn';
 import type { DemoConfig } from '@/config/loadConfig';
 import { DEMO_MAX_QUESTION } from '@/services/demo/demoClient';
-import { EXAMPLE_THREAD } from './exampleThread';
+import { ExampleAnswer } from './ExampleAnswer';
 import { useDemoChat } from './useDemoChat';
 
-// The Markdown and KaTeX renderer is large. It loads after the first paint, or when a visitor first asks.
-const DemoThread = lazy(() => import('./DemoThread'));
+// The Markdown and KaTeX renderer is large. The example answer was rendered at build time, so the page
+// does not need it to look complete. It loads when the visitor first focuses the box or asks.
+const loadThread = () => import('./DemoThread');
+const DemoThread = lazy(loadThread);
 
 const FALLBACK_EXAMPLES = ['Factor x² − 5x + 6', 'Who can veto a bill?', 'What is a function?'];
 
 function ThreadSkeleton() {
   return (
-    <div className="min-h-[22rem] space-y-4 py-2" role="status">
-      <span className="sr-only">Loading the example</span>
+    <div className="min-h-[12rem] space-y-4 py-2" role="status">
+      <span className="sr-only">Loading the answer</span>
       <div className="h-7 w-2/3 animate-pulse rounded-lg bg-bg-tertiary" />
       <div className="h-5 w-full max-w-[38rem] animate-pulse rounded-lg bg-bg-tertiary" />
       <div className="h-5 w-full max-w-[34rem] animate-pulse rounded-lg bg-bg-tertiary" />
-      <div className="h-5 w-full max-w-[30rem] animate-pulse rounded-lg bg-bg-tertiary" />
     </div>
   );
 }
 
-/** True once the browser is idle, so loading the renderer never delays the first paint. */
-function useWhenIdle(): boolean {
-  const [idle, setIdle] = useState(false);
-  useEffect(() => {
-    const ric = (window as { requestIdleCallback?: (cb: () => void) => number }).requestIdleCallback;
-    const id = ric ? ric(() => setIdle(true)) : window.setTimeout(() => setIdle(true), 300);
-    return () => {
-      if (!ric) window.clearTimeout(id);
-    };
-  }, []);
-  return idle;
+interface Credit {
+  title: string;
+  publisher?: string;
+  license: string;
+  url?: string;
+}
+
+/** The credit line of the books (CC BY needs the title, the publisher, and the licence of each one). */
+function Credits({ credits }: { credits: Credit[] }) {
+  if (credits.length === 0) return null;
+  return (
+    <p className="mt-5 text-xs leading-relaxed text-text-muted">
+      {credits.map((credit, i) => (
+        <span key={credit.title}>
+          {i > 0 && '; '}
+          {credit.url ? (
+            <a href={credit.url} target="_blank" rel="noopener noreferrer" className="underline underline-offset-2 hover:text-text-primary">
+              {credit.title}
+            </a>
+          ) : (
+            credit.title
+          )}
+          {credit.publisher && !credit.title.includes(credit.publisher) ? `, ${credit.publisher}` : ''}
+          {credit.license ? `, ${credit.license}` : ''}
+        </span>
+      ))}
+    </p>
+  );
 }
 
 export function DemoCard({ demo }: { demo: DemoConfig | undefined }) {
   const live = demo?.enabled === true;
   const chat = useDemoChat();
   const [value, setValue] = useState('');
-  const idle = useWhenIdle();
+  const input = useRef<HTMLInputElement>(null);
   const started = chat.messages.length > 0;
   const showExample = !started;
   const streaming = chat.status === 'streaming';
@@ -54,17 +72,19 @@ export function DemoCard({ demo }: { demo: DemoConfig | undefined }) {
   const [previous, setPrevious] = useState(chat.status);
   if (previous !== chat.status) {
     setPrevious(chat.status);
-    if (chat.status === 'streaming') setAnnouncement('Ask is answering.');
+    if (chat.status === 'streaming') setAnnouncement('The tutor is answering.');
     else setAnnouncement(chat.messages[chat.messages.length - 1]?.state === 'failed' ? 'The answer failed.' : 'The answer is ready.');
   }
 
   const submit = async (text: string) => {
+    void loadThread();
     const accepted = await chat.ask(text);
     if (accepted) setValue('');
   };
   const onSubmit = (event: FormEvent) => {
     event.preventDefault();
     if (value.trim() && !streaming) {
+      void loadThread();
       const text = value;
       setValue('');
       void chat.ask(text).then((accepted) => {
@@ -73,8 +93,11 @@ export function DemoCard({ demo }: { demo: DemoConfig | undefined }) {
     }
   };
 
-  const sources = demo?.sources ?? [];
-  const messages = showExample ? EXAMPLE_THREAD : chat.messages;
+  // After an answer, the books' own credit lines (from the stream) win over the ones in the config.
+  const credits: Credit[] =
+    chat.attribution.length > 0
+      ? chat.attribution.map((a) => ({ title: a.title, publisher: a.publisher, license: a.license, url: a.sourceUrl }))
+      : (demo?.sources ?? []).map((source) => ({ title: source.title, license: source.license, url: source.url }));
 
   return (
     <section aria-label="Live demo" className="@container rounded-3xl border border-border bg-surface shadow-lg">
@@ -102,6 +125,7 @@ export function DemoCard({ demo }: { demo: DemoConfig | undefined }) {
             onClick={() => {
               chat.reset();
               setValue('');
+              input.current?.focus();
             }}
             className="inline-flex min-h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg px-2 text-sm text-text-muted hover:text-text-primary"
           >
@@ -112,12 +136,12 @@ export function DemoCard({ demo }: { demo: DemoConfig | undefined }) {
       </div>
 
       <div className="px-5 pb-2 pt-5 sm:px-8 sm:pt-7" data-testid="demo-thread">
-        {idle || started ? (
-          <Suspense fallback={<ThreadSkeleton />}>
-            <DemoThread messages={messages} />
-          </Suspense>
+        {showExample ? (
+          <ExampleAnswer />
         ) : (
-          <ThreadSkeleton />
+          <Suspense fallback={<ThreadSkeleton />}>
+            <DemoThread messages={chat.messages} />
+          </Suspense>
         )}
         {chat.notice && <p className="mt-4 font-serif text-sm italic text-text-muted">{chat.notice}</p>}
       </div>
@@ -128,6 +152,8 @@ export function DemoCard({ demo }: { demo: DemoConfig | undefined }) {
             <label className="min-w-0 flex-1">
               <span className="sr-only">Your question</span>
               <input
+                ref={input}
+                onFocus={() => void loadThread()}
                 value={value}
                 onChange={(e) => setValue(e.target.value)}
                 maxLength={DEMO_MAX_QUESTION}
@@ -180,24 +206,7 @@ export function DemoCard({ demo }: { demo: DemoConfig | undefined }) {
             ))}
           </ul>
 
-          {sources.length > 0 && (
-            <p className="mt-5 text-xs leading-relaxed text-text-muted">
-              {sources.map((source, i) => (
-                <span key={source.title}>
-                  {i > 0 && ', '}
-                  {source.url ? (
-                    <a href={source.url} target="_blank" rel="noopener noreferrer" className="underline underline-offset-2 hover:text-text-primary">
-                      {source.title}
-                    </a>
-                  ) : (
-                    source.title
-                  )}
-                </span>
-              ))}
-              {' · OpenStax · '}
-              {sources[0]?.license || 'CC BY 4.0'}
-            </p>
-          )}
+          <Credits credits={credits} />
         </div>
       ) : (
         <div className="flex px-5 pb-6 pt-3 sm:px-8">

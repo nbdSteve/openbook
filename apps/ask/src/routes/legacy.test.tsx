@@ -29,6 +29,9 @@ describe('old addresses', () => {
     ['/app/c/COURSE1', '/ask/courses/COURSE1'],
     ['/app/c/COURSE1/chat/CONV1', '/ask/courses/COURSE1/c/CONV1'],
     ['/app/c/COURSE1/manage?tab=invite', '/portal/courses/COURSE1?tab=invite'],
+    ['/app/c/COURSE1/unknown', '/ask/courses/COURSE1'],
+    ['/app/whatever', '/ask'],
+    ['/app/c/COURSE1/chat/CONV1#answer', '/ask/courses/COURSE1/c/CONV1#answer'],
   ])('%s goes to %s', (from, to) => {
     visit(from);
     expect(screen.getByText(to)).toBeInTheDocument();

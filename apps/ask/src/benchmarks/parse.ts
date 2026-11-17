@@ -127,3 +127,29 @@ export function percent(value: number): string {
   if (value < 1 && p >= 99.5) return '99%';
   return `${Math.round(p)}%`;
 }
+
+/** The numbers that the landing page shows, and nothing else. The Vite plugin emits this object, so the page carries no unused data. */
+export interface LandingBenchmarks {
+  questions: number;
+  textbooks: number;
+  /** The publisher that every corpus title names in brackets, for example "OpenStax", or null when they differ. */
+  publisher: string | null;
+  /** Recall at 8 of each search method. */
+  recallAt8: Record<RetrievalMode, number>;
+  /** Recall at 1 of the method that the product uses (hybrid). */
+  recallAt1: number;
+  offTopicCaught: number;
+}
+
+export function toLanding(b: Benchmarks): LandingBenchmarks {
+  const publishers = b.corpora.map((c) => /\(([^)]+)\)\s*$/.exec(c.title)?.[1] ?? null);
+  const same = publishers.every((p) => p !== null && p === publishers[0]);
+  return {
+    questions: b.questions,
+    textbooks: b.corpora.length,
+    publisher: same ? publishers[0] : null,
+    recallAt8: { hybrid: b.retrieval.hybrid.recallAt8, dense: b.retrieval.dense.recallAt8, bm25: b.retrieval.bm25.recallAt8 },
+    recallAt1: b.retrieval.hybrid.recallAt1,
+    offTopicCaught: b.gate.offTopicCaught,
+  };
+}

@@ -1,34 +1,66 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import type { Plugin } from 'vite';
+import rehypeKatex from 'rehype-katex';
+import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import remarkParse from 'remark-parse';
+import remarkRehype from 'remark-rehype';
+import { unified } from 'unified';
+import { parseBenchmarks, toLanding } from './src/benchmarks/parse.ts';
+import { EXAMPLE_MARKDOWN } from './src/pages/landing/exampleContent.ts';
 
-const REAL_BENCHMARKS = fileURLToPath(new URL('../../evals/benchmarks.json', import.meta.url));
-const FIXTURE_BENCHMARKS = fileURLToPath(new URL('./src/benchmarks/benchmarks.fixture.json', import.meta.url));
+const BENCHMARKS_FILE = fileURLToPath(new URL('../../evals/benchmarks.json', import.meta.url));
 
 /**
- * `virtual:benchmarks` is evals/benchmarks.json, read at build time, so the landing page shows the
- * numbers of the commit it is built from. Without the file, a developer machine falls back to the
- * fixture in src/benchmarks. In CI a missing file fails the build: a page must never ship sample numbers.
+ * `virtual:benchmarks` holds the numbers that the landing page shows, read from
+ * evals/benchmarks.json at build time, so the page shows the numbers of the commit it is built from.
+ * The file is checked here: a missing file, a bad number, or a renamed key fails the build, and the
+ * visitor never sees a broken page. There is no fallback to sample numbers.
  */
 function benchmarksPlugin(): Plugin {
   const id = 'virtual:benchmarks';
   const resolved = `\0${id}`;
+  const fix = 'Create it with "cargo run -p openbook-eval -- offline --write-baseline" and commit it.';
   return {
     name: 'openbook-benchmarks',
     resolveId: (name) => (name === id ? resolved : undefined),
     load(name) {
       if (name !== resolved) return undefined;
-      const real = existsSync(REAL_BENCHMARKS);
-      if (!real && process.env.CI) {
-        this.error('evals/benchmarks.json is missing. The landing page shows its numbers. Run "make eval" to create it, and commit it.');
+      if (!existsSync(BENCHMARKS_FILE)) this.error(`evals/benchmarks.json is missing. The landing page shows its numbers. ${fix}`);
+      this.addWatchFile(BENCHMARKS_FILE);
+      try {
+        return `export default ${JSON.stringify(toLanding(parseBenchmarks(JSON.parse(readFileSync(BENCHMARKS_FILE, 'utf8')))))};`;
+      } catch (error) {
+        this.error(`${error instanceof Error ? error.message : String(error)}. Re-create the file: ${fix}`);
       }
-      const file = real ? REAL_BENCHMARKS : FIXTURE_BENCHMARKS;
-      this.addWatchFile(file);
-      return `import data from ${JSON.stringify(file)};\nexport default data;\nexport const source = ${JSON.stringify(real ? 'real' : 'fixture')};`;
+    },
+  };
+}
+
+/**
+ * `virtual:example-answer` is the fixed example answer of the landing page, as a HAST tree. It is
+ * rendered here, at build time, with the same Markdown, math, and KaTeX plugins as the chat. The
+ * page turns the tree into React elements (not into an HTML string), so the first view needs
+ * neither the Markdown parser nor the style attributes of raw HTML. The tree is our own constant,
+ * never model output, so there is nothing to sanitize.
+ */
+function exampleAnswerPlugin(): Plugin {
+  const id = 'virtual:example-answer';
+  const resolved = `\0${id}`;
+  return {
+    name: 'openbook-example-answer',
+    resolveId: (name) => (name === id ? resolved : undefined),
+    async load(name) {
+      if (name !== resolved) return undefined;
+      const processor = unified().use(remarkParse).use(remarkGfm).use(remarkMath).use(remarkRehype).use(rehypeKatex);
+      const tree = await processor.run(processor.parse(EXAMPLE_MARKDOWN));
+      // Positions only make the file larger.
+      return `export default ${JSON.stringify(tree, (key, value: unknown) => (key === 'position' ? undefined : value))};`;
     },
   };
 }
@@ -64,7 +96,7 @@ function webConfigPlugin(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [react(), tailwindcss(), webConfigPlugin(), benchmarksPlugin()],
+  plugins: [react(), tailwindcss(), webConfigPlugin(), benchmarksPlugin(), exampleAnswerPlugin()],
   define: {
     // amazon-cognito-identity-js expects a Node-style `global`.
     global: 'globalThis',

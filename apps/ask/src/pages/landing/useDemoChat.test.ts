@@ -11,7 +11,7 @@ const answer = (conversationId: string, text: string, withSources = true) =>
   sse('done', { usage: { inputTokens: 1, outputTokens: 1 }, stopReason: 'end_turn' });
 
 const json = (status: number, code: string, extra: Record<string, unknown> = {}) =>
-  new Response(JSON.stringify({ error: { code, message: code, ...extra } }), { status });
+  new Response(JSON.stringify({ error: { code, message: code, ...extra } }), { status, headers: { 'x-openbook-demo': '1' } });
 
 /** The bodies that the fake endpoint sends, in order. Each call also records the request body. */
 function fakeEndpoint(responses: (Response | (() => Response))[]) {
@@ -74,15 +74,54 @@ describe('useDemoChat', () => {
     expect(result.current.messages.map((m) => m.content)).toEqual(['one more', `Answer ${DEMO_MAX_TURNS}`]);
   });
 
-  it('starts a new conversation once when the server forgot the old one', async () => {
-    const bodies = fakeEndpoint([new Response(answer('C1', 'One')), json(404, 'not_found'), new Response(answer('C2', 'Fresh'))]);
+  it('says so when the server answers with a new conversation ID', async () => {
+    const bodies = fakeEndpoint([new Response(answer('C1', 'One')), new Response(answer('C2', 'Fresh'))]);
     const { result } = renderHook(() => useDemoChat());
     await act(async () => void (await result.current.ask('first')));
     await act(async () => void (await result.current.ask('second')));
-    expect(bodies.map((b) => b.conversationId)).toEqual([undefined, 'C1', undefined]);
+    expect(bodies.map((b) => b.conversationId)).toEqual([undefined, 'C1']);
     expect(result.current.notice).toMatch(/ended/);
     expect(result.current.problem).toBeNull();
-    expect(result.current.messages.map((m) => m.content)).toEqual(['second', 'Fresh']);
+    // The thread stays. The next follow-up uses the new ID.
+    expect(result.current.messages).toHaveLength(4);
+    await act(async () => void (await result.current.ask('third')));
+  });
+
+  it('keeps the question and the partial answer when the network fails during the stream', async () => {
+    const encoder = new TextEncoder();
+    let sent = false;
+    const broken = new ReadableStream<Uint8Array>({
+      // The first read gives the first events. The second read fails, like a dropped connection.
+      pull(controller) {
+        if (sent) controller.error(new TypeError('network error'));
+        else controller.enqueue(encoder.encode(sse('meta', { conversationId: 'C1', model: 'm', attribution: [] }) + sse('delta', { text: 'Part of it' })));
+        sent = true;
+      },
+    });
+    fakeEndpoint([new Response(broken)]);
+    const { result } = renderHook(() => useDemoChat());
+    await act(async () => {
+      expect(await result.current.ask('q')).toBe(true);
+    });
+    expect(result.current.problem).toBeNull();
+    expect(result.current.messages.map((m) => m.content)).toEqual(['q', 'Part of it']);
+    expect(result.current.messages[1]).toMatchObject({ state: 'failed', error: expect.stringMatching(/closed before/) });
+  });
+
+  it('marks the answer failed when a 200 response has no events at all', async () => {
+    fakeEndpoint([new Response('')]);
+    const { result } = renderHook(() => useDemoChat());
+    await act(async () => void (await result.current.ask('q')));
+    expect(result.current.messages[1].state).toBe('failed');
+    expect(result.current.status).toBe('idle');
+  });
+
+  it('keeps the credit lines from the meta event', async () => {
+    const meta = sse('meta', { conversationId: 'C1', model: 'm', attribution: [{ title: 'College Algebra', publisher: 'OpenStax', license: 'CC BY 4.0' }] });
+    fakeEndpoint([new Response(meta + sse('delta', { text: 'Hi' }) + sse('done', { usage: { inputTokens: 1, outputTokens: 1 }, stopReason: 'end_turn' }))]);
+    const { result } = renderHook(() => useDemoChat());
+    await act(async () => void (await result.current.ask('q')));
+    expect(result.current.attribution).toEqual([{ title: 'College Algebra', publisher: 'OpenStax', license: 'CC BY 4.0' }]);
   });
 
   it('takes the pending messages back and names the problem when the demo refuses', async () => {

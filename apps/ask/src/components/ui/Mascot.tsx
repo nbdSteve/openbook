@@ -11,6 +11,7 @@ interface MascotProps {
   label?: string;
 }
 
+/** The face is drawn on the light cloud, so it is always dark. The marks outside the cloud (dots, question mark, sparkles) follow the theme. */
 const INK = '#2A3B4D';
 
 /** The cloud outline and fill. It is drawn twice: a thick stroke under, the fill on top, so only the outer edge shows. */
@@ -103,19 +104,19 @@ export function Mascot({ mood = 'idle', size = 40, className, label }: MascotPro
       <Cloud filled />
       <Face mood={mood} />
       {mood === 'thinking' && (
-        <g fill={INK}>
+        <g fill="var(--mascot-mark)">
           {[0, 1, 2].map((i) => (
             <circle key={i} cx={96 + i * 8} cy={20 - i * 3} r={2 + i * 0.8} className="motion-safe:animate-[think_1.4s_ease-in-out_infinite]" style={{ animationDelay: `${i * 0.25}s` }} />
           ))}
         </g>
       )}
       {mood === 'puzzled' && (
-        <text x="92" y="30" fontSize="26" fontWeight="700" fill={INK} fontFamily="Newsreader Variable, Georgia, serif">
+        <text x="92" y="30" fontSize="26" fontWeight="700" fill="var(--mascot-mark)" fontFamily="Newsreader Variable, Georgia, serif">
           ?
         </text>
       )}
       {mood === 'happy' && (
-        <g stroke={INK} strokeWidth="2.2" strokeLinecap="round">
+        <g stroke="var(--mascot-mark)" strokeWidth="2.2" strokeLinecap="round">
           <path d="M100 16 L100 26 M95 21 L105 21" />
           <path d="M18 30 L18 36 M15 33 L21 33" />
         </g>

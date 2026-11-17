@@ -10,6 +10,7 @@ import { CourseSidebar } from '@/components/layout/CourseSidebar';
 import { NotFoundScreen } from '@/components/layout/NotFoundScreen';
 import { useChatController } from '@/components/chat/useChatController';
 import { styleName } from '@/lib/constants';
+import { useDocumentTitle } from '@/lib/useDocumentTitle';
 import { useMediaQuery } from '@/lib/useMediaQuery';
 import { useResource } from '@/lib/useResource';
 import { ApiError } from '@/services/api/client';
@@ -66,6 +67,7 @@ interface CourseShellProps {
 }
 
 function CourseShell({ course, setCourse, conversationId }: CourseShellProps) {
+  useDocumentTitle(course.name);
   const navigate = useNavigate();
   const location = useLocation();
   const { user, signOut } = useAuth();

@@ -131,8 +131,27 @@ export interface CourseInput {
 }
 
 export type ChatEvent =
-  | { type: 'meta'; conversationId: string; userMessageId: string; assistantMessageId: string; title: string; model: string }
+  | {
+      type: 'meta';
+      conversationId: string;
+      model: string;
+      /** The course chat sends these three. The demo does not. */
+      userMessageId?: string;
+      assistantMessageId?: string;
+      title?: string;
+      /** The demo sends the credit line of each book (CC BY needs it). */
+      attribution?: Attribution[];
+    }
   | { type: 'sources'; sources: Source[] }
   | { type: 'delta'; text: string }
   | { type: 'done'; usage: { inputTokens: number; outputTokens: number }; stopReason: string }
   | { type: 'error'; code: string; message: string };
+
+/** The credit line of one book, from the `meta` event of the demo (docs/api.md). */
+export interface Attribution {
+  title: string;
+  publisher: string;
+  license: string;
+  licenseUrl?: string;
+  sourceUrl?: string;
+}

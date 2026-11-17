@@ -1,4 +1,4 @@
-import type { ChatEvent, Source } from './types';
+import type { Attribution, ChatEvent, Source } from './types';
 
 export interface SseMessage {
   event: string;
@@ -65,6 +65,23 @@ export class SseParser {
   }
 }
 
+/** Keep the credit lines that have the fields the page needs. */
+function readAttribution(items: unknown[]): Attribution[] {
+  return items.flatMap((item): Attribution[] => {
+    const a = item as Partial<Record<keyof Attribution, unknown>> | null;
+    if (!a || typeof a.title !== 'string' || typeof a.license !== 'string') return [];
+    return [
+      {
+        title: a.title,
+        publisher: typeof a.publisher === 'string' ? a.publisher : '',
+        license: a.license,
+        ...(typeof a.licenseUrl === 'string' && { licenseUrl: a.licenseUrl }),
+        ...(typeof a.sourceUrl === 'string' && { sourceUrl: a.sourceUrl }),
+      },
+    ];
+  });
+}
+
 /** Turn a decoded SSE message into a typed chat event. Unknown events return null. */
 const KNOWN_EVENTS = new Set(['meta', 'sources', 'delta', 'done', 'error']);
 
@@ -79,15 +96,18 @@ export function toChatEvent(message: SseMessage): ChatEvent | null {
     return { type: 'error', code: 'internal', message: 'The server sent an event the app could not read.' };
   }
   switch (message.event) {
-    case 'meta':
+    case 'meta': {
+      const text = (value: unknown) => (typeof value === 'string' ? value : undefined);
       return {
         type: 'meta',
         conversationId: String(payload.conversationId),
-        userMessageId: String(payload.userMessageId),
-        assistantMessageId: String(payload.assistantMessageId),
-        title: String(payload.title ?? ''),
         model: String(payload.model ?? ''),
+        ...(text(payload.userMessageId) !== undefined && { userMessageId: text(payload.userMessageId) }),
+        ...(text(payload.assistantMessageId) !== undefined && { assistantMessageId: text(payload.assistantMessageId) }),
+        ...(text(payload.title) !== undefined && { title: text(payload.title) }),
+        ...(Array.isArray(payload.attribution) && { attribution: readAttribution(payload.attribution) }),
       };
+    }
     case 'sources':
       return { type: 'sources', sources: Array.isArray(payload.sources) ? (payload.sources as Source[]) : [] };
     case 'delta':

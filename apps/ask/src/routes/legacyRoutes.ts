@@ -10,4 +10,7 @@ export const LEGACY_ROUTES: { path: string; to: (params: Params) => string }[] =
   { path: '/app/c/:courseId', to: (p) => `/ask/courses/${p.courseId}` },
   { path: '/app/c/:courseId/chat/:conversationId', to: (p) => `/ask/courses/${p.courseId}/c/${p.conversationId}` },
   { path: '/app/c/:courseId/manage', to: (p) => `/portal/courses/${p.courseId}` },
+  // Any other old path below a course or below /app lands on the nearest page that exists.
+  { path: '/app/c/:courseId/*', to: (p) => `/ask/courses/${p.courseId}` },
+  { path: '/app/*', to: () => '/ask' },
 ];

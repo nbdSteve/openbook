@@ -2,6 +2,7 @@ import { Link } from 'react-router';
 import { Compass } from 'lucide-react';
 import { buttonStyles } from '@/components/ui/buttonStyles';
 import { Logo } from '@/components/ui/Logo';
+import { useDocumentTitle } from '@/lib/useDocumentTitle';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
 
 interface NotFoundScreenProps {
@@ -12,6 +13,7 @@ interface NotFoundScreenProps {
 }
 
 export function NotFoundScreen({ title, message, actionTo, actionLabel }: NotFoundScreenProps) {
+  useDocumentTitle(title);
   return (
     <div className="relative flex min-h-dvh flex-col items-center justify-center bg-bg-primary px-6 text-center">
       <div className="absolute left-4 top-3">
