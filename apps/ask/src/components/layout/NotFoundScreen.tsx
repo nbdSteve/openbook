@@ -23,7 +23,7 @@ export function NotFoundScreen({ title, message, actionTo, actionLabel }: NotFou
       <div className="mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-accent-subtle">
         <Compass className="h-7 w-7 text-accent" aria-hidden="true" />
       </div>
-      <h1 className="text-2xl font-bold text-text-primary">{title}</h1>
+      <h1 className="font-serif text-title font-medium text-text-primary">{title}</h1>
       <p className="mt-3 max-w-md text-text-secondary">{message}</p>
       <Link to={actionTo} className={buttonStyles('primary', 'md', 'mt-8')}>
         {actionLabel}

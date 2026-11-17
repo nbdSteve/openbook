@@ -49,7 +49,7 @@ export function JoinPage() {
       </header>
       <main className="flex flex-1 items-start justify-center px-4 pb-16 pt-6 sm:items-center sm:pt-0">
         <div className="w-full max-w-md rounded-2xl border border-border bg-surface p-6 text-center shadow-lg sm:p-8">
-          <h1 className="text-xl font-semibold text-text-primary">Join this course?</h1>
+          <h1 className="font-serif text-3xl font-medium text-text-primary">Join this course?</h1>
           <p className="mt-3 text-sm text-text-secondary">
             You were invited with the code{' '}
             <span className="font-mono font-semibold tracking-widest text-text-primary">{normalizeInviteCode(inviteCode)}</span>.

@@ -12,7 +12,7 @@ export function AuthLayout({ title, subtitle, children, footer }: { title: strin
       <main className="flex flex-1 items-start justify-center px-4 pb-12 pt-4 sm:items-center sm:pt-0">
         <div className="w-full max-w-md">
           <div className="rounded-2xl border border-border bg-surface p-6 shadow-lg sm:p-8">
-            <h1 className="text-2xl font-semibold text-text-primary">{title}</h1>
+            <h1 className="font-serif text-3xl font-medium text-text-primary">{title}</h1>
             {subtitle && <p className="mt-2 text-sm text-text-secondary">{subtitle}</p>}
             <div className="mt-6">{children}</div>
           </div>

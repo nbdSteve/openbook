@@ -173,7 +173,7 @@ function CourseShell({ course, setCourse, conversationId }: CourseShellProps) {
           >
             <Menu className="h-5 w-5" aria-hidden="true" />
           </button>
-          <h1 className="min-w-0 flex-1 truncate text-base font-semibold text-text-primary">{course.name}</h1>
+          <h1 className="min-w-0 flex-1 truncate font-serif text-xl font-semibold text-text-primary">{course.name}</h1>
           <Badge tone="accent" className="shrink-0">
             <span className="sr-only">Tutoring style: </span>
             {styleName(course.tutoringStyle)}
