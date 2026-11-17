@@ -177,6 +177,11 @@ describe.each([
     // The spend caps until the public launch (stageLimits in cdk.json), well below the API defaults.
     expect(env.OPENBOOK_LIMIT_DAILY_MESSAGES_GLOBAL).toBe(_stage === 'prod' ? '300' : '100');
     expect(env.OPENBOOK_LIMIT_DAILY_TOKENS_GLOBAL).toBe(_stage === 'prod' ? '1500000' : '500000');
+    // The demo: the kill switch per stage, 10 and 40 questions per visitor, and 2 US dollars a day.
+    expect(env.OPENBOOK_DEMO_ENABLED).toBe(_stage === 'dev' ? 'true' : 'false');
+    expect(env.OPENBOOK_DEMO_LIMIT_VISITOR_PER_10_MIN).toBe('10');
+    expect(env.OPENBOOK_DEMO_LIMIT_VISITOR_PER_DAY).toBe('40');
+    expect(env.OPENBOOK_DEMO_BUDGET_USD_PER_DAY).toBe('2');
     expect(env.OPENBOOK_LIMIT_FAILED_JOINS_PER_DAY).toBe('20');
     expect(env.OPENBOOK_LIMIT_COURSES_OWNED).toBe('10');
     expect(env.OPENBOOK_LIMIT_DOCUMENTS_PER_COURSE).toBe('50');
@@ -190,6 +195,24 @@ describe.each([
     ]) {
       expect(env).toHaveProperty(name);
     }
+  });
+
+  test('the API origin gets the client address, and no Host header', () => {
+    const policies = Object.values(s.json.Resources).filter((r) => r.Type === 'AWS::CloudFront::OriginRequestPolicy');
+    expect(policies).toHaveLength(1);
+    const config = policies[0].Properties?.OriginRequestPolicyConfig as {
+      HeadersConfig: { HeaderBehavior: string; Headers: string[] };
+      CookiesConfig: { CookieBehavior: string };
+    };
+    // An allow list: CloudFront-Viewer-Address (the demo visitor), and what the API reads. A policy
+    // that forwards every viewer header would forward Host, which the function URL rejects.
+    expect(config.HeadersConfig.HeaderBehavior).toBe('whitelist');
+    expect(config.HeadersConfig.Headers).toContain('CloudFront-Viewer-Address');
+    expect(config.HeadersConfig.Headers).toContain('x-auth-token');
+    expect(config.HeadersConfig.Headers).toContain('x-amz-content-sha256');
+    expect(config.HeadersConfig.Headers.map((h) => h.toLowerCase())).not.toContain('host');
+    expect(config.HeadersConfig.Headers.map((h) => h.toLowerCase())).not.toContain('authorization');
+    expect(config.CookiesConfig.CookieBehavior).toBe('none');
   });
 
   test('the /api/* behavior never caches and signs requests with OAC', () => {
@@ -206,9 +229,9 @@ describe.each([
     expect(config.CacheBehaviors).toHaveLength(1);
     const api = config.CacheBehaviors[0];
     expect(api.PathPattern).toBe('/api/*');
-    // Managed policy IDs: CachingDisabled, and AllViewerExceptHostHeader.
+    // The managed policy CachingDisabled, and a custom origin request policy (below).
     expect(api.CachePolicyId).toBe('4135ea2d-6df8-44a3-9df3-4b5a84be39ad');
-    expect(api.OriginRequestPolicyId).toBe('b689b0a8-53d0-40ab-baf2-68738e2966ac');
+    expect(api.OriginRequestPolicyId).toBeDefined();
     expect(api.ViewerProtocolPolicy).toBe('https-only');
     expect(api.AllowedMethods).toEqual(['GET', 'HEAD', 'OPTIONS', 'PUT', 'PATCH', 'POST', 'DELETE']);
 
@@ -376,11 +399,28 @@ describe.each([
     const parsed = JSON.parse(
       (generated as string).replace(/<<marker:0xbaba:\d+>>/g, 'x'),
     ) as Json;
+    // The demo part comes from demo/course.json: the credits and 4 to 6 examples (half from each book).
+    const demo = parsed.demo as { enabled: boolean; model: Json; sources: Json[]; examples: string[] };
     expect(parsed).toEqual({
       stage: _stage,
       region: 'ap-southeast-2',
       cognito: { userPoolId: 'x', clientId: 'x', endpoint: null },
+      demo: {
+        // Dev has the demo on. Prod stays off until the demo course is provisioned (stageDemo in cdk.json).
+        enabled: _stage === 'dev',
+        model: { label: 'Claude Sonnet 4.6' },
+        sources: demo.sources,
+        examples: demo.examples,
+      },
     });
+    expect(demo.sources.map((x) => x.title)).toEqual(['College Algebra (first edition)', 'American Government 2e']);
+    for (const source of demo.sources) {
+      expect(source.license).toBe('CC BY 4.0');
+      expect(String(source.url)).toMatch(/^https:\/\/openstax\.org\//);
+      expect(Object.keys(source).sort()).toEqual(['license', 'title', 'url']);
+    }
+    expect(demo.examples.length).toBeGreaterThanOrEqual(4);
+    expect(demo.examples.length).toBeLessThanOrEqual(6);
   });
 
   test('the outputs are the documented set', () => {
@@ -480,6 +520,27 @@ describe('configuration', () => {
     const env = (fn?.Properties?.Environment as { Variables: Record<string, string> }).Variables;
     expect(env.OPENBOOK_LIMIT_DAILY_MESSAGES_PER_USER).toBe('7');
     expect(env.OPENBOOK_LIMIT_UPLOAD_BYTES).toBe('1000');
+  });
+
+  test('the demo switch, limits, and budget can be overridden by context', () => {
+    const s = synth({
+      stage: 'prod',
+      demoEnabled: 'true',
+      limitDemoVisitorPer10Min: '3',
+      limitDemoVisitorPerDay: '9',
+      demoBudgetUsdPerDay: '0.5',
+    });
+    const fn = Object.values(s.json.Resources).find(
+      (r) => r.Type === 'AWS::Lambda::Function' && r.Properties?.Handler === 'bootstrap',
+    );
+    const env = (fn?.Properties?.Environment as { Variables: Record<string, string> }).Variables;
+    expect(env.OPENBOOK_DEMO_ENABLED).toBe('true');
+    expect(env.OPENBOOK_DEMO_LIMIT_VISITOR_PER_10_MIN).toBe('3');
+    expect(env.OPENBOOK_DEMO_LIMIT_VISITOR_PER_DAY).toBe('9');
+    expect(env.OPENBOOK_DEMO_BUDGET_USD_PER_DAY).toBe('0.5');
+    expect(() => synth({ demoEnabled: 'maybe' })).toThrow(/demoEnabled/);
+    expect(() => synth({ demoBudgetUsdPerDay: '0' })).toThrow(/demoBudgetUsdPerDay/);
+    expect(() => synth({ demoBudgetUsdPerDay: 'free' })).toThrow(/demoBudgetUsdPerDay/);
   });
 
   test('refuses an unknown stage and bad limits', () => {

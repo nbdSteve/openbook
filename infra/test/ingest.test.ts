@@ -261,6 +261,8 @@ describe('the transcribe and embedding model rules', () => {
     residency: 'au',
     maxOutputTokens: 2000,
     vision: true,
+    inputUsdPerMillion: 1,
+    outputUsdPerMillion: 5,
     ...over,
   });
   const withModels = (list: Json[], extra: Json = {}): (() => Synth) =>

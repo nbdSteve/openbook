@@ -49,7 +49,10 @@ export interface DemoConfig {
   enabled: boolean;
   visitorPer10Min: number;
   visitorPerDay: number;
-  globalPerDay: number;
+  /** What the whole demo may spend in a day (UTC), in US dollars. */
+  budgetUsdPerDay: number;
+  /** The label of the default chat model, which answers the demo. */
+  modelLabel: string;
   sources: DemoSource[];
   examples: string[];
 }
@@ -104,8 +107,24 @@ function limit(node: Node, stage: Stage, key: string, fallback: number): number 
   return n;
 }
 
-/** The demo limits when the context says nothing: 5 questions per visitor per 10 minutes, 20 a day. */
-export const defaultDemoLimits = { visitorPer10Min: 5, visitorPerDay: 20, globalPerDay: 100 };
+/**
+ * The demo limits when the context says nothing: 10 questions per visitor per 10 minutes, 40 a day,
+ * and 2 US dollars a day for the whole demo (about 100 answers of the default chat model).
+ */
+export const defaultDemoLimits = { visitorPer10Min: 10, visitorPerDay: 40, budgetUsdPerDay: 2 };
+
+/**
+ * The daily budget comes from, in order: the context key `demoBudgetUsdPerDay`, the stage defaults in
+ * cdk.json (`stageDemo.<stage>.budgetUsdPerDay`), and the default. It is a positive number of dollars.
+ */
+function demoBudget(node: Node, stage: Stage): number {
+  const stageDemo = node.tryGetContext('stageDemo') as Record<string, Record<string, unknown>> | undefined;
+  const value: unknown = node.tryGetContext('demoBudgetUsdPerDay') ?? stageDemo?.[stage]?.budgetUsdPerDay;
+  if (value === undefined || value === null || value === '') return defaultDemoLimits.budgetUsdPerDay;
+  const n = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(n) || n <= 0 || n > 100_000) throw new Error('context demoBudgetUsdPerDay must be a positive number of US dollars');
+  return n;
+}
 
 /**
  * The kill switch comes from, in order: the context key `demoEnabled` (`-c demoEnabled=true`), the
@@ -127,7 +146,7 @@ function demoManifest(node: Node): { sources: DemoSource[]; examples: string[] }
   try {
     manifest = JSON.parse(fs.readFileSync(file, 'utf8')) as typeof manifest;
   } catch (error) {
-    throw new Error(`cannot read the demo manifest ${file}: ${String(error)}`);
+    throw new Error(`cannot read the demo manifest ${file}`, { cause: error });
   }
   const sources = (manifest.sources ?? []).map((source) => {
     const a = source.attribution ?? {};
@@ -221,7 +240,8 @@ export function resolveConfig(node: Node): OpenbookConfig {
       enabled: demoEnabled(node, stage),
       visitorPer10Min: limit(node, stage, 'limitDemoVisitorPer10Min', defaultDemoLimits.visitorPer10Min),
       visitorPerDay: limit(node, stage, 'limitDemoVisitorPerDay', defaultDemoLimits.visitorPerDay),
-      globalPerDay: limit(node, stage, 'limitDemoGlobalPerDay', defaultDemoLimits.globalPerDay),
+      budgetUsdPerDay: demoBudget(node, stage),
+      modelLabel: catalog.models.find((m) => m.id === catalog.defaultChatModel)?.label ?? catalog.defaultChatModel,
       ...demoManifest(node),
     },
     ...(domain ? { domain } : {}),

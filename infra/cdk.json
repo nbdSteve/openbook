@@ -68,22 +68,22 @@
       "dev": {
         "limitDailyMessagesGlobal": 100,
         "limitDailyTokensGlobal": 500000,
-        "limitDailyTranscribedPagesGlobal": 100,
-        "limitDemoGlobalPerDay": 100
+        "limitDailyTranscribedPagesGlobal": 100
       },
       "prod": {
         "limitDailyMessagesGlobal": 300,
         "limitDailyTokensGlobal": 1500000,
-        "limitDailyTranscribedPagesGlobal": 300,
-        "limitDemoGlobalPerDay": 100
+        "limitDailyTranscribedPagesGlobal": 300
       }
     },
     "stageDemo": {
       "dev": {
-        "enabled": true
+        "enabled": true,
+        "budgetUsdPerDay": 2
       },
       "prod": {
-        "enabled": false
+        "enabled": false,
+        "budgetUsdPerDay": 2
       }
     },
     "embeddingModelId": "amazon.titan-embed-text-v2:0"

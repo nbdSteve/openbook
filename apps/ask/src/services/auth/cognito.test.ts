@@ -11,7 +11,11 @@ vi.mock('amazon-cognito-identity-js', () => ({
 import { setConfig } from '@/config/loadConfig';
 import { clearSession, resetCognitoPool, resolveEndpoint } from './cognito';
 
-const base = { stage: 'local', region: 'us-east-1' };
+const base = {
+  stage: 'local',
+  region: 'us-east-1',
+  demo: { enabled: false, model: { label: '' }, sources: [], examples: [] },
+};
 
 describe('resolveEndpoint', () => {
   it('resolves a relative endpoint against the page origin', () => {

@@ -173,6 +173,7 @@ describe('the CloudFormation execution role', () => {
     'AWS::CloudFront::Distribution': 'cloudfront',
     'AWS::CloudFront::Function': 'cloudfront',
     'AWS::CloudFront::OriginAccessControl': 'cloudfront',
+    'AWS::CloudFront::OriginRequestPolicy': 'cloudfront',
     'AWS::CloudFront::ResponseHeadersPolicy': 'cloudfront',
     'AWS::Route53::RecordSet': 'route53',
     'AWS::CDK::Metadata': null,

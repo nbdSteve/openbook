@@ -8,6 +8,8 @@ export interface DemoSource {
 /** The public demo (docs/api.md, "Demo"). `enabled` false means the landing page hides it. */
 export interface DemoConfig {
   enabled: boolean;
+  /** The model that answers the demo, for the label in the UI. */
+  model: { label: string };
   sources: DemoSource[];
   examples: string[];
 }
@@ -37,7 +39,7 @@ function isString(value: unknown): value is string {
 
 /** The `demo` part is optional: an older file has none, and then the demo is off. */
 function parseDemo(value: unknown): DemoConfig {
-  const off: DemoConfig = { enabled: false, sources: [], examples: [] };
+  const off: DemoConfig = { enabled: false, model: { label: '' }, sources: [], examples: [] };
   if (!value || typeof value !== 'object') return off;
   const d = value as Partial<Record<keyof DemoConfig, unknown>>;
   if (d.enabled !== true) return off;
@@ -50,7 +52,8 @@ function parseDemo(value: unknown): DemoConfig {
       })
     : [];
   const examples = Array.isArray(d.examples) ? d.examples.filter(isString) : [];
-  return { enabled: true, sources, examples };
+  const model = d.model as { label?: unknown } | null | undefined;
+  return { enabled: true, model: { label: isString(model?.label) ? model.label : '' }, sources, examples };
 }
 
 /** Check that a parsed JSON value has the shape in docs/api.md. */

@@ -212,7 +212,7 @@ export class OpenbookStack extends cdk.Stack {
       OPENBOOK_DEMO_ENABLED: String(config.demo.enabled),
       OPENBOOK_DEMO_LIMIT_VISITOR_PER_10_MIN: String(config.demo.visitorPer10Min),
       OPENBOOK_DEMO_LIMIT_VISITOR_PER_DAY: String(config.demo.visitorPerDay),
-      OPENBOOK_DEMO_LIMIT_GLOBAL_PER_DAY: String(config.demo.globalPerDay),
+      OPENBOOK_DEMO_BUDGET_USD_PER_DAY: String(config.demo.budgetUsdPerDay),
       RUST_LOG: 'info',
     };
 
@@ -543,6 +543,7 @@ export class OpenbookStack extends cdk.Stack {
           },
           demo: {
             enabled: config.demo.enabled,
+            model: { label: config.demo.modelLabel },
             sources: config.demo.sources,
             examples: config.demo.examples,
           },

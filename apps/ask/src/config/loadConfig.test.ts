@@ -12,22 +12,23 @@ const respond = (body: BodyInit, status = 200) => vi.fn(async () => new Response
 describe('loadConfig', () => {
   it('loads and returns the config', async () => {
     const fetchFn = respond(JSON.stringify(valid));
-    expect(await loadConfig(fetchFn)).toEqual({ ...valid, demo: { enabled: false, sources: [], examples: [] } });
+    expect(await loadConfig(fetchFn)).toEqual({ ...valid, demo: { enabled: false, model: { label: '' }, sources: [], examples: [] } });
     expect(fetchFn).toHaveBeenCalledWith('/config.json', { cache: 'no-store' });
   });
 
   it('reads the demo settings, and an absent or off demo is off', () => {
     const demo = {
       enabled: true,
+      model: { label: 'Claude Sonnet 4.6' },
       sources: [{ title: 'College Algebra', license: 'CC BY 4.0', url: 'https://openstax.org/details/books/college-algebra' }],
       examples: ['What is a function?', 'What is federalism?'],
     };
     expect(parseConfig({ ...valid, demo }).demo).toEqual(demo);
-    expect(parseConfig({ ...valid, demo: { ...demo, enabled: false } }).demo).toEqual({ enabled: false, sources: [], examples: [] });
+    expect(parseConfig({ ...valid, demo: { ...demo, enabled: false } }).demo).toEqual({ enabled: false, model: { label: '' }, sources: [], examples: [] });
     expect(parseConfig({ ...valid, demo: 'yes' }).demo.enabled).toBe(false);
     // Entries that are not well formed are dropped, not trusted.
     const messy = { enabled: true, sources: [{ title: 'x' }, demo.sources[0]], examples: ['ok', 3, ''] };
-    expect(parseConfig({ ...valid, demo: messy }).demo).toEqual({ enabled: true, sources: demo.sources, examples: ['ok'] });
+    expect(parseConfig({ ...valid, demo: messy }).demo).toEqual({ enabled: true, model: { label: '' }, sources: demo.sources, examples: ['ok'] });
   });
 
   it('keeps a local Cognito endpoint', async () => {
