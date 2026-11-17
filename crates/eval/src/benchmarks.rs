@@ -12,7 +12,7 @@
 //!   "questions": 180,
 //!   "corpora": [ { "id", "title", "licence", "source", "pages", "questions" } ],
 //!   "retrieval": {
-//!     "combined": { "hybrid": R, "dense": R, "bm25": R },       // R: recallAt5, recallAt8, ndcgAt8, mrr
+//!     "combined": { "hybrid": R, "dense": R, "bm25": R },       // R: recallAt1, recallAt5, recallAt8, ndcgAt8, mrr
 //!     "corpora": { "<id>": { "hybrid": R, "dense": R, "bm25": R } }
 //!   },
 //!   "gate": {
@@ -73,6 +73,8 @@ pub struct CorpusInfo {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Retrieval {
+    /// The share of covered questions where the first source is relevant.
+    pub recall_at_1: f64,
     pub recall_at_5: f64,
     pub recall_at_8: f64,
     pub ndcg_at_8: f64,
@@ -82,6 +84,7 @@ pub struct Retrieval {
 impl From<&Metrics> for Retrieval {
     fn from(m: &Metrics) -> Self {
         Self {
+            recall_at_1: m.recall_at_1,
             recall_at_5: m.recall_at_5,
             recall_at_8: m.recall_at_8,
             ndcg_at_8: m.ndcg_at_8,
@@ -225,7 +228,7 @@ impl Benchmarks {
                 .map_or_else(|| id.to_owned(), |c| c.title.clone())
         };
         let mut out = String::new();
-        out.push_str("| Corpus | Questions | Setup | Recall@5 | Recall@8 | nDCG@8 | MRR |\n|---|---|---|---|---|---|---|\n");
+        out.push_str("| Corpus | Questions | Setup | Recall@1 | Recall@5 | Recall@8 | nDCG@8 | MRR |\n|---|---|---|---|---|---|---|---|\n");
         let mut scopes: Vec<(String, usize, &RetrievalSet)> = vec![(
             "All corpora".to_owned(),
             self.questions,
@@ -243,8 +246,8 @@ impl Benchmarks {
                 ("BM25 only", &set.bm25),
             ] {
                 out.push_str(&format!(
-                    "| {name} | {count} | {setup} | {:.4} | {:.4} | {:.4} | {:.4} |\n",
-                    r.recall_at_5, r.recall_at_8, r.ndcg_at_8, r.mrr
+                    "| {name} | {count} | {setup} | {:.4} | {:.4} | {:.4} | {:.4} | {:.4} |\n",
+                    r.recall_at_1, r.recall_at_5, r.recall_at_8, r.ndcg_at_8, r.mrr
                 ));
             }
         }
@@ -291,6 +294,7 @@ mod tests {
 
     fn sample() -> Benchmarks {
         let r = |x: f64| Retrieval {
+            recall_at_1: x - 0.05,
             recall_at_5: x,
             recall_at_8: x + 0.01,
             ndcg_at_8: x - 0.2,
@@ -343,6 +347,7 @@ mod tests {
             "/corpora/0/source",
             "/corpora/0/pages",
             "/corpora/0/questions",
+            "/retrieval/combined/hybrid/recallAt1",
             "/retrieval/combined/hybrid/recallAt5",
             "/retrieval/combined/hybrid/recallAt8",
             "/retrieval/combined/dense/ndcgAt8",
@@ -363,7 +368,9 @@ mod tests {
     #[test]
     fn the_markdown_has_a_row_for_each_scope_and_setup() {
         let text = sample().to_markdown();
-        assert!(text.contains("| All corpora | 20 | Hybrid | 0.9000 | 0.9100 | 0.7000 | 0.8000 |"));
+        assert!(text.contains(
+            "| All corpora | 20 | Hybrid | 0.8500 | 0.9000 | 0.9100 | 0.7000 | 0.8000 |"
+        ));
         assert!(text.contains("| College Algebra | 20 | BM25 only |"));
         assert!(text.contains("| All corpora | 0.9000 | 0.0000 | 1.0000 | 0.5000 |"));
     }

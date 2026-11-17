@@ -24,7 +24,7 @@ pub const RRF_K: f64 = 60.0;
 /// would remove the reason for hybrid search: an exact match (notation, a keyword) that dense ranks
 /// low. A test pins this. Weight 0.5 looked better on the golden set, and it was rejected for that
 /// property. Round 2 (`evals/results/2026-11-18.md`) tested it again with the running headers gone and
-/// a prose corpus: MRR 0.8767 to 0.9000 pooled (round 1: 0.852 to 0.901, so about half of that gain came
+/// a prose corpus: MRR 0.8806 to 0.8980 pooled (round 1: 0.852 to 0.901, so a good part of that gain came
 /// from the headers in the BM25 heading field), Recall@8 the same, and a lower MRR on the prose corpus
 /// (0.8936 to 0.8830). That is not strong evidence for giving up the property.
 pub const LEXICAL_WEIGHT: f64 = 1.0;
@@ -32,8 +32,8 @@ pub const LEXICAL_WEIGHT: f64 = 1.0;
 pub const FINAL_SOURCES: usize = 8;
 /// Most sources from one document while other candidates are left. The cap is soft: when fewer than
 /// `FINAL_SOURCES` candidates pass it, the free places go to the skipped candidates, in fused order.
-/// On the two corpora pooled (round 2), 6 gives Recall@8 0.9837 and nDCG@8 0.6078, against 0.9593 and
-/// 0.5513 for 4. The cap costs 0.022 of nDCG@8 against no cap (0.6298): it protects the source
+/// On the two corpora pooled (round 2), 6 gives Recall@8 0.9756 and nDCG@8 0.6129, against 0.9431 and
+/// 0.5555 for 4. The cap costs 0.027 of nDCG@8 against no cap (0.6394): it protects the source
 /// diversity of a course with several documents, which the golden sets do not measure.
 pub const MAX_PER_DOCUMENT: usize = 6;
 
@@ -43,8 +43,8 @@ pub const TITAN_V2_MODEL_ID: &str = openbook_core::config::DEFAULT_EMBEDDING_MOD
 /// The hashed bag-of-words embedder of local runs and tests.
 pub const FAKE_MODEL_ID: &str = openbook_core::config::FAKE_EMBEDDING_MODEL_ID;
 /// The gate distance for Titan v2 (see `GateRule`). "No false gate" is in-sample: on the 123 covered
-/// golden questions of both corpora the worst best dense distance is 0.758, and the limit is 0.022 above it. A real
-/// course can have a covered question that is farther, and then the student gets no sources. The
+/// golden questions of both corpora the worst best dense distance is 0.764 (a college-algebra paraphrase), and the limit is 0.016
+/// above it. A real course can have a covered question that is farther, and then the student gets no sources. The
 /// trace of every turn records the real distances (`trace.gate`), so the next round can re-measure.
 /// The adjacent math topics of `not_covered` are close to the course (0.56 to 0.86), so this limit
 /// catches few of them (see `evals/results/2026-11-17.md`). Off-topic questions are 0.82 and farther.
@@ -52,8 +52,10 @@ pub const FAKE_MODEL_ID: &str = openbook_core::config::FAKE_EMBEDDING_MODEL_ID;
 ///
 /// Round 2 re-measured it on a prose corpus (American Government, 47 covered questions): no false gate,
 /// the worst covered question is 0.758 (a margin of 0.022), 8 of 14 `not_covered` questions are gated,
-/// and all 12 `off_topic` questions are gated. Over both corpora the worst covered question is 0.758,
-/// and 0.78 is the lowest limit with a margin of at least 0.02 (see `evals/results/2026-11-18.md`).
+/// and all 12 `off_topic` questions are gated. But the margin over both corpora is 0.016, under the
+/// 0.02 that the rule asks for (the lowest limit that passes on both is 0.79, with a gate accuracy of
+/// 0.8722 against 0.9000). The limit stays until `trace.gate` gives real distances
+/// (see `evals/results/2026-11-18.md`).
 pub const GATE_TITAN_V2_MAX_DISTANCE: f32 = 0.78;
 
 /// What the relevance gate reads about the words of a query (see `Bm25Reader::search_with_stats`).

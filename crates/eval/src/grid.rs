@@ -522,6 +522,7 @@ mod tests {
 
     fn result(recall: f64) -> ModeResult {
         let mut hybrid = Metrics {
+            recall_at_1: recall,
             recall_at_5: recall,
             recall_at_8: recall,
             ndcg_at_8: 0.5,

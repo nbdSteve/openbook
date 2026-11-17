@@ -4,18 +4,20 @@
   "corpora": {
     "american-government": {
       "hybrid": {
+        "recallAt1": 0.8298,
         "recallAt5": 0.9574,
         "recallAt8": 0.9787,
-        "ndcgAt8": 0.6534,
+        "ndcgAt8": 0.6552,
         "mrr": 0.8936,
         "gateAccuracy": 0.9178,
         "falseGateRate": 0.0,
         "missedGateRate": 0.2308
       },
       "capOff": {
+        "recallAt1": 0.8298,
         "recallAt5": 0.9574,
         "recallAt8": 0.9787,
-        "ndcgAt8": 0.6651,
+        "ndcgAt8": 0.6669,
         "mrr": 0.8936,
         "gateAccuracy": 0.9178,
         "falseGateRate": 0.0,
@@ -24,19 +26,21 @@
     },
     "college-algebra": {
       "hybrid": {
+        "recallAt1": 0.8026,
         "recallAt5": 0.9605,
-        "recallAt8": 0.9868,
-        "ndcgAt8": 0.5796,
-        "mrr": 0.8662,
+        "recallAt8": 0.9737,
+        "ndcgAt8": 0.5867,
+        "mrr": 0.8726,
         "gateAccuracy": 0.8879,
         "falseGateRate": 0.0,
         "missedGateRate": 0.3871
       },
       "capOff": {
+        "recallAt1": 0.8026,
         "recallAt5": 0.9605,
         "recallAt8": 0.9868,
-        "ndcgAt8": 0.6079,
-        "mrr": 0.8662,
+        "ndcgAt8": 0.6224,
+        "mrr": 0.8745,
         "gateAccuracy": 0.8879,
         "falseGateRate": 0.0,
         "missedGateRate": 0.3871
@@ -45,19 +49,21 @@
   },
   "combined": {
     "hybrid": {
+      "recallAt1": 0.813,
       "recallAt5": 0.9593,
-      "recallAt8": 0.9837,
-      "ndcgAt8": 0.6078,
-      "mrr": 0.8767,
+      "recallAt8": 0.9756,
+      "ndcgAt8": 0.6129,
+      "mrr": 0.8806,
       "gateAccuracy": 0.9,
       "falseGateRate": 0.0,
       "missedGateRate": 0.3158
     },
     "capOff": {
+      "recallAt1": 0.813,
       "recallAt5": 0.9593,
       "recallAt8": 0.9837,
-      "ndcgAt8": 0.6298,
-      "mrr": 0.8767,
+      "ndcgAt8": 0.6394,
+      "mrr": 0.8818,
       "gateAccuracy": 0.9,
       "falseGateRate": 0.0,
       "missedGateRate": 0.3158

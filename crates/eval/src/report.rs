@@ -438,7 +438,8 @@ impl Report {
         let _ = writeln!(out);
         let _ = writeln!(out, "| Metric | Dense only | BM25 only | Hybrid |");
         let _ = writeln!(out, "|---|---|---|---|");
-        let rows: [(&str, Getter); 7] = [
+        let rows: [(&str, Getter); 8] = [
+            ("Recall@1", |m| m.recall_at_1),
             ("Recall@5", |m| m.recall_at_5),
             ("Recall@8", |m| m.recall_at_8),
             ("nDCG@8", |m| m.ndcg_at_8),
@@ -497,7 +498,8 @@ impl Report {
             let _ = writeln!(out);
             let _ = writeln!(out, "| Metric | Dense only | BM25 only | Hybrid |");
             let _ = writeln!(out, "|---|---|---|---|");
-            let rows: [(&str, Getter); 4] = [
+            let rows: [(&str, Getter); 5] = [
+                ("Recall@1", |m| m.recall_at_1),
                 ("Recall@5", |m| m.recall_at_5),
                 ("Recall@8", |m| m.recall_at_8),
                 ("nDCG@8", |m| m.ndcg_at_8),
@@ -700,7 +702,8 @@ impl std::fmt::Display for Regression {
 /// Compares the hybrid metrics with the baseline. A ranking metric may fall by `TOLERANCE`. Gate
 /// accuracy may not fall at all, and the false-gate rate may not rise at all.
 pub fn check(baseline: &Metrics, current: &Metrics) -> Vec<Regression> {
-    let ranking: [(&'static str, f64, f64); 4] = [
+    let ranking: [(&'static str, f64, f64); 5] = [
+        ("Recall@1", baseline.recall_at_1, current.recall_at_1),
         ("Recall@5", baseline.recall_at_5, current.recall_at_5),
         ("Recall@8", baseline.recall_at_8, current.recall_at_8),
         ("nDCG@8", baseline.ndcg_at_8, current.ndcg_at_8),
@@ -807,7 +810,8 @@ pub fn suite_improved(baseline: &Baseline, suite: &SuiteReport) -> bool {
 
 /// True when a metric rose by more than the tolerance, so the baseline should be updated.
 pub fn improved(baseline: &Metrics, current: &Metrics) -> bool {
-    current.recall_at_5 > baseline.recall_at_5 + TOLERANCE
+    current.recall_at_1 > baseline.recall_at_1 + TOLERANCE
+        || current.recall_at_5 > baseline.recall_at_5 + TOLERANCE
         || current.recall_at_8 > baseline.recall_at_8 + TOLERANCE
         || current.ndcg_at_8 > baseline.ndcg_at_8 + TOLERANCE
         || current.mrr > baseline.mrr + TOLERANCE
@@ -820,6 +824,7 @@ mod tests {
 
     fn metrics() -> Metrics {
         Metrics {
+            recall_at_1: 0.60,
             recall_at_5: 0.80,
             recall_at_8: 0.90,
             ndcg_at_8: 0.70,
@@ -852,11 +857,12 @@ mod tests {
     fn every_ranking_metric_is_checked() {
         let base = metrics();
         let mut now = base;
+        now.recall_at_1 -= 0.05;
         now.recall_at_5 -= 0.05;
         now.ndcg_at_8 -= 0.05;
         now.mrr -= 0.05;
         let names: Vec<_> = check(&base, &now).iter().map(|r| r.metric).collect();
-        assert_eq!(names, ["Recall@5", "nDCG@8", "MRR"]);
+        assert_eq!(names, ["Recall@1", "Recall@5", "nDCG@8", "MRR"]);
     }
 
     #[test]
