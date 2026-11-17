@@ -20,6 +20,10 @@ const ManagePage = lazy(() => import('@/pages/course/ManagePage').then((m) => ({
 const CourseHome = lazy(() => import('@/pages/home/CourseHome').then((m) => ({ default: m.CourseHome })));
 const LandingPage = lazy(() => import('@/pages/landing/LandingPage').then((m) => ({ default: m.LandingPage })));
 
+// A preview of the redesign with static data. `import.meta.env.DEV` is false in production builds,
+// so the bundler drops this import and the route.
+const DesignPage = import.meta.env.DEV ? lazy(() => import('@/design/DesignPage').then((m) => ({ default: m.DesignPage }))) : null;
+
 function Home(): ReactNode {
   const { status } = useAuth();
   if (status === 'loading') return <FullPageSpinner label="Checking your session" />;
@@ -36,6 +40,7 @@ export default function App() {
             <Suspense fallback={<FullPageSpinner />}>
               <Routes>
                 <Route path="/" element={<Home />} />
+                {DesignPage && <Route path="/__design/:screen" element={<DesignPage />} />}
                 <Route element={<PublicOnly />}>
                   <Route path="/login" element={<LoginPage />} />
                   <Route path="/signup" element={<SignupPage />} />
