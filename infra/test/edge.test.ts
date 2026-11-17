@@ -35,11 +35,11 @@ const event = (host: string, uri: string, querystring: Record<string, Item> = {}
 const location = (out: Json): string => (out.headers as { location: { value: string } }).location.value;
 
 describe('the host redirect', () => {
-  test('is a 302 for now (switch to 301 after the release is verified)', () => {
-    expect(redirectStatus).toBe(302);
+  test('is a 301', () => {
+    expect(redirectStatus).toBe(301);
     const out = withRedirects(event('ask.steve.gg', '/'));
-    expect(out.statusCode).toBe(302);
-    expect(out.statusDescription).toBe('Found');
+    expect(out.statusCode).toBe(301);
+    expect(out.statusDescription).toBe('Moved Permanently');
   });
 
   test('ask.steve.gg keeps the path and the query string, so an invite link keeps its code', () => {
@@ -88,13 +88,13 @@ describe('the host redirect', () => {
       }
     }
     // A path that only starts like it is not the API.
-    expect(withRedirects(event('ask.steve.gg', '/apiary')).statusCode).toBe(302);
-    expect(withRedirects(event('ask.steve.gg', '/api-docs/x')).statusCode).toBe(302);
+    expect(withRedirects(event('ask.steve.gg', '/apiary')).statusCode).toBe(301);
+    expect(withRedirects(event('ask.steve.gg', '/api-docs/x')).statusCode).toBe(301);
   });
 
   test('normalizes the host: case, :443, and a trailing dot', () => {
     for (const host of ['ASK.Steve.GG', 'ask.steve.gg:443', 'ask.steve.gg.', 'Ask.Steve.Gg.:443']) {
-      expect(withRedirects(event(host, '/join/X')).statusCode, host).toBe(302);
+      expect(withRedirects(event(host, '/join/X')).statusCode, host).toBe(301);
       expect(location(withRedirects(event(host, '/join/X'))), host).toBe('https://openbook.steve.gg/join/X');
     }
   });
@@ -209,11 +209,11 @@ describe('the domain of the prod stage', () => {
     expect(resourcesOf(prod, 'AWS::CloudFront::Function')).toHaveLength(1);
   });
 
-  test('the function holds the redirects: ask keeps the path, portal goes to /portal, with a 302', () => {
+  test('the function holds the redirects: ask keeps the path, portal goes to /portal, with a 301', () => {
     const code = resourcesOf(prod, 'AWS::CloudFront::Function').find(([id]) => id.startsWith('SpaRewrite'))?.[1].FunctionCode as string;
     expect(code).toContain('"ask.steve.gg":{"target":"https://openbook.steve.gg","keepPath":true}');
     expect(code).toContain('"portal.steve.gg":{"target":"https://openbook.steve.gg/portal","keepPath":false}');
-    expect(code).toContain('statusCode: 302');
+    expect(code).toContain('statusCode: 301');
     expect(code).toContain('/index.html');
   });
 

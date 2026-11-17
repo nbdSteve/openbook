@@ -11,8 +11,6 @@
  *     do not exist in the new app.
  *   - `/api` and `/api/*` are never redirected: the API works on any host, and a redirected `POST`
  *     becomes a cross-origin `GET`. (They are not served by this behavior anyway.)
- *   - The status is 302 for now. Switch to 301 after the release is verified, because browsers keep a
- *     301 with no end date.
  * - The SPA rewrite: a path whose last segment has no file extension is a single-page-app route, so it
  *   is served from `/index.html`. That covers `/`, `/ask/...`, and `/portal/...`. Paths with an
  *   extension (assets, config.json) pass through unchanged.
@@ -28,8 +26,7 @@ export interface HostRedirect {
   keepPath: boolean;
 }
 
-/** The status of a host redirect. 302 until the release is verified, then 301. */
-export const redirectStatus = 302;
+export const redirectStatus = 301;
 
 const redirectPart = (redirects: HostRedirect[]): string => {
   const map = Object.fromEntries(redirects.map((r) => [r.host, { target: r.target, keepPath: r.keepPath }]));
@@ -70,7 +67,7 @@ function redirectOf(request) {
   var qs = queryString(request.querystring);
   return {
     statusCode: ${redirectStatus},
-    statusDescription: 'Found',
+    statusDescription: 'Moved Permanently',
     headers: { location: { value: qs ? location + '?' + qs : location } }
   };
 }
