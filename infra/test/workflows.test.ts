@@ -458,10 +458,14 @@ describe('the retrieval evaluation', () => {
     expect(JSON.stringify(job)).not.toMatch(/secrets\.|vars\.|aws-actions|id-token/);
   });
 
-  test('make eval is the offline check, and make eval-live needs AWS_PROFILE and says that it calls Bedrock', () => {
+  test('make eval is the offline check, and make eval-live needs AWS_PROFILE, says that it calls Bedrock, and starts only with YES=1', () => {
     const makefile = read('Makefile');
-    expect(makefile).toContain('cargo run --release -p openbook-eval -- offline --check');
-    expect(makefile).toMatch(/eval-live:[\s\S]*AWS_PROFILE[\s\S]*calls Bedrock[\s\S]*openbook-eval -- refresh/);
-    expect(makefile).toContain('make eval-live calls Bedrock');
+    // The help line and the recipe of one target: from `name:` to the first empty line.
+    const target = (name: string): string => makefile.match(new RegExp(`^${name}:.*\\n(?:\\t.*\\n)*`, 'm'))?.[0] ?? '';
+    expect(target('eval')).toMatch(/\n\tcargo run .*-p openbook-eval -- offline --check\n/);
+    const live = target('eval-live');
+    expect(live).toMatch(/^eval-live:.*Bedrock/);
+    expect(live).toMatch(/\n\t@test -n "\$\$\{AWS_PROFILE:-\}" \|\| \{ .*exit 1; \}\n/);
+    expect(live).toMatch(/openbook-eval -- refresh \$\(if \$\(YES\),--yes,\)\n/);
   });
 });
