@@ -24,6 +24,9 @@ pub enum EmbedError {
 
 #[async_trait]
 pub trait Embedder: Send + Sync {
+    /// The ID of the embedding model. The relevance gate has one distance limit per model.
+    fn model_id(&self) -> &str;
+
     /// A normalized vector with `DIMENSIONS` values.
     async fn embed(&self, text: &str) -> Result<Vec<f32>, EmbedError>;
 
@@ -69,6 +72,10 @@ fn classify(error: aws_sdk_bedrockruntime::error::SdkError<InvokeModelError>) ->
 
 #[async_trait]
 impl Embedder for TitanEmbedder {
+    fn model_id(&self) -> &str {
+        &self.model_id
+    }
+
     async fn embed(&self, text: &str) -> Result<Vec<f32>, EmbedError> {
         Ok(self.embed_counted(text).await?.0)
     }
@@ -143,6 +150,10 @@ impl FakeEmbedder {
 
 #[async_trait]
 impl Embedder for FakeEmbedder {
+    fn model_id(&self) -> &str {
+        crate::retrieval::FAKE_MODEL_ID
+    }
+
     async fn embed(&self, text: &str) -> Result<Vec<f32>, EmbedError> {
         Ok(Self::vector(text))
     }
@@ -224,6 +235,10 @@ mod tests {
         struct Failing;
         #[async_trait]
         impl Embedder for Failing {
+            fn model_id(&self) -> &str {
+                "fake"
+            }
+
             async fn embed(&self, text: &str) -> Result<Vec<f32>, EmbedError> {
                 if text == "bad" {
                     Err(EmbedError::Transient("throttled".into()))

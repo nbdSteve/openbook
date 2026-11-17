@@ -15,11 +15,12 @@ use openbook_core::prompt::{REWRITE_SYSTEM_PROMPT, SourceContext, SourceMode, re
 use openbook_search::bm25::Bm25ReaderCache;
 use openbook_search::embed::Embedder;
 pub use openbook_search::retrieval::{
-    DENSE_TOP_K, FINAL_SOURCES, Fused, GATE_MAX_DISTANCE, Hit, LEXICAL_TOP_K, MAX_PER_DOCUMENT,
-    MAX_QUERY_CHARS, Outcome, Passage, RETRIEVER_TIMEOUT, RRF_K, clean_query, clip, fuse,
-    passes_gate,
+    DENSE_TOP_K, FINAL_SOURCES, Fused, GateInputs, GateRule, Hit, LEXICAL_TOP_K, MAX_PER_DOCUMENT,
+    MAX_QUERY_CHARS, Outcome, Params, Passage, RETRIEVER_TIMEOUT, RRF_K, clean_query, clip, fuse,
 };
-use openbook_search::retrieval::{DenseResult, DenseSearch, LexicalSearch, decide, search_both};
+use openbook_search::retrieval::{
+    DenseResult, DenseSearch, LexicalResult, LexicalSearch, decide_with, search_both,
+};
 use openbook_search::vectors::{VectorStore, index_name};
 use serde::Serialize;
 
@@ -82,6 +83,8 @@ pub struct Trace {
     pub fused: Vec<TraceFused>,
     /// True when the relevance gate found nothing.
     pub gated: bool,
+    /// What the relevance gate read (`None` when retrieval did not get that far).
+    pub gate: Option<TraceGate>,
     pub timings: Timings,
     /// Retriever failures (short, no details).
     pub errors: Vec<String>,
@@ -115,6 +118,31 @@ impl Trace {
                 let json = serde_json::to_string(&trace).unwrap_or_else(|_| "{}".to_owned());
                 return clip(&json, TRACE_MAX_BYTES);
             }
+        }
+    }
+}
+
+/// The inputs of the relevance gate, for tuning it from real traces.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TraceGate {
+    pub best_dense_distance: Option<f32>,
+    pub top_bm25_score: Option<f32>,
+    pub term_coverage: f64,
+    pub query_terms: usize,
+    pub indexed_terms: usize,
+    pub matched_terms: usize,
+}
+
+impl From<&GateInputs> for TraceGate {
+    fn from(g: &GateInputs) -> Self {
+        Self {
+            best_dense_distance: g.best_dense_distance,
+            top_bm25_score: g.top_bm25_score,
+            term_coverage: (g.term_coverage() * 1000.0).round() / 1000.0,
+            query_terms: g.terms.query_terms,
+            indexed_terms: g.terms.indexed_terms,
+            matched_terms: g.terms.matched_terms,
         }
     }
 }
@@ -224,9 +252,9 @@ struct CourseLexical<'a> {
 
 #[async_trait]
 impl LexicalSearch for CourseLexical<'_> {
-    async fn search(&self, query: &str) -> Result<Vec<Hit>, String> {
+    async fn search(&self, query: &str) -> Result<LexicalResult, String> {
         let Some(key) = &self.course.bm25_key else {
-            return Ok(Vec::new());
+            return Ok(LexicalResult::default());
         };
         let reader = self
             .retrieval
@@ -235,11 +263,12 @@ impl LexicalSearch for CourseLexical<'_> {
             .await
             .map_err(|e| e.to_string())?;
         let query = query.to_owned();
-        let hits = tokio::task::spawn_blocking(move || reader.search(&query, LEXICAL_TOP_K))
-            .await
-            .map_err(|e| e.to_string())?
-            .map_err(|e| e.to_string())?;
-        Ok(hits
+        let (hits, terms) =
+            tokio::task::spawn_blocking(move || reader.search_with_stats(&query, LEXICAL_TOP_K))
+                .await
+                .map_err(|e| e.to_string())?
+                .map_err(|e| e.to_string())?;
+        let hits = hits
             .into_iter()
             .map(|h| Hit {
                 value: h.score,
@@ -251,7 +280,8 @@ impl LexicalSearch for CourseLexical<'_> {
                     text: h.text,
                 },
             })
-            .collect())
+            .collect();
+        Ok(LexicalResult { hits, terms })
     }
 }
 
@@ -378,7 +408,9 @@ pub async fn run_turn(
     };
     let (dense, lexical) = (only_ready(searched.dense), only_ready(searched.lexical));
     let fuse_at = Instant::now();
-    let decision = decide(dense, lexical);
+    // The distance limit of the gate belongs to the embedding model.
+    let params = Params::for_embedding_model(retrieval.embedder.model_id());
+    let decision = decide_with(&params, dense, lexical, searched.terms);
     timings.fuse_ms = fuse_at.elapsed().as_millis() as u64;
     if decision.outcome == Outcome::NotUsed {
         // Dense search failed and BM25 found nothing (or failed too). The relevance gate cannot judge
@@ -395,6 +427,7 @@ pub async fn run_turn(
     trace.lexical = trace_hits(&decision.lexical);
     let fused = decision.fused;
     trace.gated = fused.is_empty();
+    trace.gate = Some(TraceGate::from(&decision.gate));
     trace.fused = fused
         .iter()
         .enumerate()
@@ -475,7 +508,7 @@ mod tests {
             ),
             (40, 40, 8, 4, 2400)
         );
-        assert_eq!((RRF_K, GATE_MAX_DISTANCE), (60.0, 0.85));
+        assert_eq!(RRF_K, 60.0);
         assert_eq!(
             (REWRITE_MAX_TOKENS, REWRITE_TIMEOUT),
             (100, Duration::from_secs(5))
@@ -557,6 +590,7 @@ mod tests {
             "lexical",
             "fused",
             "gated",
+            "gate",
             "timings",
             "errors",
         ] {

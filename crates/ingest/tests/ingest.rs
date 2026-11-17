@@ -605,6 +605,10 @@ struct FlakyEmbedder {
 
 #[async_trait]
 impl Embedder for FlakyEmbedder {
+    fn model_id(&self) -> &str {
+        "fake"
+    }
+
     async fn embed(&self, text: &str) -> Result<Vec<f32>, EmbedError> {
         if self.failures.fetch_add(1, Ordering::SeqCst) < 1000 {
             return Err(EmbedError::Transient(format!(
@@ -774,6 +778,10 @@ struct DeletingEmbedder {
 
 #[async_trait]
 impl Embedder for DeletingEmbedder {
+    fn model_id(&self) -> &str {
+        "fake"
+    }
+
     async fn embed(&self, text: &str) -> Result<Vec<f32>, EmbedError> {
         // The owner presses delete while the worker embeds.
         if self.done.fetch_add(1, Ordering::SeqCst) == 0 {

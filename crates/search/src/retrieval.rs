@@ -9,40 +9,196 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 
-// ---- The numbers. They are tuned against the evaluation set. Keep them here.
+// ---- The numbers. They are tuned against the evaluation set (`docs/evaluation.md`). Keep them here.
 /// Candidates from the dense search.
 pub const DENSE_TOP_K: u32 = 40;
 /// Candidates from BM25.
 pub const LEXICAL_TOP_K: usize = 40;
-/// Reciprocal rank fusion: `score = sum over lists of 1 / (RRF_K + rank)`, with rank from 1.
+/// Reciprocal rank fusion: `score = sum over lists of weight / (RRF_K + rank)`, with rank from 1.
 pub const RRF_K: f64 = 60.0;
+/// The weight of the BM25 list in the fusion. The dense list has weight 1.
+pub const LEXICAL_WEIGHT: f64 = 1.0;
 /// Sources that go to the model and the student.
 pub const FINAL_SOURCES: usize = 8;
-/// Most sources from one document.
+/// Most sources from one document while other candidates are left. The cap is soft: when fewer than
+/// `FINAL_SOURCES` candidates pass it, the free places go to the skipped candidates, in fused order.
 pub const MAX_PER_DOCUMENT: usize = 4;
-/// The gate: with no BM25 hit, a best dense cosine distance above this means no sources.
-/// With Titan v2, a relevant passage had distances near 0.68 and an unrelated question near 0.94.
-/// Phase 4 tunes this number against the evaluation set.
-pub const GATE_MAX_DISTANCE: f32 = 0.85;
 
-/// The tunable numbers of fusion and the gate. `Default` is what production uses. The evaluation
-/// changes them to compare settings; the API never does.
+/// The embedding model that the stack uses by default.
+pub const TITAN_V2_MODEL_ID: &str = "amazon.titan-embed-text-v2:0";
+/// The hashed bag-of-words embedder of local runs and tests.
+pub const FAKE_MODEL_ID: &str = "fake";
+/// The gate distance for Titan v2 (see `GateRule`).
+pub const GATE_TITAN_V2_MAX_DISTANCE: f32 = 0.85;
+
+/// What the relevance gate reads about the words of a query (see `Bm25Reader::search_with_stats`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TermStats {
+    /// Distinct analyzed terms of the query.
+    pub query_terms: usize,
+    /// Of those, the terms that occur anywhere in the index.
+    pub indexed_terms: usize,
+    /// Of those, the terms that the best BM25 hit holds.
+    pub matched_terms: usize,
+}
+
+/// What the relevance gate reads for one query.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct GateInputs {
+    /// The cosine distance of the closest dense result. `None` when dense search found nothing.
+    pub best_dense_distance: Option<f32>,
+    /// The number of BM25 hits.
+    pub lexical_hits: usize,
+    /// The score of the best BM25 hit.
+    pub top_bm25_score: Option<f32>,
+    /// The terms of the query and how many of them the best BM25 hit holds.
+    pub terms: TermStats,
+}
+
+impl GateInputs {
+    /// The share of the distinct query terms that the best BM25 hit holds. 0 when there are no terms.
+    pub fn term_coverage(&self) -> f64 {
+        if self.terms.query_terms == 0 {
+            0.0
+        } else {
+            self.terms.matched_terms as f64 / self.terms.query_terms as f64
+        }
+    }
+}
+
+/// The relevance gate: the rule that decides whether a query has sources at all.
+///
+/// A distance threshold belongs to one embedding model: the distances of Titan v2 and of the fake
+/// embedder have different scales. `GateRule::for_embedding_model` gives the rule of a model.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GateRule {
+    /// Passes when the closest dense result is within `max_distance`, or BM25 found any hit. This
+    /// was the first rule. BM25 is an OR of terms, so nearly every query has a hit: the rule almost
+    /// never gates. The fake embedder uses it, because its distances are not calibrated.
+    AnyLexicalHit { max_distance: f32 },
+    /// Passes when the closest dense result is within `max_distance`.
+    Dense { max_distance: f32 },
+    /// Passes when the closest dense result is within `max_distance`, or the best BM25 hit has a
+    /// strong lexical match: it holds at least `min_coverage` of the query terms and at least
+    /// `min_matched` of them. This catches queries that embed badly, such as notation.
+    DenseOrLexical {
+        max_distance: f32,
+        min_coverage: f64,
+        min_matched: usize,
+    },
+}
+
+impl GateRule {
+    /// The rule for an embedding model. A model that has not been measured gets the permissive first
+    /// rule: run the evaluation with that model before you trust its distances.
+    pub fn for_embedding_model(model_id: &str) -> GateRule {
+        match model_id {
+            TITAN_V2_MODEL_ID => GateRule::Dense {
+                max_distance: GATE_TITAN_V2_MAX_DISTANCE,
+            },
+            _ => GateRule::AnyLexicalHit { max_distance: 0.85 },
+        }
+    }
+
+    /// The dense distance limit of the rule.
+    pub fn max_distance(&self) -> f32 {
+        match self {
+            GateRule::AnyLexicalHit { max_distance }
+            | GateRule::Dense { max_distance }
+            | GateRule::DenseOrLexical { max_distance, .. } => *max_distance,
+        }
+    }
+
+    /// The same rule with another distance limit.
+    pub fn with_max_distance(self, max_distance: f32) -> GateRule {
+        match self {
+            GateRule::AnyLexicalHit { .. } => GateRule::AnyLexicalHit { max_distance },
+            GateRule::Dense { .. } => GateRule::Dense { max_distance },
+            GateRule::DenseOrLexical {
+                min_coverage,
+                min_matched,
+                ..
+            } => GateRule::DenseOrLexical {
+                max_distance,
+                min_coverage,
+                min_matched,
+            },
+        }
+    }
+
+    fn dense_is_close(&self, inputs: &GateInputs) -> bool {
+        inputs
+            .best_dense_distance
+            .is_some_and(|d| d <= self.max_distance())
+    }
+
+    fn lexical_passes(&self, inputs: &GateInputs) -> bool {
+        match self {
+            GateRule::AnyLexicalHit { .. } | GateRule::Dense { .. } => inputs.lexical_hits > 0,
+            GateRule::DenseOrLexical {
+                min_coverage,
+                min_matched,
+                ..
+            } => {
+                inputs.lexical_hits > 0
+                    && inputs.term_coverage() >= *min_coverage
+                    && inputs.terms.matched_terms >= *min_matched
+            }
+        }
+    }
+
+    /// True when the query has sources.
+    pub fn passes(&self, inputs: &GateInputs) -> bool {
+        match self {
+            GateRule::AnyLexicalHit { .. } => {
+                self.dense_is_close(inputs) || inputs.lexical_hits > 0
+            }
+            GateRule::Dense { .. } => self.dense_is_close(inputs),
+            GateRule::DenseOrLexical { .. } => {
+                self.dense_is_close(inputs) || self.lexical_passes(inputs)
+            }
+        }
+    }
+
+    /// The dense half of the rule alone (the dense-only run of the evaluation).
+    pub fn passes_dense_only(&self, inputs: &GateInputs) -> bool {
+        self.dense_is_close(inputs)
+    }
+
+    /// The lexical half of the rule alone (the BM25-only run of the evaluation). For a rule without
+    /// a lexical part, any BM25 hit passes.
+    pub fn passes_lexical_only(&self, inputs: &GateInputs) -> bool {
+        self.lexical_passes(inputs)
+    }
+}
+
+/// The tunable numbers of fusion and the gate. `Default` is what production uses with the default
+/// embedding model. The evaluation changes them to compare settings; the API never reads flags.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Params {
     pub rrf_k: f64,
+    pub lexical_weight: f64,
     pub final_sources: usize,
     pub max_per_document: usize,
-    pub gate_max_distance: f32,
+    pub gate: GateRule,
+}
+
+impl Params {
+    /// The production numbers for an embedding model.
+    pub fn for_embedding_model(model_id: &str) -> Self {
+        Self {
+            rrf_k: RRF_K,
+            lexical_weight: LEXICAL_WEIGHT,
+            final_sources: FINAL_SOURCES,
+            max_per_document: MAX_PER_DOCUMENT,
+            gate: GateRule::for_embedding_model(model_id),
+        }
+    }
 }
 
 impl Default for Params {
     fn default() -> Self {
-        Self {
-            rrf_k: RRF_K,
-            final_sources: FINAL_SOURCES,
-            max_per_document: MAX_PER_DOCUMENT,
-            gate_max_distance: GATE_MAX_DISTANCE,
-        }
+        Self::for_embedding_model(TITAN_V2_MODEL_ID)
     }
 }
 /// A search query is cut to this many characters.
@@ -78,16 +234,22 @@ pub struct Fused {
 }
 
 /// Fuses two ranked lists with reciprocal rank fusion. Ranks start at 1 in list order. The result
-/// is in fused order, at most `FINAL_SOURCES` long, and has at most `MAX_PER_DOCUMENT` per document.
+/// is in fused order, at most `FINAL_SOURCES` long, with the soft per-document cap of `fuse_with`.
 pub fn fuse(dense: &[Hit], lexical: &[Hit]) -> Vec<Fused> {
     fuse_with(&Params::default(), dense, lexical)
 }
 
 /// `fuse` with explicit numbers.
+///
+/// The per-document cap is soft. A first pass takes candidates in fused order and skips a document
+/// that already has `max_per_document` places. When that leaves free places, they go to the skipped
+/// candidates in fused order. The final list is in fused order. So a course with one document still
+/// gets `final_sources` sources, and a course with several documents still gets a mix.
 pub fn fuse_with(params: &Params, dense: &[Hit], lexical: &[Hit]) -> Vec<Fused> {
     let mut by_key: HashMap<&str, Fused> = HashMap::new();
     let mut order: Vec<&str> = Vec::new();
     for (list, is_dense) in [(dense, true), (lexical, false)] {
+        let weight = if is_dense { 1.0 } else { params.lexical_weight };
         for (index, hit) in list.iter().enumerate() {
             let rank = index + 1;
             let entry = by_key.entry(hit.passage.key.as_str()).or_insert_with(|| {
@@ -107,7 +269,7 @@ pub fn fuse_with(params: &Params, dense: &[Hit], lexical: &[Hit]) -> Vec<Fused> 
             };
             if slot.is_none() {
                 *slot = Some(rank);
-                entry.score += 1.0 / (params.rrf_k + rank as f64);
+                entry.score += weight / (params.rrf_k + rank as f64);
             }
         }
     }
@@ -119,22 +281,29 @@ pub fn fuse_with(params: &Params, dense: &[Hit], lexical: &[Hit]) -> Vec<Fused> 
             .then_with(|| best_rank(a).cmp(&best_rank(b)))
             .then_with(|| a.passage.key.cmp(&b.passage.key))
     });
+    // First pass: the capped list. Candidates are numbered by fused order.
     let mut per_document: HashMap<String, usize> = HashMap::new();
-    let mut kept = Vec::new();
-    for candidate in all {
+    let mut kept: Vec<(usize, Fused)> = Vec::new();
+    let mut skipped: Vec<(usize, Fused)> = Vec::new();
+    for (position, candidate) in all.into_iter().enumerate() {
+        if kept.len() == params.final_sources {
+            break;
+        }
         let count = per_document
             .entry(candidate.passage.document_id.clone())
             .or_insert(0);
         if *count >= params.max_per_document {
-            continue;
-        }
-        *count += 1;
-        kept.push(candidate);
-        if kept.len() == params.final_sources {
-            break;
+            skipped.push((position, candidate));
+        } else {
+            *count += 1;
+            kept.push((position, candidate));
         }
     }
-    kept
+    // Second pass: free places go to the skipped candidates, best first.
+    let free = params.final_sources.saturating_sub(kept.len());
+    kept.extend(skipped.into_iter().take(free));
+    kept.sort_by_key(|(position, _)| *position);
+    kept.into_iter().map(|(_, f)| f).collect()
 }
 
 fn best_rank(f: &Fused) -> usize {
@@ -143,22 +312,6 @@ fn best_rank(f: &Fused) -> usize {
         .flatten()
         .min()
         .unwrap_or(usize::MAX)
-}
-
-/// The relevance gate. With no BM25 hit, a best dense distance above `GATE_MAX_DISTANCE` (or no dense
-/// result at all) gives no sources.
-pub fn passes_gate(best_dense_distance: Option<f32>, lexical_hits: usize) -> bool {
-    passes_gate_with(&Params::default(), best_dense_distance, lexical_hits)
-}
-
-/// `passes_gate` with explicit numbers.
-pub fn passes_gate_with(
-    params: &Params,
-    best_dense_distance: Option<f32>,
-    lexical_hits: usize,
-) -> bool {
-    let dense_is_close = best_dense_distance.is_some_and(|d| d <= params.gate_max_distance);
-    dense_is_close || lexical_hits > 0
 }
 
 /// Cuts text to `max` characters (never inside a character).
@@ -203,7 +356,16 @@ pub trait DenseSearch: Send + Sync {
 /// The lexical backend: BM25 over the chunks of one course.
 #[async_trait]
 pub trait LexicalSearch: Send + Sync {
-    async fn search(&self, query: &str) -> Result<Vec<Hit>, String>;
+    async fn search(&self, query: &str) -> Result<LexicalResult, String>;
+}
+
+/// The result of a BM25 search.
+#[derive(Debug, Clone, Default)]
+pub struct LexicalResult {
+    /// Candidates, best first.
+    pub hits: Vec<Hit>,
+    /// The term statistics that the relevance gate reads.
+    pub terms: TermStats,
 }
 
 /// What the two retrievers returned. A retriever that failed has `None` and an entry in `errors`.
@@ -212,6 +374,8 @@ pub struct Searched {
     pub embed_tokens: u64,
     pub dense: Option<Vec<Hit>>,
     pub lexical: Option<Vec<Hit>>,
+    /// The term statistics of the BM25 search (zero when it failed).
+    pub terms: TermStats,
     pub dense_ms: Option<u64>,
     pub lexical_ms: Option<u64>,
     pub errors: Vec<String>,
@@ -254,11 +418,19 @@ pub async fn search_both(
         }
     };
     let dense = keep("dense", dense);
-    let lexical = keep("lexical", lexical);
+    let mut terms = TermStats::default();
+    let lexical = keep(
+        "lexical",
+        lexical.map(|found| {
+            terms = found.terms;
+            found.hits
+        }),
+    );
     Searched {
         embed_tokens,
         dense,
         lexical,
+        terms,
         dense_ms: Some(dense_ms),
         lexical_ms: Some(lexical_ms),
         errors,
@@ -272,34 +444,45 @@ pub struct Decision {
     /// Both lists as given (empty when the outcome is `NotUsed`).
     pub dense: Vec<Hit>,
     pub lexical: Vec<Hit>,
+    /// What the gate read.
+    pub gate: GateInputs,
     /// The fused sources. Empty unless the outcome is `Found`.
     pub fused: Vec<Fused>,
 }
 
-/// Applies the relevance gate and the fusion to the two candidate lists. `None` means the retriever
-/// failed. When dense search failed and BM25 found nothing, the gate cannot judge without the dense
-/// result, so the outcome is `NotUsed` and not `NotCovered`.
-pub fn decide(dense: Option<Vec<Hit>>, lexical: Option<Vec<Hit>>) -> Decision {
-    decide_with(&Params::default(), dense, lexical)
+/// The inputs of the relevance gate for two candidate lists.
+pub fn gate_inputs(dense: &[Hit], lexical: &[Hit], terms: TermStats) -> GateInputs {
+    GateInputs {
+        best_dense_distance: dense.first().map(|h| h.value),
+        lexical_hits: lexical.len(),
+        top_bm25_score: lexical.first().map(|h| h.value),
+        terms,
+    }
 }
 
-/// `decide` with explicit numbers.
+/// Applies the relevance gate and the fusion to the two candidate lists. `None` means the retriever
+/// failed. When dense search failed and BM25 found nothing, the gate cannot judge without the dense
+/// result, so the outcome is `NotUsed` and not `NotCovered`. When dense search failed and BM25 found
+/// something, the gate passes: the lexical hits are all that there is.
 pub fn decide_with(
     params: &Params,
     dense: Option<Vec<Hit>>,
     lexical: Option<Vec<Hit>>,
+    terms: TermStats,
 ) -> Decision {
     if dense.is_none() && lexical.as_ref().is_none_or(Vec::is_empty) {
         return Decision {
             outcome: Outcome::NotUsed,
             dense: Vec::new(),
             lexical: Vec::new(),
+            gate: GateInputs::default(),
             fused: Vec::new(),
         };
     }
+    let dense_failed = dense.is_none();
     let (dense, lexical) = (dense.unwrap_or_default(), lexical.unwrap_or_default());
-    let best_dense = dense.first().map(|h| h.value);
-    let fused = if passes_gate_with(params, best_dense, lexical.len()) {
+    let gate = gate_inputs(&dense, &lexical, terms);
+    let fused = if dense_failed || params.gate.passes(&gate) {
         fuse_with(params, &dense, &lexical)
     } else {
         Vec::new()
@@ -313,6 +496,7 @@ pub fn decide_with(
         outcome,
         dense,
         lexical,
+        gate,
         fused,
     }
 }
@@ -367,8 +551,17 @@ mod tests {
         assert_eq!(keys(&fused), keys(&again));
     }
 
+    fn per_document(fused: &[Fused]) -> HashMap<&str, usize> {
+        let mut per: HashMap<&str, usize> = HashMap::new();
+        for f in fused {
+            *per.entry(f.passage.document_id.as_str()).or_default() += 1;
+        }
+        per
+    }
+
     #[test]
-    fn at_most_eight_sources_and_four_per_document() {
+    fn a_course_with_one_document_still_gets_eight_sources() {
+        // The cap is soft: the free places go to the skipped candidates of the same document.
         let dense: Vec<Hit> = (0..40)
             .map(|i| hit("A", i, 0.1 + i as f32 * 0.001))
             .collect();
@@ -376,30 +569,31 @@ mod tests {
             .map(|i| hit("A", i, 9.0 - i as f32 * 0.01))
             .collect();
         let fused = fuse(&dense, &lexical);
-        assert_eq!(
-            fused.len(),
-            MAX_PER_DOCUMENT,
-            "one document gives at most four"
-        );
-        // Other documents fill the rest, in fused order.
-        let more: Vec<Hit> = (0..10)
-            .map(|i| hit(&format!("D{}", i % 5), i, 0.5))
-            .collect();
-        let mixed = fuse(&[dense.clone(), more.clone()].concat(), &lexical);
-        assert_eq!(mixed.len(), FINAL_SOURCES);
-        let mut per: HashMap<&str, usize> = HashMap::new();
-        for f in &mixed {
-            *per.entry(f.passage.document_id.as_str()).or_default() += 1;
-        }
-        assert!(per.values().all(|n| *n <= MAX_PER_DOCUMENT), "{per:?}");
-        assert!(
-            mixed.windows(2).all(|w| w[0].score >= w[1].score),
-            "fused order"
-        );
+        assert_eq!(fused.len(), FINAL_SOURCES);
+        assert!(fused.windows(2).all(|w| w[0].score >= w[1].score));
     }
 
     #[test]
-    fn the_cap_skips_the_extra_chunks_of_a_busy_document_and_keeps_going() {
+    fn the_cap_keeps_a_mix_when_other_documents_have_candidates() {
+        let dense: Vec<Hit> = (0..40)
+            .map(|i| hit("A", i, 0.1 + i as f32 * 0.001))
+            .collect();
+        let more: Vec<Hit> = (0..10)
+            .map(|i| hit(&format!("D{}", i % 5), i, 0.5))
+            .collect();
+        let lexical: Vec<Hit> = (0..40)
+            .map(|i| hit("A", i, 9.0 - i as f32 * 0.01))
+            .collect();
+        let mixed = fuse(&[dense, more].concat(), &lexical);
+        assert_eq!(mixed.len(), FINAL_SOURCES);
+        let per = per_document(&mixed);
+        assert!(per.values().all(|n| *n <= MAX_PER_DOCUMENT), "{per:?}");
+        assert!(mixed.iter().any(|f| f.passage.document_id != "A"));
+        assert!(mixed.windows(2).all(|w| w[0].score >= w[1].score));
+    }
+
+    #[test]
+    fn the_cap_skips_a_busy_document_first_and_fills_the_free_places_in_fused_order() {
         let dense = [
             hit("A", 0, 0.1),
             hit("A", 1, 0.1),
@@ -408,8 +602,65 @@ mod tests {
             hit("A", 4, 0.1),
             hit("B", 0, 0.1),
         ];
+        let params = Params {
+            final_sources: 5,
+            ..Params::default()
+        };
+        // The first pass takes A:0 to A:3 and B:0 (A:4 is over the cap). That fills the five places.
+        assert_eq!(
+            keys(&fuse_with(&params, &dense, &[])),
+            ["A:0", "A:1", "A:2", "A:3", "B:0"]
+        );
+        // With six places, A:4 comes back into the free place, and the list stays in fused order.
         let fused = fuse(&dense, &[]);
-        assert_eq!(keys(&fused), ["A:0", "A:1", "A:2", "A:3", "B:0"]);
+        assert_eq!(keys(&fused), ["A:0", "A:1", "A:2", "A:3", "A:4", "B:0"]);
+    }
+
+    #[test]
+    fn the_free_places_go_to_the_best_skipped_candidates_even_across_documents() {
+        // A has 6 candidates, B has 2, and there are 7 places and a cap of 3.
+        let dense = [
+            hit("A", 0, 0.1),
+            hit("A", 1, 0.1),
+            hit("A", 2, 0.1),
+            hit("A", 3, 0.1),
+            hit("B", 0, 0.1),
+            hit("A", 4, 0.1),
+            hit("B", 1, 0.1),
+            hit("B", 2, 0.1),
+            hit("B", 3, 0.1),
+            hit("A", 5, 0.1),
+        ];
+        let params = Params {
+            final_sources: 7,
+            max_per_document: 3,
+            ..Params::default()
+        };
+        let fused = fuse_with(&params, &dense, &[]);
+        // The first pass keeps A:0 A:1 A:2 B:0 B:1 B:2. A:3, A:4, B:3, and A:5 are over the cap.
+        // One place is free, and it goes to A:3, the best skipped candidate.
+        assert_eq!(
+            keys(&fused),
+            ["A:0", "A:1", "A:2", "A:3", "B:0", "B:1", "B:2"]
+        );
+    }
+
+    #[test]
+    fn the_lexical_weight_changes_the_fusion() {
+        let dense = [hit("A", 0, 0.1)];
+        let lexical = [hit("B", 0, 9.0)];
+        let heavy = Params {
+            lexical_weight: 2.0,
+            ..Params::default()
+        };
+        assert_eq!(keys(&fuse_with(&heavy, &dense, &lexical)), ["B:0", "A:0"]);
+        let light = Params {
+            lexical_weight: 0.5,
+            ..Params::default()
+        };
+        let fused = fuse_with(&light, &dense, &lexical);
+        assert_eq!(keys(&fused), ["A:0", "B:0"]);
+        assert!((fused[1].score - 0.5 / 61.0).abs() < 1e-12);
     }
 
     #[test]
@@ -420,27 +671,119 @@ mod tests {
         assert!(fuse(&[], &[]).is_empty());
     }
 
+    fn inputs(
+        distance: Option<f32>,
+        hits: usize,
+        query_terms: usize,
+        matched: usize,
+    ) -> GateInputs {
+        GateInputs {
+            best_dense_distance: distance,
+            lexical_hits: hits,
+            top_bm25_score: (hits > 0).then_some(3.0),
+            terms: TermStats {
+                query_terms,
+                indexed_terms: query_terms,
+                matched_terms: matched,
+            },
+        }
+    }
+
     #[test]
-    fn the_gate_needs_a_close_dense_result_or_a_bm25_hit() {
-        assert!(passes_gate(Some(0.2), 0));
-        assert!(passes_gate(Some(0.85), 0), "the limit itself passes");
-        assert!(!passes_gate(Some(0.86), 0));
-        assert!(passes_gate(Some(0.9), 1), "one BM25 hit is enough");
-        // Distances from real Titan v2 traces on a quadratics PDF.
+    fn the_first_rule_passes_on_a_close_dense_result_or_any_bm25_hit() {
+        let rule = GateRule::AnyLexicalHit { max_distance: 0.85 };
+        assert!(rule.passes(&inputs(Some(0.2), 0, 3, 0)));
         assert!(
-            passes_gate(Some(0.678), 0),
-            "a relevant question with no BM25 hit passes"
+            rule.passes(&inputs(Some(0.85), 0, 3, 0)),
+            "the limit passes"
         );
-        assert!(passes_gate(Some(0.688), 0));
-        assert!(passes_gate(Some(0.455), 0));
+        assert!(!rule.passes(&inputs(Some(0.86), 0, 3, 0)));
         assert!(
-            !passes_gate(Some(0.944), 0),
-            "an unrelated question with no BM25 hit is gated"
+            rule.passes(&inputs(Some(0.9), 1, 3, 1)),
+            "one hit is enough"
         );
-        assert!(!passes_gate(Some(0.964), 0));
-        assert!(passes_gate(Some(0.944), 2), "BM25 hits keep the sources");
-        assert!(passes_gate(None, 3));
-        assert!(!passes_gate(None, 0));
+        assert!(!rule.passes(&inputs(None, 0, 0, 0)));
+    }
+
+    #[test]
+    fn the_dense_rule_ignores_bm25() {
+        let rule = GateRule::Dense { max_distance: 0.7 };
+        assert!(rule.passes(&inputs(Some(0.7), 0, 3, 0)));
+        assert!(
+            !rule.passes(&inputs(Some(0.71), 40, 3, 3)),
+            "BM25 cannot save it"
+        );
+        assert!(!rule.passes(&inputs(None, 5, 3, 3)));
+        assert!(rule.passes_dense_only(&inputs(Some(0.5), 0, 3, 0)));
+    }
+
+    #[test]
+    fn the_combined_rule_lets_a_strong_lexical_match_through() {
+        let rule = GateRule::DenseOrLexical {
+            max_distance: 0.7,
+            min_coverage: 0.75,
+            min_matched: 3,
+        };
+        assert!(
+            rule.passes(&inputs(Some(0.6), 0, 4, 0)),
+            "close dense passes"
+        );
+        // Dense is far, but the best hit holds 3 of 4 terms.
+        assert!(rule.passes(&inputs(Some(0.9), 10, 4, 3)));
+        // Not enough of the terms.
+        assert!(!rule.passes(&inputs(Some(0.9), 10, 4, 2)));
+        // A short query: full coverage but fewer than three matched terms.
+        assert!(!rule.passes(&inputs(Some(0.9), 10, 2, 2)));
+        assert!(!rule.passes(&inputs(Some(0.9), 0, 0, 0)));
+        assert!(rule.passes_lexical_only(&inputs(None, 10, 4, 4)));
+        assert!(!rule.passes_dense_only(&inputs(Some(0.9), 10, 4, 4)));
+    }
+
+    #[test]
+    fn the_distance_belongs_to_the_embedding_model() {
+        // Titan v2 has a calibrated dense-only rule. The fake embedder and unknown models keep the
+        // permissive first rule, so a Titan distance never gates their different scale.
+        assert!(matches!(
+            GateRule::for_embedding_model(TITAN_V2_MODEL_ID),
+            GateRule::Dense { .. }
+        ));
+        for model in [FAKE_MODEL_ID, "some.other-model"] {
+            let rule = GateRule::for_embedding_model(model);
+            assert!(matches!(rule, GateRule::AnyLexicalHit { .. }), "{model}");
+            // A far dense result with a BM25 hit still has sources.
+            assert!(rule.passes(&inputs(Some(0.99), 3, 5, 1)));
+        }
+        assert_eq!(
+            Params::default(),
+            Params::for_embedding_model(TITAN_V2_MODEL_ID)
+        );
+        assert_eq!(
+            Params::for_embedding_model(FAKE_MODEL_ID).gate,
+            GateRule::for_embedding_model(FAKE_MODEL_ID)
+        );
+    }
+
+    #[test]
+    fn the_inputs_of_the_gate_come_from_the_two_lists() {
+        let terms = TermStats {
+            query_terms: 4,
+            indexed_terms: 3,
+            matched_terms: 2,
+        };
+        let g = gate_inputs(
+            &[hit("A", 0, 0.4), hit("A", 1, 0.6)],
+            &[hit("B", 0, 7.5)],
+            terms,
+        );
+        assert_eq!(g.best_dense_distance, Some(0.4));
+        assert_eq!((g.lexical_hits, g.top_bm25_score), (1, Some(7.5)));
+        assert!((g.term_coverage() - 0.5).abs() < 1e-12);
+        let none = gate_inputs(&[], &[], TermStats::default());
+        assert_eq!(
+            (none.best_dense_distance, none.top_bm25_score),
+            (None, None)
+        );
+        assert_eq!(none.term_coverage(), 0.0);
     }
 
     #[test]
@@ -463,26 +806,40 @@ mod tests {
 
     #[test]
     fn decide_gates_fuses_and_tells_a_failure_from_a_gap() {
+        let params = Params {
+            gate: GateRule::Dense { max_distance: 0.85 },
+            ..Params::default()
+        };
+        let no_terms = TermStats::default();
         let near = vec![hit("A", 0, 0.5)];
         let far = vec![hit("A", 0, 0.95)];
-        let found = decide(Some(near.clone()), Some(Vec::new()));
+        let found = decide_with(&params, Some(near), Some(Vec::new()), no_terms);
         assert_eq!(found.outcome, Outcome::Found);
         assert_eq!(keys(&found.fused), ["A:0"]);
-        // A far dense result and no BM25 hit: the gate says the course does not cover it.
-        let gap = decide(Some(far.clone()), Some(Vec::new()));
+        // A far dense result: the gate says the course does not cover it, even with a BM25 hit.
+        let gap = decide_with(
+            &params,
+            Some(far.clone()),
+            Some(vec![hit("B", 1, 3.0)]),
+            no_terms,
+        );
         assert_eq!(gap.outcome, Outcome::NotCovered);
         assert!(gap.fused.is_empty());
-        // A BM25 hit keeps the sources even when dense is far.
-        let kept = decide(Some(far), Some(vec![hit("B", 1, 3.0)]));
+        assert_eq!(gap.gate.best_dense_distance, Some(0.95));
+        assert_eq!(gap.gate.lexical_hits, 1);
+        // The first rule lets a BM25 hit keep the sources.
+        let first = Params {
+            gate: GateRule::AnyLexicalHit { max_distance: 0.85 },
+            ..Params::default()
+        };
+        let kept = decide_with(&first, Some(far), Some(vec![hit("B", 1, 3.0)]), no_terms);
         assert_eq!(kept.outcome, Outcome::Found);
         // Dense failed and BM25 found nothing: the gate cannot judge.
-        assert_eq!(decide(None, Some(Vec::new())).outcome, Outcome::NotUsed);
-        assert_eq!(decide(None, None).outcome, Outcome::NotUsed);
-        // Dense failed but BM25 found something: the gate passes (no dense distance, one lexical hit).
-        assert_eq!(
-            decide(None, Some(vec![hit("B", 1, 3.0)])).outcome,
-            Outcome::Found
-        );
+        let failed = |dense, lexical| decide_with(&params, dense, lexical, no_terms).outcome;
+        assert_eq!(failed(None, Some(Vec::new())), Outcome::NotUsed);
+        assert_eq!(failed(None, None), Outcome::NotUsed);
+        // Dense failed but BM25 found something: the gate passes, whatever the rule.
+        assert_eq!(failed(None, Some(vec![hit("B", 1, 3.0)])), Outcome::Found);
     }
 
     struct Stub(Result<Vec<Hit>, String>);
@@ -499,8 +856,15 @@ mod tests {
 
     #[async_trait]
     impl LexicalSearch for Stub {
-        async fn search(&self, _query: &str) -> Result<Vec<Hit>, String> {
-            self.0.clone()
+        async fn search(&self, _query: &str) -> Result<LexicalResult, String> {
+            self.0.clone().map(|hits| LexicalResult {
+                hits,
+                terms: TermStats {
+                    query_terms: 3,
+                    indexed_terms: 2,
+                    matched_terms: 1,
+                },
+            })
         }
     }
 
@@ -512,28 +876,30 @@ mod tests {
         assert_eq!(found.embed_tokens, 7);
         assert!(found.dense.is_some() && found.lexical.is_none());
         assert_eq!(found.errors, ["lexical failed"]);
+        assert_eq!(found.terms, TermStats::default());
+        let both = search_both(&ok, &ok, "q", Duration::from_secs(1)).await;
+        assert_eq!(both.terms.matched_terms, 1);
     }
 
     #[test]
     fn explicit_numbers_change_the_cap_the_count_and_the_gate() {
         let dense: Vec<Hit> = (0..10).map(|i| hit("A", i, 0.5)).collect();
         let wide = Params {
-            max_per_document: 10,
             final_sources: 10,
             ..Params::default()
         };
         assert_eq!(fuse_with(&wide, &dense, &[]).len(), 10);
-        assert_eq!(fuse(&dense, &[]).len(), MAX_PER_DOCUMENT);
         let strict = Params {
-            gate_max_distance: 0.4,
+            gate: GateRule::Dense { max_distance: 0.4 },
             ..Params::default()
         };
+        let no_terms = TermStats::default();
         assert_eq!(
-            decide_with(&strict, Some(dense.clone()), Some(Vec::new())).outcome,
+            decide_with(&strict, Some(dense.clone()), Some(Vec::new()), no_terms).outcome,
             Outcome::NotCovered
         );
         assert_eq!(
-            decide(Some(dense), Some(Vec::new())).outcome,
+            decide_with(&Params::default(), Some(dense), Some(Vec::new()), no_terms).outcome,
             Outcome::Found
         );
         // A smaller k makes the first rank count more.
@@ -543,5 +909,16 @@ mod tests {
         };
         let score = fuse_with(&sharp, &[hit("A", 0, 0.1)], &[])[0].score;
         assert!((score - 0.5).abs() < 1e-12);
+        // The gate keeps its kind when only the distance changes.
+        let rule = GateRule::DenseOrLexical {
+            max_distance: 0.7,
+            min_coverage: 0.5,
+            min_matched: 2,
+        };
+        assert_eq!(rule.with_max_distance(0.6).max_distance(), 0.6);
+        assert!(matches!(
+            rule.with_max_distance(0.6),
+            GateRule::DenseOrLexical { min_matched: 2, .. }
+        ));
     }
 }

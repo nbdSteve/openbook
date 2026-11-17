@@ -4,6 +4,7 @@
 //! `courses/<courseId>/bm25/v<version>.tar.zst`. The course `META` item holds `bm25Version`.
 //! The ingest worker is the only writer. The API (phase 3) reads a given version through `Bm25Cache`.
 
+use crate::retrieval::TermStats;
 use std::path::{Path, PathBuf};
 
 use aws_sdk_s3::Client as S3Client;
@@ -366,16 +367,24 @@ impl Bm25Reader {
         self.reader.searcher().num_docs()
     }
 
-    /// The terms of a query, as the index analyzer makes them: lower case, no stop words, stemmed,
-    /// without duplicates. Math such as `x^2 - 5x + 6 = 0` gives `x`, `2`, `5x`, `6`, and `0`.
-    pub fn query_terms(&self, query: &str) -> Vec<String> {
+    /// Every token of a text, as the index analyzer makes it: lower case, no stop words, stemmed.
+    fn analyze(&self, text: &str) -> Vec<String> {
         let Some(mut analyzer) = self.index.tokenizers().get(TOKENIZER) else {
             return Vec::new();
         };
-        let mut stream = analyzer.token_stream(query);
+        let mut stream = analyzer.token_stream(text);
         let mut terms: Vec<String> = Vec::new();
         while stream.advance() {
-            let term = stream.token().text.clone();
+            terms.push(stream.token().text.clone());
+        }
+        terms
+    }
+
+    /// The terms of a query, as the index analyzer makes them: lower case, no stop words, stemmed,
+    /// without duplicates. Math such as `x^2 - 5x + 6 = 0` gives `x`, `2`, `5x`, `6`, and `0`.
+    pub fn query_terms(&self, query: &str) -> Vec<String> {
+        let mut terms: Vec<String> = Vec::new();
+        for term in self.analyze(query) {
             if !terms.contains(&term) {
                 terms.push(term);
             }
@@ -389,6 +398,16 @@ impl Bm25Reader {
     /// terms, and the search is an OR of term queries over `text` and `heading`. So `^`, `-`, `+`,
     /// `=`, `?`, `:`, quotes, and brackets in a question cannot break the search.
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<Bm25Hit>, Bm25Error> {
+        Ok(self.search_with_stats(query, limit)?.0)
+    }
+
+    /// `search`, and the term statistics that the relevance gate reads: how many distinct terms the
+    /// query has, how many of them exist in the index, and how many of them the best hit holds.
+    pub fn search_with_stats(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<(Vec<Bm25Hit>, TermStats), Bm25Error> {
         let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::new();
         for term in self.query_terms(query) {
             for field in [self.fields.text, self.fields.heading] {
@@ -401,7 +420,7 @@ impl Bm25Reader {
         }
         if clauses.is_empty() {
             // Only stop words, or nothing at all.
-            return Ok(Vec::new());
+            return Ok((Vec::new(), TermStats::default()));
         }
         let parsed = BooleanQuery::new(clauses);
         let searcher = self.reader.searcher();
@@ -430,7 +449,31 @@ impl Bm25Reader {
                 score,
             });
         }
-        Ok(hits)
+        let query_terms = self.query_terms(query);
+        let searcher = self.reader.searcher();
+        let indexed_terms = query_terms
+            .iter()
+            .filter(|term| {
+                [self.fields.text, self.fields.heading]
+                    .into_iter()
+                    .any(|field| {
+                        searcher
+                            .doc_freq(&Term::from_field_text(field, term))
+                            .is_ok_and(|n| n > 0)
+                    })
+            })
+            .count();
+        let matched_terms = hits.first().map_or(0, |best| {
+            let mut held = self.analyze(&best.text);
+            held.extend(self.analyze(&best.heading));
+            query_terms.iter().filter(|t| held.contains(t)).count()
+        });
+        let stats = TermStats {
+            query_terms: query_terms.len(),
+            indexed_terms,
+            matched_terms,
+        };
+        Ok((hits, stats))
     }
 }
 
@@ -991,6 +1034,42 @@ mod tests {
         assert_eq!(version_of_key("courses/C1/bm25/v12.tar.zst"), Some(12));
         assert_eq!(version_of_key("courses/C1/bm25/readme.txt"), None);
         assert_eq!(version_of_key("courses/C1/bm25/vx.tar.zst"), None);
+    }
+
+    #[test]
+    fn term_stats_count_the_query_terms_the_index_and_the_best_hit_hold() {
+        let dir = temp_dir();
+        build(
+            &dir,
+            &[
+                chunk(
+                    "D1",
+                    0,
+                    1,
+                    "Quadratics",
+                    "Solve the quadratic equation with the formula.",
+                ),
+                chunk("D1", 1, 2, "Exponents", "The product rule adds exponents."),
+            ],
+        );
+        let reader = Bm25Reader::open(&dir).unwrap();
+        let (hits, stats) = reader
+            .search_with_stats("How do I solve a quadratic equation on the moon?", 5)
+            .unwrap();
+        assert_eq!(hits[0].chunk_id, "D1:0");
+        // Terms: do is a stop word. The terms are solv, quadrat, equat, moon, and the letter i.
+        assert_eq!(
+            stats.query_terms,
+            reader
+                .query_terms("How do I solve a quadratic equation on the moon?")
+                .len()
+        );
+        assert_eq!(stats.matched_terms, 3, "{stats:?}");
+        assert!(stats.indexed_terms >= 3 && stats.indexed_terms < stats.query_terms);
+        // Nothing to search: no terms, no hits.
+        let (hits, stats) = reader.search_with_stats("the of", 5).unwrap();
+        assert!(hits.is_empty());
+        assert_eq!(stats, TermStats::default());
     }
 
     #[test]
