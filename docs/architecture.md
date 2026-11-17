@@ -8,7 +8,7 @@ Think of it as an open-book exam for the model: it answers from the course mater
 ## Hard rules
 
 1. **Pay per use only.** No component may have a baseline monthly cost. Do not add OpenSearch, NAT gateways, RDS or Aurora, ElastiCache, always-on containers, WAF web ACLs, Secrets Manager secrets, or customer-managed KMS keys. An idle stack must cost cents.
-2. **The server owns the prompt.** Clients send a course ID, a conversation ID, and the student's message. The server picks the system prompt, the token limits, and the sources. The model comes from the deployment's model catalog: a course owner sets the course default, any member can pick another catalog model for their own chats, and nobody can use a model outside the catalog.
+2. **The server owns the prompt.** Clients send a course ID, a conversation ID, the student's message, and optionally a model ID and a tutoring style ID (both checked against a fixed list). The server picks the system prompt, the token limits, and the sources. The model comes from the deployment's model catalog: a course owner sets the course default, any member can pick another catalog model for their own chats, and nobody can use a model outside the catalog.
 3. **Tenancy is the course.** Every read and write of course data checks membership first. A non-member gets `404`, never `403`. The one exception is the public demo route, which reads one demo course that has no members (see "Public demo").
 4. **Data stays in Australia by default.** Use the `ap-southeast-2` Region. The default chat and fast models must have residency `au` (an `au.` inference profile, or a model that runs on demand in Sydney). A catalog may also offer `global.` models (for example the frontier GPT models, which Bedrock offers only through global profiles); they are marked `global`, and the web app tells the user who picks such a model that it may process data outside Australia. No other profile prefixes (`us.`, `apac.`, and so on).
 5. **Same code locally and in Lambda.** The API is one axum router. Lambda runs it through `lambda_http`; locally it runs on a TCP listener. Local runs use AWS Emulator for AWS services.
@@ -61,12 +61,12 @@ Every item has a `type` attribute. Other attributes are camelCase.
 | Profile | `USER#<userId>` | `PROFILE` | | | `email`, `createdAt` |
 | Counters (user) | `USER#<userId>` | `COUNTERS` | | | `courses` (courses owned; changed only inside the create and delete transactions, with a condition on the limit) |
 | Failed joins | `USER#<userId>` | `JOINFAIL#D#<yyyy-mm-dd>` | | | `attempts`, `ttl` (40 days) |
-| Course | `COURSE#<courseId>` | `META` | | | `name`, `description`, `tutoringStyle`, `model`, `ownerId`, `inviteCode`, `docCount`, `bm25Version`, `createdAt`, `updatedAt` |
+| Course | `COURSE#<courseId>` | `META` | | | `name`, `description`, `tutoringStyle`, `allowStyleChoice` (absent means true), `model`, `ownerId`, `inviteCode`, `docCount`, `bm25Version`, `createdAt`, `updatedAt` |
 | Membership | `COURSE#<courseId>` | `MEMBER#<userId>` | `USER#<userId>` | `COURSE#<joinedAt>#<courseId>` | `courseId`, `userId`, `email`, `role`, `joinedAt` |
 | Invite code | `INVITE#<code>` | `INVITE` | | | `courseId`, `createdAt` |
 | Document | `COURSE#<courseId>` | `DOC#<documentId>` | | | `filename`, `sizeBytes`, `s3Key`, `status`, `error`, `pageCount`, `chunkCount`, `transcribedPages`, `warnings`, `createdAt`, `updatedAt` |
-| Conversation | `USER#<userId>` | `CONV#<conversationId>` | `CONVS#<userId>#<courseId>` | `<updatedAt>#<conversationId>` | `courseId`, `title`, `model`, `createdAt`, `updatedAt` (each chat message updates `model`, `updatedAt`, and `gsi1sk`) |
-| Message | `CONV#<conversationId>` | `MSG#<messageId>` | | | `role`, `content`, `sources`, `model`, `inputTokens`, `outputTokens`, `createdAt` |
+| Conversation | `USER#<userId>` | `CONV#<conversationId>` | `CONVS#<userId>#<courseId>` | `<updatedAt>#<conversationId>` | `courseId`, `title`, `model`, `style`, `createdAt`, `updatedAt` (each chat message updates `model`, `style`, `updatedAt`, and `gsi1sk`) |
+| Message | `CONV#<conversationId>` | `MSG#<messageId>` | | | `role`, `content`, `sources`, `model`, `style` (assistant messages), `inputTokens`, `outputTokens`, `createdAt` |
 | Question | `COURSE#<courseId>` | `Q#<questionId>` | | | `userId`, `email`, `question`, `conversationId`, `createdAt`, `ttl` (180 days) |
 | Daily usage (user) | `USER#<userId>` | `USAGE#D#<yyyy-mm-dd>` | | | `messages`, `inputTokens`, `outputTokens`, `transcribedPages`, `ttl` (40 days) |
 | Monthly usage (user) | `USER#<userId>` | `USAGE#M#<yyyy-mm>` | | | `messages`, `inputTokens`, `outputTokens` (kept for billing later) |
@@ -86,6 +86,16 @@ Rules:
 - Limits on courses owned and documents per course are exact: the create transaction updates the counter (`COUNTERS.courses`, `META.docCount`) with a condition `< :limit`, and the delete transaction gives the slot back.
 - Authorization reads (membership, course, invite, conversation, document) use strongly consistent reads.
 - ULIDs make `sk` values sort by creation time. List queries that need newest first use `ScanIndexForward = false`.
+
+## Tutoring styles
+
+There are five styles: Socratic, Hints, Step by step, Concepts, and Direct. The server holds the prompt text of each one (`crates/core/src/prompt.rs`). A client sends only the style ID, and the API checks it against the enum.
+
+The course `tutoringStyle` is the default style. The owner can lock it with the course setting `allowStyleChoice` ("Let learners change the style", on by default). When it is on, a member picks the style for each message in the chat composer. The style of an answer is chosen by `effective_style` in `crates/core/src/domain.rs`: the course style when the course is locked, else the style in the request, else the style of the conversation, else the course default. The conversation keeps the style of its last answer, so follow-ups keep it, and each assistant message stores the style it used, for insights. A new conversation starts with the course default.
+
+The public demo takes the same optional `style`. Without it, it uses the style of the demo course. Because a visitor can pick any style, the demo reserves its worst-case cost for the longest of the five prompts.
+
+The local fake model names the style that reached it in its answer ("Tutoring style in use"), so the tests can check the style end to end. Real models never do that.
 
 ## S3 layout
 

@@ -71,7 +71,8 @@ interface Course {
   id: string;
   name: string;            // 1..80 chars after trim
   description: string;     // 0..500 chars
-  tutoringStyle: TutoringStyle;
+  tutoringStyle: TutoringStyle; // the default style, and the only style when allowStyleChoice is false
+  allowStyleChoice: boolean;    // true: learners can pick another style for a conversation (the default). false: the owner locked the style
   model: string;           // the course default model, a ModelInfo.id from GET /api/models
   role: Role;              // the caller's role in this course
   inviteCode?: string;     // present in every Course response when role === 'owner', never otherwise
@@ -104,7 +105,7 @@ interface Document {
   updatedAt: string;
 }
 
-interface Conversation { id: string; courseId: string; title: string; model: string /* catalog ID of the last answer */; createdAt: string; updatedAt: string }
+interface Conversation { id: string; courseId: string; title: string; model: string /* catalog ID of the last answer */; style?: TutoringStyle /* style of the last answer; absent on older conversations */; createdAt: string; updatedAt: string }
 
 interface Source {          // phase 3; the API sends none before then
   n: number;               // citation number used in the answer text, starting at 1
@@ -121,6 +122,7 @@ interface Message {
   createdAt: string;
   sources?: Source[];      // assistant messages only
   model?: string;          // assistant messages only: the catalog ID that wrote it
+  style?: TutoringStyle;   // assistant messages only: the style that the answer used (absent on older messages)
 }
 
 interface Question {        // teacher insights
@@ -133,7 +135,7 @@ interface Question {        // teacher insights
 }
 ```
 
-Tutoring styles (the server owns the prompts; clients only send the style ID):
+Tutoring styles (the server owns the prompts; clients only send the style ID). The course `tutoringStyle` is the default style. Unless the owner locked the course (`allowStyleChoice: false`), a member can pick another style for each message, and the conversation keeps the last style used:
 
 | ID | Name | Behavior |
 |---|---|---|
@@ -167,7 +169,8 @@ The caller becomes the owner. Default style is `socratic`. Default model is the 
 
 `GET /api/courses/{courseId}` → `200 { "course": Course }` for members, else `404`.
 
-`PATCH /api/courses/{courseId}` (owner) body `{ "name"?, "description"?, "tutoringStyle"?, "model"? }` → `200 { "course": Course }`. An unknown `model` → `400`.
+`PATCH /api/courses/{courseId}` (owner) body `{ "name"?, "description"?, "tutoringStyle"?, "allowStyleChoice"?, "model"? }` → `200 { "course": Course }`. An unknown `model`, an unknown `tutoringStyle`, or a value of `allowStyleChoice` that is not a boolean → `400`.
+A new course has `allowStyleChoice: true`, and so does a course from before the setting.
 If a course's stored model leaves the catalog later, reads return the catalog default in `model`, and chat uses it.
 
 `DELETE /api/courses/{courseId}` (owner) → `204`.
@@ -213,12 +216,13 @@ The worker then moves the document to `processing` and to `ready` or `failed`.
 
 ### Chat
 
-`POST /api/courses/{courseId}/chat` (member) body `{ "conversationId"?: string, "message": string, "model"?: string }` → `200 text/event-stream`.
+`POST /api/courses/{courseId}/chat` (member) body `{ "conversationId"?: string, "message": string, "model"?: string, "style"?: TutoringStyle }` → `200 text/event-stream`.
 
 - `message` is 1..4000 characters after trim.
 - Without `conversationId`, the API creates a conversation. Its title is the first 60 characters of the message (cut at a word boundary when possible).
 - With `conversationId`, it must belong to the caller and to this course, else `404`.
 - `model` is optional and must be a catalog ID (`GET /api/models`), else `400`. Any member may pick any catalog model. Without it, the API uses the conversation's model, or for a new conversation the course default. The conversation's `model` becomes the model used.
+- `style` is optional and must be one of the five `TutoringStyle` IDs (or `null`, which is the same as no value), else `400 invalid_request` before anything is counted. The server maps the ID to its own prompt text, and never takes text from the client. The **effective style** of the answer is: the course `tutoringStyle` when the course is locked (`allowStyleChoice: false`; the request style and the style of the conversation are then ignored), else the request `style`, else the style of the conversation, else (for a new conversation) the course `tutoringStyle`. The conversation's `style` becomes the effective style, and each assistant message stores the style it used (for insights). A new conversation starts with the course default.
 - The API checks the per-user daily quota and the global daily cap before it calls the model. Those failures, and all validation and auth failures, are normal JSON error responses, not stream events.
 - The server builds the prompt: tutoring style, course name and description, conversation history (the last 20 messages), and (phase 3) retrieved sources. Clients never send a system prompt, a raw Bedrock model ID, or a token limit; they can only name a catalog model.
 
@@ -226,7 +230,7 @@ Stream events, in order (each is `event: <name>` plus one `data: <json>` line):
 
 | Event | Data | Notes |
 |---|---|---|
-| `meta` | `{ "conversationId", "userMessageId", "assistantMessageId", "title", "model" }` | Always first; `model` is the catalog ID in use |
+| `meta` | `{ "conversationId", "userMessageId", "assistantMessageId", "title", "model", "style" }` | Always first; `model` is the catalog ID in use, and `style` is the effective style |
 | `sources` | `{ "sources": Source[] }` | Phase 3, before the first `delta`; omitted when there are no sources |
 | `delta` | `{ "text": string }` | Zero or more |
 | `done` | `{ "usage": { "inputTokens": number, "outputTokens": number }, "stopReason": string }` | Last event on success |
@@ -237,13 +241,13 @@ The API saves the user message before it calls the model, and saves the assistan
 
 ### Demo
 
-`POST /api/demo/chat` body `{ "message": string, "conversationId"?: string }` → `200 text/event-stream`. This is the only route besides `GET /api/health` that needs no sign-in: it is the "try it" demo of the landing page. It answers from one demo course (two OpenStax excerpts, CC BY 4.0) and from nothing else.
+`POST /api/demo/chat` body `{ "message": string, "conversationId"?: string, "style"?: TutoringStyle }` → `200 text/event-stream`. This is the only route besides `GET /api/health` that needs no sign-in: it is the "try it" demo of the landing page. It answers from one demo course (two OpenStax excerpts, CC BY 4.0) and from nothing else.
 
-- `message` is 1..300 characters after trim. Any other field in the body is `400 invalid_request`: there is no `model`, `history`, or token limit to send.
+- `message` is 1..300 characters after trim. Any other field in the body is `400 invalid_request`: there is no `model`, `history`, or token limit to send. `style` is optional and has the same enum and the same check as in the course chat (an unknown value is `400 invalid_request`, and nothing is counted). Without it, the demo uses the `tutoringStyle` of the demo course (`direct` in `demo/course.json`). The server does not keep the style with a demo conversation: a client that wants a style for a follow-up sends it again.
 - Without `conversationId`, the turn starts a new conversation. The server keeps the turns of a conversation (see below) and builds the history itself, so clients cannot send history.
 - A `conversationId` that is unknown, expired, not in the shape of an ID from this route, or already at 10 turns starts a new conversation. The `meta` event then has a new ID. A client never learns which of these it was.
 - The server fixes everything else: the model is the deployment's default chat model, with an output limit of 1,000 tokens (CDK context, never above the catalog limit); the prompt and the sources are the same as in the course chat. A question that the materials do not cover gets a real answer from the model with the normal "not covered" notice, and the stream has no `sources` event. A follow-up is rewritten into one search query by the fast model, as in the course chat.
-- The same events in the same order as the course chat (`meta`, `sources`, `delta`, `done`, `error`). The `meta` data is `{ "conversationId": string, "model": string, "attribution": Attribution[] }`, where `model` is the catalog ID of the model that answers and `Attribution` is `{ title, authors, publisher, copyright, license, licenseUrl, sourceUrl, changes }` for each OpenStax book, for the credit line (CC BY 4.0 needs it). `sources` and `delta` are as in the course chat. `done` has the usage of the answer.
+- The same events in the same order as the course chat (`meta`, `sources`, `delta`, `done`, `error`). The `meta` data is `{ "conversationId": string, "model": string, "style": TutoringStyle, "attribution": Attribution[] }`, where `style` is the style of the answer and `model` is the catalog ID of the model that answers and `Attribution` is `{ title, authors, publisher, copyright, license, licenseUrl, sourceUrl, changes }` for each OpenStax book, for the credit line (CC BY 4.0 needs it). `sources` and `delta` are as in the course chat. `done` has the usage of the answer.
 - Demo conversations: the ID is 192 random bits as 48 lower-case hex characters, so it cannot be guessed, and whoever holds it can continue the conversation. The server stores the turns in the table with a time to live of 24 hours after the first turn, and at most 10 turns for each conversation. A conversation is not linked to any user or visitor and is in no other route. A turn is saved just before `done`; a turn that failed is not saved.
 - Limits (all from CDK context per stage). Per visitor, which is an HMAC of the client address with a salt that changes every day (an IPv6 visitor is the whole `/56`): 10 questions in a fixed 10-minute window, 40 questions a day (UTC), and 0.30 USD of model cost a day. For the whole demo: a budget of 2.00 USD for each UTC day. The output limit of an answer is 1,000 tokens. Every turn reserves its worst-case cost (against the day and against the visitor) before it calls a model, and settles with the real cost after it. A stream that fails keeps its whole reservation (`docs/architecture.md`, "Public demo").
 - The route runs in its own Lambda function with a small reserved concurrency (3 in prod, 2 in dev), behind its own CloudFront behavior `/api/demo/*`. The main API does not serve it. **The rule for a client:** every response that the route itself makes has the header `x-openbook-demo`. A `429` or a `5xx` from `/api/demo/*` **without** that header is not ours: it is a throttle of Lambda (all executions are busy) or a timeout or error page of CloudFront. Treat it as `demo_busy`, whatever the body is. (CloudFront does not run a viewer-response function when the origin answers 400 or higher, so the server cannot rewrite these responses.) A `429` or `5xx` with the header has a JSON error body with a `code`, and the client reads that code.
