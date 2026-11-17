@@ -9,7 +9,7 @@ Think of it as an open-book exam for the model: it answers from the course mater
 
 1. **Pay per use only.** No component may have a baseline monthly cost. Do not add OpenSearch, NAT gateways, RDS or Aurora, ElastiCache, always-on containers, WAF web ACLs, Secrets Manager secrets, or customer-managed KMS keys. An idle stack must cost cents.
 2. **The server owns the prompt.** Clients send a course ID, a conversation ID, and the student's message. The server picks the system prompt, the token limits, and the sources. The model comes from the deployment's model catalog: a course owner sets the course default, any member can pick another catalog model for their own chats, and nobody can use a model outside the catalog.
-3. **Tenancy is the course.** Every read and write of course data checks membership first. A non-member gets `404`, never `403`.
+3. **Tenancy is the course.** Every read and write of course data checks membership first. A non-member gets `404`, never `403`. The one exception is the public demo route, which reads one demo course that has no members (see "Public demo").
 4. **Data stays in Australia by default.** Use the `ap-southeast-2` Region. The default chat and fast models must have residency `au` (an `au.` inference profile, or a model that runs on demand in Sydney). A catalog may also offer `global.` models (for example the frontier GPT models, which Bedrock offers only through global profiles); they are marked `global`, and the web app tells the user who picks such a model that it may process data outside Australia. No other profile prefixes (`us.`, `apac.`, and so on).
 5. **Same code locally and in Lambda.** The API is one axum router. Lambda runs it through `lambda_http`; locally it runs on a TCP listener. Local runs use AWS Emulator for AWS services.
 7. **Known risk until the public launch: PDF parsing is not isolated.** pdfium (C++) parses untrusted PDFs in the ingest worker, which holds credentials for every course's files, the table, and every vector index. A pdfium memory-safety bug could therefore cross tenants. Before public sign-up (phase 5), PDF opening, text extraction, and page rendering move to a separate function with no data permissions (a presigned GET in, text and images out), and a scheduled check flags new pdfium releases.
@@ -21,6 +21,7 @@ Think of it as an open-book exam for the model: it answers from the course mater
 Browser ── https://<site> ──► CloudFront
                                ├─ /*      ─► S3 web bucket (OAC). SPA routes rewrite to /index.html by a CloudFront Function.
                                └─ /api/*  ─► Lambda function URL (OAC, AWS_IAM auth, RESPONSE_STREAM) ─► openbook-api (Rust, arm64)
+                                              (origin request policy: an allow list of viewer headers, with CloudFront-Viewer-Address)
 Browser ── presigned PUT ─────► S3 docs bucket
 Browser ── Cognito sign-in ───► Cognito user pool (self sign-up, email verification, USER_PASSWORD_AUTH)
 
@@ -70,6 +71,12 @@ Every item has a `type` attribute. Other attributes are camelCase.
 | Daily usage (user) | `USER#<userId>` | `USAGE#D#<yyyy-mm-dd>` | | | `messages`, `inputTokens`, `outputTokens`, `transcribedPages`, `ttl` (40 days) |
 | Monthly usage (user) | `USER#<userId>` | `USAGE#M#<yyyy-mm>` | | | `messages`, `inputTokens`, `outputTokens` (kept for billing later) |
 | Daily usage (global) | `GLOBAL` | `USAGE#D#<yyyy-mm-dd>` | | | `messages`, `inputTokens`, `outputTokens`, `transcribedPages`, `ttl` (40 days) |
+| Demo course (active) | `DEMO#COURSE` | `ACTIVE` | | | `courseId`, `fingerprint`, `attribution` (list), `provisionedAt`. The only way the API finds the demo course. `make demo-provision` writes it |
+| Demo course (pending) | `DEMO#COURSE` | `PENDING` | | | `courseId` of a provisioning run that is not finished |
+| Demo salt | `DEMO#SALT` | `D#<yyyy-mm-dd>` | | | `salt` (32 random bytes), `ttl` (2 days). The API creates it on first use with a conditional put |
+| Demo visitor counter | `DEMO#V#<visitor>` | `W#<epoch/600>` or `D#<yyyy-mm-dd>` | | | `count`, `ttl` (the 10-minute window plus a margin, or 2 days). `<visitor>` is 32 hex characters of the HMAC |
+| Demo budget | `DEMO#GLOBAL` | `D#<yyyy-mm-dd>` | | | `count` (millionths of a US dollar, settled costs plus open reservations), `ttl` (2 days) |
+| Demo conversation | `DEMO#CONV#<id>` | `META` and `M#<messageId>` | | | `META`: `turns`, `ttl` (24 hours after the first turn). `M#`: `role`, `content`, `ttl`. No `gsi1` keys and no user ID |
 
 Rules:
 
@@ -122,6 +129,10 @@ The API reads only environment variables. Names and defaults:
 | `OPENBOOK_LIMIT_DAILY_TRANSCRIBED_PAGES_PER_USER` | `300` | Counted for the document owner |
 | `OPENBOOK_LIMIT_DAILY_TRANSCRIBED_PAGES_GLOBAL` | `1000` | Until the public launch, `cdk.json` sets 300 (prod) and 100 (dev) |
 | `OPENBOOK_LIMIT_DAILY_TOKENS_GLOBAL` | `3000000` | Second spend guard: no new chat once today's global input plus output tokens reach it. Until the public launch, `cdk.json` sets 1500000 (prod) and 500000 (dev). A chat turn with retrieval sends about 5,000 input tokens (the sources) plus the answer, so the message caps (300 and 100) stay the binding limit and the token cap is the backstop. Worst case at Sonnet list prices (US$3 per million input tokens, US$15 per million output tokens), for prod: about US$7 a day at a realistic mix (85% input, 15% output), and at most about US$22 a day if every token were output. Dev is a third of that |
+| `OPENBOOK_DEMO_ENABLED` | `false` | The kill switch of the public demo (`true` or `false`). When it is on, the default chat model must have prices. CDK context `demoEnabled`, or `stageDemo.<stage>.enabled` in `cdk.json` (dev on, prod off until the demo course is provisioned) |
+| `OPENBOOK_DEMO_LIMIT_VISITOR_PER_10_MIN` | `10` | Questions per demo visitor in a fixed 10-minute window. CDK context `limitDemoVisitorPer10Min` |
+| `OPENBOOK_DEMO_LIMIT_VISITOR_PER_DAY` | `40` | Questions per demo visitor per UTC day. CDK context `limitDemoVisitorPerDay` |
+| `OPENBOOK_DEMO_BUDGET_USD_PER_DAY` | `2` | What the whole demo may spend per UTC day, in US dollars. CDK context `demoBudgetUsdPerDay`, or `stageDemo.<stage>.budgetUsdPerDay` |
 | `OPENBOOK_LIMIT_FAILED_JOINS_PER_DAY` | `20` | Per user; slows down guessing invite codes |
 | `OPENBOOK_LIMIT_COURSES_OWNED` | `10` | |
 | `OPENBOOK_LIMIT_DOCUMENTS_PER_COURSE` | `50` | |
@@ -147,6 +158,7 @@ The API reads only environment variables. Names and defaults:
 | `modelId` | The Bedrock model or inference profile ID |
 | `residency` | `au` or `global`. It must match `modelId`, which must have one of three shapes (an allowlist; anything else is refused): `au.<vendor>.<model>` is `au`; `<vendor>.<model>` (an on-demand model in Sydney) is `au`; `global.<vendor>.<model>` is `global`. `<vendor>` must be one of `anthropic`, `openai`, `amazon`, `meta`, `mistral`, `cohere`, `deepseek`, `qwen`. The API and the CDK app use the same rule and the same vendor list. Entries with provider `fake` (local only, refused in Lambda) skip the shape rule and keep the residency they declare, so local tests can have an `au` and a `global` fake model |
 | `maxOutputTokens` | Server-fixed output limit (default 2000) |
+| `inputUsdPerMillion`, `outputUsdPerMillion` | List price in US dollars per million input and output tokens, from 0 to 1000. Set both or neither. The CDK app requires them on every deployed model, and the API requires them on the default chat model when the demo is on. The demo budget uses them, and billing will too |
 | `temperature` | Optional. Leave it out for models that reject it |
 | `vision` | Optional, default `false`. `true` when the model accepts images; `OPENBOOK_TRANSCRIBE_MODEL` must name such an entry. Claude Sonnet and Haiku are `true`, gpt-oss-120b is `false`, local fake entries are `true` |
 
@@ -164,10 +176,24 @@ Waiting for AWS access (the Bedrock agreements are accepted, but AWS blocks the 
 
 Locally, the catalog has one entry `{ "id": "fake", "provider": "fake", ... }` unless `OPENBOOK_BEDROCK_PROFILE` is set, in which case it is the deployed catalog on real Bedrock.
 
+## Public demo
+
+The landing page at `ask.steve.gg` has a "try it" box: a visitor with no account asks a question and gets a real streamed answer with citations from a demo course. It behaves like the product (same model, same retrieval, same prompt, follow-up questions), and a daily price cap is the safety net. If it is abused, the kill switch is the pivot.
+
+- **The demo course** holds two OpenStax excerpts (College Algebra and American Government 2e, CC BY 4.0, listed in `demo/course.json`). `make demo-provision` creates it through the normal ingestion path: a course item (owner `demo`, which no Cognito user can have; no membership and no invite code), the PDFs in the docs bucket, the same `ingest` messages that the API sends, and the real worker (pages, chunks, embeddings, vectors, BM25). When every document is `ready`, it writes the `DEMO#COURSE / ACTIVE` item, then deletes the previous demo course. A second run with the same content changes nothing ("up to date"). A run that stopped half way leaves a `PENDING` item, and the next run removes that course first.
+- **The route** `POST /api/demo/chat` (`docs/api.md`) reads the demo course and writes only under `DEMO#` partitions: counters, the salt, and demo conversations. It touches no user item, no course item of a user, no usage item, no question record, and no S3 object. No normal route changes: the demo course has no membership, so every course route returns `404` for everyone (the tests check all of them, for a teacher and a student, and check that every other route still needs a sign-in).
+- **The visitor** is an HMAC-SHA256 of the client address, with a salt that the API creates in the table on its first use of each UTC day (a conditional put, so servers agree; time to live 2 days). Hashes of different days cannot be linked, and no secret service with a monthly fee is needed. An IPv6 visitor is the `/64`. In Lambda, the address is the header `CloudFront-Viewer-Address`, which CloudFront sets itself (it replaces a value from the viewer). The origin request policy of the `/api/*` behavior is an allow list that includes it, because the managed policy "all viewer except Host" cannot add CloudFront headers. Locally, it is the socket address. If the address is missing or unreadable in Lambda, the route fails closed with `503 demo_unavailable`. Neither the address nor the hash is logged.
+- **Per-visitor limits** stop one visitor from using up the budget for everyone: 10 questions per 10 minutes (a fixed window, so a burst across a window edge can reach 20) and 40 per day. They are DynamoDB counters with a conditional update and a time to live.
+- **The budget** is a pay-per-request counter of millionths of a US dollar per UTC day (2.00 USD by default). A turn first reserves its worst-case cost with one conditional update that fails when the reservation does not fit: the whole prompt with the most sources that retrieval can return (8 passages of 2,400 characters at 3 characters per token), the history, and the full output limit of the model, at the catalog prices; for a follow-up, also the rewrite of the fast model. When it does not fit, the turn gets `503 demo_busy`, and the visitor keeps the question. After the model calls, the turn settles: it gives back the part of the reservation that it did not use, or charges the part by which the real cost (the usage that the model reports) went over. A turn that fails before any text reached the visitor refunds everything except the retrieval tokens. The sum of the settled costs and the open reservations never goes over the budget, so turns at the same moment cannot overspend. A day has its own counter, so the budget starts again at midnight UTC. A real cost above the reservation is possible only if the character-based bound of the input is wrong, and it is charged after the fact.
+- **Worst case.** The budget is the cap: at most 2.00 USD a day for model calls (the reservations never go over it, and the real cost of a turn is below its reservation). A normal turn costs about 0.02 USD with Claude Sonnet (about 5,000 input tokens of sources and about 400 output tokens), so 2.00 USD is about 90 to 100 answers. Query embeddings (Titan, 0.02 USD per million tokens) and the other services (Lambda, CloudFront, DynamoDB) cost a few cents at most; a refused request costs only one Lambda call and a few DynamoDB requests, and reserved concurrency limits how many run at once.
+- **The kill switch** is `OPENBOOK_DEMO_ENABLED`, from CDK context per stage (`stageDemo` in `cdk.json`). Off, the route returns `404 demo_unavailable` before it reads the body, and the public `config.json` says `demo.enabled: false`, so the landing page hides the demo. The deploy of one context change is the pivot if the demo is abused. The budget and the visitor limits change the same way.
+- **Credits.** CC BY 4.0 needs the credit line. The `meta` event carries the attribution of each book, and `config.json` carries the title, the licence, and the link.
+
 ## Cost guards
 
 - Per-user daily message quota, a global daily message cap, and a global daily token cap (above). Until the public launch the prod caps are 300 messages and 1,500,000 tokens a day, which cost at most about US$7 a day at a realistic input-to-output mix, and about US$22 if every token were output (Sonnet list prices). The monthly budget alerts below are the second line.
 - Per-user and global daily caps on transcribed pages (about US$0.005 a page with Claude Haiku), a page limit per document, and the 50-document limit per course.
+- The public demo has its own daily budget in US dollars (2.00 USD by default), reserved before every model call and settled after it, plus per-visitor limits and a kill switch (see "Public demo"). It does not use the message and token caps above, which are for signed-in users.
 - Reserved concurrency on the API function (dev 5, prod 25).
 - Server-fixed `maxTokens` (2,000 for chat) and a 20-message history window.
 - The account already has a US$20 monthly AWS Budget with alerts at 85% and 100% actual and 100% forecast.

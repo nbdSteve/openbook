@@ -88,3 +88,9 @@ The hash protects the transport only. The assembly is build-controlled input, an
 - Only the hashed files under `assets/` get the one-year immutable cache. Every other file, the favicon included, is sent with `no-cache`.
 - The two bucket-deployment helper functions share one log group with the stage retention.
 - `cdk.json` sets `cli-telemetry` to `false`.
+
+## The public demo
+
+The demo settings are CDK context: `demoEnabled` (or `stageDemo.<stage>.enabled` in `cdk.json`), `limitDemoVisitorPer10Min`, `limitDemoVisitorPerDay`, and `demoBudgetUsdPerDay` (or `stageDemo.<stage>.budgetUsdPerDay`). The kill switch and the budget go to the Lambda environment, and the public `config.json` gets the `demo` block from `demo/course.json`. See `docs/architecture.md`, "Public demo".
+
+The `/api/*` behavior has its own origin request policy (an allow list of viewer headers with `CloudFront-Viewer-Address`), so the CloudFormation execution role needs `cloudfront:CreateOriginRequestPolicy`, `GetOriginRequestPolicy`, `UpdateOriginRequestPolicy`, and `DeleteOriginRequestPolicy`. They are in `iam/cloudformation-execution-role-policy.template.json`. Render and apply the role again before the next deploy.

@@ -62,10 +62,12 @@ The emulator supports `AdminCreateUser` and `AdminSetUserPassword`, so the seed 
 | `make bootstrap` | Create the local resources and write the files above |
 | `make dev` | Emulator, bootstrap, API, and Vite together; Ctrl-C stops all of them |
 | `make e2e-local` | Start an isolated stack on other ports, run the Playwright suite headless, and stop everything |
+| `make demo-provision` | Create or refresh the public demo course. `STAGE=local` is the default (the stack of `make dev`); `STAGE=dev` or `STAGE=prod` use `AWS_PROFILE` (prod also needs `ALLOW_PROD=1`); `FORCE=1` rebuilds even when the content is the same |
 | `make test-integration` | Fetch pdfium for this machine, start an emulator on port 9320, run `cargo test --workspace -- --ignored` against it (`OPENBOOK_TEST_EMULATOR_ENDPOINT`, `OPENBOOK_TEST_EMULATOR_CA`, `OPENBOOK_PDFIUM_PATH`), and stop it |
 | `make build-lambdas` | Build the API and the ingest worker for arm64 (`cargo lambda build --release --arm64 -p openbook-api -p openbook-ingest`), fetch pdfium for `linux-arm64`, and copy `libpdfium.so` next to the worker's `bootstrap` |
 | `OPENBOOK_BEDROCK_PROFILE=<profile> make dev` | Same as `make dev`, but with the deployed model catalog on real Bedrock through that AWS profile |
 
+`make e2e-local` reads `OPENBOOK_E2E_EMULATOR_PORT`, `OPENBOOK_E2E_API_PORT`, and `OPENBOOK_E2E_WEB_PORT`, so that two checkouts can run it at once.
 Ports for `make e2e-local` are separate from `make dev` (emulator 9310, API 8790, web 5180), and so are its files (`.local/e2e`), so both can run at the same time.
 The e2e script sets the daily message limit to 8 per user in its API environment (the web flow tests send messages until they hit the quota), never uses real Bedrock, always starts a new emulator, and exits with the Playwright result after it stops every process.
 
@@ -73,6 +75,18 @@ The e2e script sets the daily message limit to 8 per user in its API environment
 
 `make dev` prefixes each log line with `[api]`, `[ingest]`, or `[web]`. It stops the emulator on exit only when it started it. The first API start compiles the Rust workspace, so the wait for `/api/health` can take a few minutes.
 Both scripts start the API and the web server with stdin from `/dev/null` (so that pressing Enter does not freeze Vite), start the API from an empty environment plus a short allowlist (so an exported `OPENBOOK_LIMIT_*` or `AWS_PROFILE` cannot change it), and send `SIGCONT` after `SIGTERM` when they stop.
+
+## The public demo locally
+
+The local stack has the demo on: `bootstrap-local.sh` writes `OPENBOOK_DEMO_ENABLED=true` to `api.env` and a `demo` block (`enabled`, the model label, the credits, and the examples from `demo/course.json`) to `web-config.json`. The fake catalog entries have prices (the Claude Sonnet prices), so the demo budget works like the real one.
+
+`make dev` and `make e2e-local` provision the demo course after the ingest worker starts: they run `openbook-demo provision` with the same environment, which uploads the PDFs of `demo/course.json` and waits for the worker. With the fake models it takes a few seconds. A second `make dev` on the same emulator says "up to date". The PDFs come from the evaluation corpora (`evals/corpora/*/`). Run `make demo-provision` against a running `make dev` stack to refresh the course after a change (`OPENBOOK_STACK_DIR=.local/e2e` picks another stack).
+
+Locally the visitor is the socket address, so every request from your machine is one visitor (10 questions per 10 minutes). `CloudFront-Viewer-Address` is ignored outside Lambda. The `demo.spec.ts` flow of `make e2e-local` asks the demo questions through the Vite proxy: a streamed answer with sources, a follow-up on the conversation, a question outside the materials, bad input, and a check that other routes still need a sign-in.
+
+The integration tests (`make test-integration`) provision a small demo course with the real worker (`crates/demo/tests/demo.rs`). Use `OPENBOOK_TEST_EMULATOR_PORT=<port>` to run them on another emulator port.
+
+For a deployed stage, run `AWS_PROFILE=<profile> make demo-provision STAGE=dev` (or `ALLOW_PROD=1 ... STAGE=prod`). It reads `TableName`, `DocsBucketName`, and `IngestQueueUrl` from the CloudFormation outputs of `Openbook-<stage>` (read only), writes the course, and waits for the deployed ingest worker. Run it after the stack is deployed, and switch the demo on with `stageDemo.<stage>.enabled` in `infra/cdk.json` (or `-c demoEnabled=true`) after it says `provisioned` or `up to date`.
 
 ## Fake model provider
 

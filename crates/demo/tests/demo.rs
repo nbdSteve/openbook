@@ -260,6 +260,45 @@ impl Demo {
     }
 }
 
+#[derive(Clone, Default)]
+struct Capture(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for Capture {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Capture {
+    type Writer = Capture;
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+/// The log of every test of this file. One global subscriber, installed once: a subscriber per
+/// thread makes tracing cache "nobody listens" for a call site that another thread hit first, and
+/// then the lines are lost. The checks only look for text that no test may log, or for lines that
+/// every run of the route writes.
+fn log_capture() -> Capture {
+    static CAPTURE: std::sync::OnceLock<Capture> = std::sync::OnceLock::new();
+    CAPTURE
+        .get_or_init(|| {
+            let capture = Capture::default();
+            let subscriber = tracing_subscriber::fmt()
+                .with_writer(capture.clone())
+                .with_ansi(false)
+                .finish();
+            let _ = tracing::subscriber::set_global_default(subscriber);
+            capture
+        })
+        .clone()
+}
+
 /// An attribute value as text, with the keys of maps in order, so equal items give equal text.
 fn canon(value: &AttributeValue) -> String {
     match value {
@@ -1199,30 +1238,7 @@ async fn the_salt_is_daily_and_no_address_or_hash_is_stored_or_logged() {
     env.provision().await;
     let router = env.router(&[]);
 
-    #[derive(Clone, Default)]
-    struct Capture(Arc<Mutex<Vec<u8>>>);
-    impl std::io::Write for Capture {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(buf);
-            Ok(buf.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Capture {
-        type Writer = Capture;
-        fn make_writer(&'a self) -> Self::Writer {
-            self.clone()
-        }
-    }
-    let capture = Capture::default();
-    let _guard = tracing::subscriber::set_default(
-        tracing_subscriber::fmt()
-            .with_writer(capture.clone())
-            .with_ansi(false)
-            .finish(),
-    );
+    let capture = log_capture();
     assert_eq!(
         ask(&router, "What does the Pythagorean theorem say?", PEER)
             .await
