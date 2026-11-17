@@ -76,8 +76,9 @@ pub struct DemoConfig {
     pub visitor_per_window: u32,
     /// Questions per visitor per day (UTC).
     pub visitor_per_day: u32,
-    /// Model calls per day for the whole demo.
-    pub global_per_day: u32,
+    /// What the whole demo may spend in a day (UTC), in millionths of a US dollar. The turns reserve
+    /// their worst-case cost against it (`demo::reserve_budget`).
+    pub budget_micro_usd_per_day: u64,
 }
 
 /// The full API configuration.
@@ -309,19 +310,39 @@ impl Config {
             visitor_per_window: to_u32(number(
                 &mut problems,
                 "OPENBOOK_DEMO_LIMIT_VISITOR_PER_10_MIN",
-                5,
+                10,
             )),
             visitor_per_day: to_u32(number(
                 &mut problems,
                 "OPENBOOK_DEMO_LIMIT_VISITOR_PER_DAY",
-                20,
+                40,
             )),
-            global_per_day: to_u32(number(
-                &mut problems,
-                "OPENBOOK_DEMO_LIMIT_GLOBAL_PER_DAY",
-                200,
-            )),
+            budget_micro_usd_per_day: match get("OPENBOOK_DEMO_BUDGET_USD_PER_DAY") {
+                None => 2_000_000,
+                Some(raw) => raw
+                    .parse::<f64>()
+                    .ok()
+                    .and_then(crate::demo::usd_to_micro)
+                    .unwrap_or_else(|| {
+                        problems.push(format!(
+                            "OPENBOOK_DEMO_BUDGET_USD_PER_DAY must be a positive number of US dollars (got {raw:?})"
+                        ));
+                        2_000_000
+                    }),
+            },
         };
+        // The demo answers with the default chat model and prices every call, so that model needs prices.
+        if demo.enabled
+            && let Some(catalog) = &catalog
+            && catalog
+                .get(catalog.default_chat_id())
+                .is_some_and(|e| e.cost_micro_usd(1, 1).is_none())
+        {
+            problems.push(
+                "OPENBOOK_DEMO_ENABLED needs prices (inputUsdPerMillion and outputUsdPerMillion) on the default chat model"
+                    .into(),
+            );
+        }
 
         let listen_raw = get("OPENBOOK_LISTEN_ADDR").unwrap_or_else(|| "127.0.0.1:8787".into());
         let listen_addr = listen_raw.parse::<SocketAddr>().unwrap_or_else(|_| {
@@ -432,6 +453,9 @@ mod tests {
     const REAL_CATALOG: &str = r#"[
         {"id":"claude","label":"Claude","vendor":"anthropic","provider":"bedrock","modelId":"au.anthropic.claude-x","residency":"au","vision":true}
     ]"#;
+    const PRICED_CATALOG: &str = r#"[
+        {"id":"claude","label":"Claude","vendor":"anthropic","provider":"bedrock","modelId":"au.anthropic.claude-x","residency":"au","vision":true,"inputUsdPerMillion":3,"outputUsdPerMillion":15}
+    ]"#;
     const FAKE_CATALOG: &str = r#"[
         {"id":"fake","label":"Fake","vendor":"openbook","provider":"fake","modelId":"fake","residency":"au","vision":true}
     ]"#;
@@ -471,28 +495,39 @@ mod tests {
             c.demo,
             DemoConfig {
                 enabled: false,
-                visitor_per_window: 5,
-                visitor_per_day: 20,
-                global_per_day: 200
+                visitor_per_window: 10,
+                visitor_per_day: 40,
+                budget_micro_usd_per_day: 2_000_000
             }
         );
         let mut v = base();
         v.insert("OPENBOOK_DEMO_ENABLED".into(), "true".into());
         v.insert("OPENBOOK_DEMO_LIMIT_VISITOR_PER_10_MIN".into(), "2".into());
         v.insert("OPENBOOK_DEMO_LIMIT_VISITOR_PER_DAY".into(), "3".into());
-        v.insert("OPENBOOK_DEMO_LIMIT_GLOBAL_PER_DAY".into(), "4".into());
+        v.insert("OPENBOOK_DEMO_BUDGET_USD_PER_DAY".into(), "1.25".into());
+        v.insert("OPENBOOK_MODELS".into(), PRICED_CATALOG.into());
         let demo = Config::from_vars(&v).unwrap().demo;
         assert_eq!((demo.enabled, demo.visitor_per_window), (true, 2));
-        assert_eq!((demo.visitor_per_day, demo.global_per_day), (3, 4));
+        assert_eq!(
+            (demo.visitor_per_day, demo.budget_micro_usd_per_day),
+            (3, 1_250_000)
+        );
         for bad in ["yes", "TRUE", "2"] {
             let mut v = base();
             v.insert("OPENBOOK_DEMO_ENABLED".into(), bad.into());
             let error = Config::from_vars(&v).unwrap_err();
             assert!(error.to_string().contains("OPENBOOK_DEMO_ENABLED"), "{bad}");
         }
+        for bad in ["0", "-1", "free", "NaN"] {
+            let mut v = base();
+            v.insert("OPENBOOK_DEMO_BUDGET_USD_PER_DAY".into(), bad.into());
+            assert!(Config::from_vars(&v).is_err(), "{bad}");
+        }
+        // The demo needs prices on the default chat model.
         let mut v = base();
-        v.insert("OPENBOOK_DEMO_LIMIT_GLOBAL_PER_DAY".into(), "0".into());
-        assert!(Config::from_vars(&v).is_err());
+        v.insert("OPENBOOK_DEMO_ENABLED".into(), "true".into());
+        let error = Config::from_vars(&v).unwrap_err();
+        assert!(error.to_string().contains("prices"), "{error}");
     }
 
     #[test]

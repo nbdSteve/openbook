@@ -209,6 +209,10 @@ export class OpenbookStack extends cdk.Stack {
       OPENBOOK_LIMIT_PAGES_PER_DOCUMENT: String(config.limits.pagesPerDocument),
       OPENBOOK_LIMIT_DAILY_TRANSCRIBED_PAGES_PER_USER: String(config.limits.transcribedPagesPerUser),
       OPENBOOK_LIMIT_DAILY_TRANSCRIBED_PAGES_GLOBAL: String(config.limits.transcribedPagesGlobal),
+      OPENBOOK_DEMO_ENABLED: String(config.demo.enabled),
+      OPENBOOK_DEMO_LIMIT_VISITOR_PER_10_MIN: String(config.demo.visitorPer10Min),
+      OPENBOOK_DEMO_LIMIT_VISITOR_PER_DAY: String(config.demo.visitorPerDay),
+      OPENBOOK_DEMO_LIMIT_GLOBAL_PER_DAY: String(config.demo.globalPerDay),
       RUST_LOG: 'info',
     };
 
@@ -411,6 +415,24 @@ export class OpenbookStack extends cdk.Stack {
       code: cloudfront.FunctionCode.fromInline(spaRewriteCode),
     });
 
+    // The API origin gets these viewer headers and no others. The managed policy "all viewer except
+    // Host" cannot add CloudFront headers, and the demo needs `CloudFront-Viewer-Address` (the client
+    // address, which CloudFront sets itself and never takes from the viewer). A policy that forwards
+    // every viewer header would forward Host, and the function URL rejects a request with a wrong Host.
+    const apiOriginRequestPolicy = new cloudfront.OriginRequestPolicy(this, 'ApiOriginRequestPolicy', {
+      originRequestPolicyName: `openbook-${config.stage}-api-origin`,
+      comment: 'Viewer headers that the API reads, plus the client address for the demo limits',
+      headerBehavior: cloudfront.OriginRequestHeaderBehavior.allowList(
+        'accept',
+        'content-type',
+        'x-auth-token',
+        'x-amz-content-sha256',
+        'CloudFront-Viewer-Address',
+      ),
+      cookieBehavior: cloudfront.OriginRequestCookieBehavior.none(),
+      queryStringBehavior: cloudfront.OriginRequestQueryStringBehavior.all(),
+    });
+
     const distribution = new cloudfront.Distribution(this, 'Distribution', {
       priceClass: cloudfront.PriceClass.PRICE_CLASS_ALL,
       httpVersion: cloudfront.HttpVersion.HTTP2_AND_3,
@@ -439,7 +461,7 @@ export class OpenbookStack extends cdk.Stack {
           viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.HTTPS_ONLY,
           allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
           cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
-          originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+          originRequestPolicy: apiOriginRequestPolicy,
           // Server-sent events must not be buffered for compression.
           compress: false,
           responseHeadersPolicy,
@@ -518,6 +540,11 @@ export class OpenbookStack extends cdk.Stack {
             userPoolId: userPool.userPoolId,
             clientId: userPoolClient.userPoolClientId,
             endpoint: null,
+          },
+          demo: {
+            enabled: config.demo.enabled,
+            sources: config.demo.sources,
+            examples: config.demo.examples,
           },
         }),
       ],

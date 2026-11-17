@@ -1,3 +1,17 @@
+/** A credit line of the public demo. */
+export interface DemoSource {
+  title: string;
+  license: string;
+  url: string;
+}
+
+/** The public demo (docs/api.md, "Demo"). `enabled` false means the landing page hides it. */
+export interface DemoConfig {
+  enabled: boolean;
+  sources: DemoSource[];
+  examples: string[];
+}
+
 export interface AppConfig {
   stage: string;
   region: string;
@@ -7,6 +21,7 @@ export interface AppConfig {
     /** `null` for deployed stages. Locally it points at the Vite proxy for AWS Emulator. */
     endpoint: string | null;
   };
+  demo: DemoConfig;
 }
 
 export class ConfigError extends Error {
@@ -18,6 +33,24 @@ export class ConfigError extends Error {
 
 function isString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
+}
+
+/** The `demo` part is optional: an older file has none, and then the demo is off. */
+function parseDemo(value: unknown): DemoConfig {
+  const off: DemoConfig = { enabled: false, sources: [], examples: [] };
+  if (!value || typeof value !== 'object') return off;
+  const d = value as Partial<Record<keyof DemoConfig, unknown>>;
+  if (d.enabled !== true) return off;
+  const sources = Array.isArray(d.sources)
+    ? d.sources.flatMap((s: unknown) => {
+        const x = s as Partial<DemoSource> | null;
+        return x && isString(x.title) && isString(x.license) && isString(x.url)
+          ? [{ title: x.title, license: x.license, url: x.url }]
+          : [];
+      })
+    : [];
+  const examples = Array.isArray(d.examples) ? d.examples.filter(isString) : [];
+  return { enabled: true, sources, examples };
 }
 
 /** Check that a parsed JSON value has the shape in docs/api.md. */
@@ -37,6 +70,7 @@ export function parseConfig(value: unknown): AppConfig {
     stage: v.stage,
     region: v.region,
     cognito: { userPoolId: c.userPoolId, clientId: c.clientId, endpoint: c.endpoint ?? null },
+    demo: parseDemo((v as { demo?: unknown }).demo),
   };
 }
 

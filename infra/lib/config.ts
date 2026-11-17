@@ -1,3 +1,4 @@
+import * as fs from 'fs';
 import * as path from 'path';
 import type { Node } from 'constructs';
 import { assertEmbeddingModel, assertTranscribeModel, validateCatalog, type Catalog } from './catalog';
@@ -31,6 +32,28 @@ export interface DomainConfig {
   hostedZoneName: string;
 }
 
+/** One credit line of the demo, as the public web config shows it. */
+export interface DemoSource {
+  title: string;
+  license: string;
+  url: string;
+}
+
+/**
+ * The public demo (docs/api.md, "Demo"). The sources and the example questions come from
+ * `demo/course.json`, the same manifest that `make demo-provision` loads, so the landing page
+ * and the demo course cannot disagree.
+ */
+export interface DemoConfig {
+  /** The kill switch. Off means the API returns 404 and the landing page hides the demo. */
+  enabled: boolean;
+  visitorPer10Min: number;
+  visitorPerDay: number;
+  globalPerDay: number;
+  sources: DemoSource[];
+  examples: string[];
+}
+
 export interface OpenbookConfig {
   stage: Stage;
   apiAssetDir: string;
@@ -41,6 +64,7 @@ export interface OpenbookConfig {
   transcribeModel: string;
   embeddingModelId: string;
   limits: Limits;
+  demo: DemoConfig;
   domain?: DomainConfig;
 }
 
@@ -78,6 +102,47 @@ function limit(node: Node, stage: Stage, key: string, fallback: number): number 
   const n = typeof value === 'number' ? value : Number(value);
   if (!Number.isInteger(n) || n <= 0) throw new Error(`context ${key} must be a positive integer`);
   return n;
+}
+
+/** The demo limits when the context says nothing: 5 questions per visitor per 10 minutes, 20 a day. */
+export const defaultDemoLimits = { visitorPer10Min: 5, visitorPerDay: 20, globalPerDay: 100 };
+
+/**
+ * The kill switch comes from, in order: the context key `demoEnabled` (`-c demoEnabled=true`), the
+ * stage defaults in cdk.json (`stageDemo.<stage>.enabled`), and off.
+ */
+function demoEnabled(node: Node, stage: Stage): boolean {
+  const stageDemo = node.tryGetContext('stageDemo') as Record<string, Record<string, unknown>> | undefined;
+  const value: unknown = node.tryGetContext('demoEnabled') ?? stageDemo?.[stage]?.enabled;
+  if (value === undefined || value === null || value === '') return false;
+  if (value === true || value === 'true') return true;
+  if (value === false || value === 'false') return false;
+  throw new Error('context demoEnabled must be true or false');
+}
+
+/** Reads the credits and the example questions from the demo manifest. */
+function demoManifest(node: Node): { sources: DemoSource[]; examples: string[] } {
+  const file = path.resolve(infraRoot, str(node, 'demoManifest') ?? '../demo/course.json');
+  let manifest: { sources?: { attribution?: Record<string, unknown> }[]; examples?: unknown[] };
+  try {
+    manifest = JSON.parse(fs.readFileSync(file, 'utf8')) as typeof manifest;
+  } catch (error) {
+    throw new Error(`cannot read the demo manifest ${file}: ${String(error)}`);
+  }
+  const sources = (manifest.sources ?? []).map((source) => {
+    const a = source.attribution ?? {};
+    const { title, license, sourceUrl } = a;
+    if (typeof title !== 'string' || typeof license !== 'string' || typeof sourceUrl !== 'string' || !sourceUrl.startsWith('https://')) {
+      throw new Error('every source of the demo manifest needs a title, a license, and an https sourceUrl');
+    }
+    return { title, license, url: sourceUrl };
+  });
+  const examples = manifest.examples ?? [];
+  if (sources.length === 0) throw new Error('the demo manifest needs at least one source');
+  if (examples.length < 4 || examples.length > 6 || examples.some((e) => typeof e !== 'string' || e.trim() === '')) {
+    throw new Error('the demo manifest needs 4 to 6 example questions');
+  }
+  return { sources, examples: examples as string[] };
 }
 
 const dnsName = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
@@ -151,6 +216,13 @@ export function resolveConfig(node: Node): OpenbookConfig {
       pagesPerDocument: limit(node, stage, 'limitPagesPerDocument', defaultLimits.pagesPerDocument),
       transcribedPagesPerUser: limit(node, stage, 'limitDailyTranscribedPagesPerUser', defaultLimits.transcribedPagesPerUser),
       transcribedPagesGlobal: limit(node, stage, 'limitDailyTranscribedPagesGlobal', defaultLimits.transcribedPagesGlobal),
+    },
+    demo: {
+      enabled: demoEnabled(node, stage),
+      visitorPer10Min: limit(node, stage, 'limitDemoVisitorPer10Min', defaultDemoLimits.visitorPer10Min),
+      visitorPerDay: limit(node, stage, 'limitDemoVisitorPerDay', defaultDemoLimits.visitorPerDay),
+      globalPerDay: limit(node, stage, 'limitDemoGlobalPerDay', defaultDemoLimits.globalPerDay),
+      ...demoManifest(node),
     },
     ...(domain ? { domain } : {}),
   };

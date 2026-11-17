@@ -2442,6 +2442,8 @@ dependencies = [
  "aws-sdk-sqs",
  "axum",
  "base64 0.23.1",
+ "chrono",
+ "futures",
  "http-body-util",
  "openbook-api",
  "openbook-core",

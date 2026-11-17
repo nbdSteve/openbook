@@ -15,8 +15,10 @@ use aws_sdk_dynamodb::types::AttributeValue;
 use axum::Router;
 use axum::http::{Method, StatusCode};
 use openbook_core::config::{Config, Service};
+use openbook_core::demo::{self, DemoConversations};
 use openbook_core::files::Files;
 use openbook_core::model::{ChatModel, ChatRequest, FakeChat, ModelError, ModelStream};
+use openbook_core::prompt::{NOT_COVERED_NOTICE, REWRITE_SYSTEM_PROMPT};
 use openbook_core::queue::IngestQueue;
 use openbook_core::store::Store;
 use openbook_demo::{DemoError, Loaded, Outcome, Provisioner};
@@ -96,7 +98,6 @@ fn write_manifest(dir: &Path, biology_pages: &[&[&str]]) {
     std::fs::write(dir.join("biology.pdf"), make_pdf(biology_pages)).unwrap();
     let manifest = json!({
         "name": "Test demo", "description": "Geometry and biology.", "tutoringStyle": "direct",
-        "coverage": "geometry and photosynthesis",
         "examples": [
             "What does the Pythagorean theorem say?", "What is photosynthesis?",
             "What is a right triangle?", "What do chloroplasts do?"
@@ -108,6 +109,11 @@ fn write_manifest(dir: &Path, biology_pages: &[&[&str]]) {
     });
     std::fs::write(dir.join("course.json"), manifest.to_string()).unwrap();
 }
+
+const PRICED_MODELS: &str = r#"[
+  {"id":"fake-a","label":"Fake Sonnet","vendor":"openbook","provider":"fake","modelId":"fake-a","residency":"au","maxOutputTokens":2000,"vision":true,"inputUsdPerMillion":3,"outputUsdPerMillion":15},
+  {"id":"fake-b","label":"Fake Haiku","vendor":"openbook","provider":"fake","modelId":"fake-b","residency":"au","maxOutputTokens":2000,"vision":true,"inputUsdPerMillion":1,"outputUsdPerMillion":5}
+]"#;
 
 struct Demo {
     app: TestApp,
@@ -125,6 +131,10 @@ async fn demo_env() -> Demo {
     write_manifest(dir.path(), &[BIOLOGY]);
 
     let mut vars = app.vars().clone();
+    // The default chat model answers, the fast model rewrites follow-ups, and both have prices.
+    vars.insert("OPENBOOK_MODELS".into(), PRICED_MODELS.into());
+    vars.insert("OPENBOOK_DEFAULT_CHAT_MODEL".into(), "fake-a".into());
+    vars.insert("OPENBOOK_FAST_MODEL".into(), "fake-b".into());
     vars.insert(
         "OPENBOOK_PDFIUM_PATH".into(),
         std::env::var("OPENBOOK_PDFIUM_PATH").expect("OPENBOOK_PDFIUM_PATH"),
@@ -217,10 +227,6 @@ impl Demo {
             .course_id
     }
 
-    fn calls(&self) -> usize {
-        self.recorder.requests.lock().unwrap().len()
-    }
-
     /// Every item of the table except the demo counters, as `(pk, sk) -> attributes`, and the S3 keys.
     async fn snapshot(&self) -> (BTreeMap<(String, String), String>, Vec<String>) {
         let mut items = BTreeMap::new();
@@ -290,7 +296,19 @@ fn text_of(reply: &support::Reply) -> String {
         .collect()
 }
 
-async fn counter(env: &Demo, pk: &str) -> u32 {
+/// The requests that the chat model got, without the rewrites.
+fn answer_requests(env: &Demo) -> Vec<ChatRequest> {
+    env.recorder
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|r| r.system != REWRITE_SYSTEM_PROMPT)
+        .cloned()
+        .collect()
+}
+
+async fn counter(env: &Demo, pk: &str) -> u64 {
     let sks = env.app.get_item_sk_prefixes(pk).await;
     let mut total = 0;
     for sk in sks {
@@ -306,7 +324,7 @@ async fn counter(env: &Demo, pk: &str) -> u32 {
             .await
             .unwrap();
         if let Some(AttributeValue::N(n)) = out.item().and_then(|i| i.get("count")) {
-            total += n.parse::<u32>().unwrap();
+            total += n.parse::<u64>().unwrap();
         }
     }
     total
@@ -356,7 +374,6 @@ async fn provisioning_runs_the_normal_ingestion_path() {
     let active = store.get_demo_course().await.unwrap().unwrap();
     assert_eq!(active.attribution.len(), 2);
     assert_eq!(active.attribution[0].license, "CC BY 4.0");
-    assert_eq!(active.examples.len(), 4);
     assert!(store.get_pending_demo_course().await.unwrap().is_none());
 }
 
@@ -491,53 +508,50 @@ async fn a_demo_question_streams_an_answer_with_sources_and_credits() {
 
     let sse = reply.sse();
     let meta = &sse[0].1;
+    // The default chat model answers, not the fast model.
     assert_eq!(meta["model"], "fake-a");
+    assert!(text_of(&reply).contains("from the model `fake-a`"));
+    assert!(demo::is_conversation_id(
+        meta["conversationId"].as_str().unwrap()
+    ));
     assert_eq!(meta["attribution"].as_array().unwrap().len(), 2);
     assert_eq!(meta["attribution"][0]["license"], "CC BY 4.0");
-    assert!(
-        meta.get("conversationId").is_none(),
-        "no conversation exists"
-    );
     let sources = sse[1].1["sources"].as_array().unwrap();
     assert!(sources.iter().any(|s| s["documentName"] == "geometry.pdf"));
     assert!(text_of(&reply).contains("Pythagorean"));
     assert!(sse.last().unwrap().1["stopReason"].is_string());
 
-    // One model call, one turn, the fixed output limit, and the server prompt.
-    let requests = env.recorder.requests.lock().unwrap();
+    // One model call, one turn, the catalog output limit, and the server prompt.
+    let requests = answer_requests(&env);
     assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].turns.len(), 1, "single turn");
+    assert_eq!(requests[0].turns.len(), 1, "first turn");
     assert_eq!(
         requests[0].turns[0].text,
         "What does the Pythagorean theorem say?"
     );
-    assert_eq!(requests[0].max_tokens, Some(700));
+    assert_eq!(requests[0].max_tokens, Some(2000));
     assert!(requests[0].system.contains("<source n=\"1\""));
 }
 
 #[tokio::test]
 #[ignore = "needs AWS Emulator; run make test-integration"]
-async fn a_question_the_materials_do_not_cover_gets_the_fixed_reply_and_no_model_call() {
+async fn a_question_the_materials_do_not_cover_gets_a_real_answer_with_the_not_covered_notice() {
     let env = demo_env().await;
     env.provision().await;
     let router = env.router(&[]);
     let reply = ask(&router, "xyzzy plugh quux", PEER).await;
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.text);
-    assert_eq!(names(&reply).first().map(String::as_str), Some("meta"));
-    assert!(!names(&reply).contains(&"sources".to_owned()));
-    let text = text_of(&reply);
-    assert!(
-        text.contains("This demo covers geometry and photosynthesis."),
-        "{text}"
-    );
-    assert!(text.contains("- What does the Pythagorean theorem say?"));
-    assert!(text.contains("- What is photosynthesis?"));
-    let done = reply.sse().pop().unwrap();
-    assert_eq!(done.0, "done");
-    assert_eq!(done.1["stopReason"], "not_covered");
-    assert_eq!(env.calls(), 0, "no model call");
-    // The global model-call counter went back, and the visitor counters stay.
-    assert_eq!(counter(&env, "DEMO#GLOBAL").await, 0);
+    // The same events as a covered question, without the sources event.
+    let events = names(&reply);
+    assert_eq!(events.first().map(String::as_str), Some("meta"));
+    assert!(!events.contains(&"sources".to_owned()));
+    assert_eq!(events.last().map(String::as_str), Some("done"));
+    // The model was called, like in the course chat, with the normal notice.
+    let requests = answer_requests(&env);
+    assert_eq!(requests.len(), 1, "the model answers");
+    assert!(requests[0].system.contains(NOT_COVERED_NOTICE));
+    assert!(!requests[0].system.contains("<source n="));
+    assert!(text_of(&reply).contains("do not cover this question"));
 }
 
 #[tokio::test]
@@ -554,8 +568,10 @@ async fn input_checks_reject_bad_requests_before_anything_is_counted() {
     // Extra fields: no history, no model, no limits from the client.
     for body in [
         json!({"message": "hi", "history": [{"role": "user", "content": "x"}]}),
+        json!({"message": "hi", "messages": []}),
         json!({"message": "hi", "model": "fake-b"}),
         json!({"message": "hi", "maxTokens": 5000}),
+        json!({"message": "hi", "conversationId": 5}),
         json!({"message": 5}),
         json!({}),
     ] {
@@ -584,7 +600,7 @@ async fn input_checks_reject_bad_requests_before_anything_is_counted() {
         "nothing was counted"
     );
     assert_eq!(env.app.items_under("DEMO#SALT").await, 0);
-    assert_eq!(env.calls(), 0);
+    assert!(env.recorder.requests.lock().unwrap().is_empty());
     // 300 characters is fine.
     let ok = ask(&router, &format!("Pythagorean {}", "a".repeat(288)), PEER).await;
     assert_eq!(ok.status, StatusCode::OK, "{}", ok.text);
@@ -631,7 +647,7 @@ async fn the_kill_switch_and_a_missing_course_and_a_missing_address() {
     assert_eq!(reply.status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(reply.error_code(), "demo_unavailable");
     assert_eq!(env.app.items_under("DEMO#GLOBAL").await, 0);
-    assert_eq!(env.calls(), 0);
+    assert!(env.recorder.requests.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -665,7 +681,11 @@ async fn the_visitor_limits_return_demo_limit() {
         (1..=600).contains(&retry),
         "retry within the window: {retry}"
     );
-    assert_eq!(env.calls(), 2, "a refused question makes no model call");
+    assert_eq!(
+        answer_requests(&env).len(),
+        2,
+        "a refused question makes no model call"
+    );
     // Another visitor is fine, and the same /64 is the same visitor.
     assert_eq!(
         ask(&router, "What is photosynthesis?", "198.51.100.4:1")
@@ -713,30 +733,50 @@ async fn the_visitor_limits_return_demo_limit() {
 
 #[tokio::test]
 #[ignore = "needs AWS Emulator; run make test-integration"]
-async fn the_global_limit_counts_model_calls_only_and_returns_demo_busy() {
+async fn the_daily_budget_refunds_what_a_turn_did_not_spend_and_then_returns_demo_busy() {
     let env = demo_env().await;
     env.provision().await;
+    // Room for a few turns: one worst-case reservation is about 0.05 US dollars, a real turn about 0.004.
     let router = env.router(&[
-        ("OPENBOOK_DEMO_LIMIT_GLOBAL_PER_DAY", "2"),
+        ("OPENBOOK_DEMO_BUDGET_USD_PER_DAY", "0.06"),
         ("OPENBOOK_DEMO_LIMIT_VISITOR_PER_10_MIN", "50"),
         ("OPENBOOK_DEMO_LIMIT_VISITOR_PER_DAY", "50"),
     ]);
-    // Fixed replies use no model call, so they never fill the global limit.
-    for _ in 0..4 {
-        let reply = ask(&router, "xyzzy plugh quux", "192.0.2.1:1").await;
+    let first = ask(&router, "What is photosynthesis?", "192.0.2.2:1").await;
+    assert_eq!(first.status, StatusCode::OK, "{}", first.text);
+    // The reservation went back: the counter holds the real cost only.
+    let spent = counter(&env, "DEMO#GLOBAL").await;
+    assert!(
+        (1..20_000).contains(&spent),
+        "settled to the real cost, not the reservation: {spent}"
+    );
+    let reserved_worst_case = 40_000;
+    assert!(spent < reserved_worst_case);
+    // Without the refund, the second turn would not fit in 0.06 US dollars.
+    let second = ask(
+        &router,
+        "What does the Pythagorean theorem say?",
+        "192.0.2.3:1",
+    )
+    .await;
+    assert_eq!(second.status, StatusCode::OK, "{}", second.text);
+
+    // Keep going until the budget cannot hold a worst-case turn.
+    let mut busy = None;
+    for visitor in 4..20 {
+        let reply = ask(
+            &router,
+            "What is photosynthesis?",
+            &format!("192.0.2.{visitor}:1"),
+        )
+        .await;
+        if reply.status == StatusCode::SERVICE_UNAVAILABLE {
+            busy = Some(reply);
+            break;
+        }
         assert_eq!(reply.status, StatusCode::OK);
-        assert_eq!(reply.sse().pop().unwrap().1["stopReason"], "not_covered");
     }
-    for visitor in ["192.0.2.2:1", "192.0.2.3:1"] {
-        assert_eq!(
-            ask(&router, "What is photosynthesis?", visitor)
-                .await
-                .status,
-            StatusCode::OK
-        );
-    }
-    let busy = ask(&router, "What is photosynthesis?", "192.0.2.4:1").await;
-    assert_eq!(busy.status, StatusCode::SERVICE_UNAVAILABLE);
+    let busy = busy.expect("the budget ran out");
     assert_eq!(busy.error_code(), "demo_busy");
     assert!(
         busy.json()["error"]["message"]
@@ -744,18 +784,19 @@ async fn the_global_limit_counts_model_calls_only_and_returns_demo_busy() {
             .unwrap()
             .contains("busy")
     );
-    assert_eq!(env.calls(), 2);
-    // A fixed reply needs no model call, but the server cannot know that before it searches, so it
-    // refuses every question while the global limit is full.
-    let again = ask(&router, "xyzzy plugh quux", "192.0.2.4:1").await;
+    // The refused visitor did not lose a question, and no model was called for the refused turn.
+    let before = answer_requests(&env).len();
+    let again = ask(&router, "What is photosynthesis?", "192.0.2.99:1").await;
     assert_eq!(again.error_code(), "demo_busy");
-    // The refused visitor did not lose a question: with room, a limit of 1 per window still allows one.
+    assert_eq!(answer_requests(&env).len(), before);
+    assert_eq!(counter(&env, "DEMO#V#").await, 0, "exact partitions only");
+    // A bigger budget lets the same visitor ask at once.
     let roomy = env.router(&[
-        ("OPENBOOK_DEMO_LIMIT_GLOBAL_PER_DAY", "3"),
+        ("OPENBOOK_DEMO_BUDGET_USD_PER_DAY", "2"),
         ("OPENBOOK_DEMO_LIMIT_VISITOR_PER_10_MIN", "1"),
     ]);
     assert_eq!(
-        ask(&roomy, "What is photosynthesis?", "192.0.2.4:1")
+        ask(&roomy, "What is photosynthesis?", "192.0.2.99:1")
             .await
             .status,
         StatusCode::OK
@@ -764,7 +805,61 @@ async fn the_global_limit_counts_model_calls_only_and_returns_demo_busy() {
 
 #[tokio::test]
 #[ignore = "needs AWS Emulator; run make test-integration"]
-async fn a_model_that_fails_to_start_gives_the_question_back() {
+async fn budget_reservations_in_the_table_are_atomic_and_start_again_each_utc_day() {
+    let env = demo_env().await;
+    let store = env.provisioner.store.clone();
+    let now = chrono::DateTime::parse_from_rfc3339("2026-11-17T23:59:58Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    // Eight turns at once try to reserve 600 of 1000. Only one can fit.
+    let attempts =
+        futures::future::join_all((0..8).map(|_| demo::reserve_budget(&store, now, 600, 1000)))
+            .await;
+    let held: Vec<_> = attempts.into_iter().map(|r| r.unwrap()).collect();
+    assert_eq!(
+        held.iter().filter(|h| h.is_some()).count(),
+        1,
+        "no overspend"
+    );
+    assert_eq!(counter(&env, "DEMO#GLOBAL").await, 600);
+    // Settling with the real cost gives the rest back, so two more of 400 fit and a third does not.
+    let held = held.into_iter().flatten().next().unwrap();
+    held.settle(&store, 100).await;
+    assert_eq!(counter(&env, "DEMO#GLOBAL").await, 100);
+    let more =
+        futures::future::join_all((0..3).map(|_| demo::reserve_budget(&store, now, 450, 1000)))
+            .await;
+    assert_eq!(
+        more.iter()
+            .filter(|r| r.as_ref().unwrap().is_some())
+            .count(),
+        2
+    );
+    assert_eq!(counter(&env, "DEMO#GLOBAL").await, 1000);
+    // A refund never goes below zero, and an overrun is charged.
+    let counter_item = demo::budget_counter(now);
+    use openbook_core::demo::DemoCounters;
+    store.release(&counter_item, 5000).await.unwrap();
+    assert_eq!(counter(&env, "DEMO#GLOBAL").await, 0);
+    store.charge(&counter_item, 7).await.unwrap();
+    assert_eq!(counter(&env, "DEMO#GLOBAL").await, 7);
+    // Two seconds later it is the next UTC day, and the budget is whole again.
+    let next = now + chrono::Duration::seconds(2);
+    assert!(
+        demo::reserve_budget(&store, next, 1000, 1000)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(
+        env.app.get_item_sk_prefixes("DEMO#GLOBAL").await,
+        vec!["D#2026-11-17".to_owned(), "D#2026-11-18".to_owned()]
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs AWS Emulator; run make test-integration"]
+async fn a_model_that_fails_to_start_gives_the_question_and_the_money_back() {
     let env = demo_env().await;
     env.provision().await;
     let router = env.router(&[]);
@@ -778,7 +873,13 @@ async fn a_model_that_fails_to_start_gives_the_question_back() {
     let last = reply.sse().pop().unwrap();
     assert_eq!(last.0, "error");
     assert_eq!(last.1["code"], "model_unavailable");
-    assert_eq!(counter(&env, "DEMO#GLOBAL").await, 0);
+    // Only the query embedding cost anything, and the visitor keeps the question.
+    assert!(counter(&env, "DEMO#GLOBAL").await < 100);
+    let partitions = env.app.get_item_sk_prefixes("DEMO#GLOBAL").await;
+    assert_eq!(partitions.len(), 1);
+    // A turn that failed leaves no conversation behind.
+    let (items, _) = env.snapshot().await;
+    assert!(items.keys().all(|(pk, _)| !pk.starts_with("DEMO#CONV#")));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -787,12 +888,12 @@ async fn a_model_that_fails_to_start_gives_the_question_back() {
 
 #[tokio::test]
 #[ignore = "needs AWS Emulator; run make test-integration"]
-async fn the_demo_route_writes_only_limit_counters_and_the_salt() {
+async fn the_demo_route_writes_only_demo_items_and_no_s3_object() {
     let env = demo_env().await;
     env.provision().await;
     let router = env.router(&[("OPENBOOK_DEMO_LIMIT_VISITOR_PER_10_MIN", "3")]);
     let (before, objects) = env.snapshot().await;
-    // An answer, a fixed reply, a refusal by the limit, and bad input.
+    // Answers, a refusal by the limit, and bad input.
     assert_eq!(
         ask(&router, "What does the Pythagorean theorem say?", PEER)
             .await
@@ -820,11 +921,14 @@ async fn the_demo_route_writes_only_limit_counters_and_the_salt() {
     }
     for key in after.keys().filter(|k| !before.contains_key(*k)) {
         assert!(
-            key.0.starts_with("DEMO#V#") || key.0 == "DEMO#GLOBAL" || key.0 == "DEMO#SALT",
+            key.0.starts_with("DEMO#V#")
+                || key.0.starts_with("DEMO#CONV#")
+                || key.0 == "DEMO#GLOBAL"
+                || key.0 == "DEMO#SALT",
             "the demo route wrote {key:?}"
         );
     }
-    // No conversation, message, question, or usage item exists for anyone.
+    // No user, conversation, question, or usage item exists for anyone.
     assert!(
         after
             .keys()
@@ -834,6 +938,257 @@ async fn the_demo_route_writes_only_limit_counters_and_the_salt() {
         after
             .keys()
             .all(|(_, sk)| !sk.starts_with("Q#") && !sk.starts_with("USAGE#"))
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs AWS Emulator; run make test-integration"]
+async fn a_follow_up_uses_the_conversation_that_the_server_kept() {
+    let env = demo_env().await;
+    env.provision().await;
+    let router = env.router(&[]);
+    let first = ask(&router, "What does the Pythagorean theorem say?", PEER).await;
+    assert_eq!(first.status, StatusCode::OK, "{}", first.text);
+    let id = first.sse()[0].1["conversationId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(demo::is_conversation_id(&id));
+    assert_eq!(id.len(), 48, "192 bits");
+
+    let second = send_anonymous(
+        &router,
+        "/api/demo/chat",
+        Some(json!({"message": "And how do builders use it?", "conversationId": id})),
+        Some(PEER),
+        &[],
+    )
+    .await;
+    assert_eq!(second.status, StatusCode::OK, "{}", second.text);
+    assert_eq!(
+        second.sse()[0].1["conversationId"],
+        id.as_str(),
+        "the same conversation"
+    );
+    // The server sent the earlier turn to the model: question, answer, question.
+    let answers = answer_requests(&env);
+    assert_eq!(answers.len(), 2);
+    let turns = &answers[1].turns;
+    assert_eq!(turns.len(), 3);
+    assert_eq!(turns[0].text, "What does the Pythagorean theorem say?");
+    assert!(turns[1].text.contains("Pythagorean"));
+    assert_eq!(turns[2].text, "And how do builders use it?");
+
+    // The conversation is stored for 24 hours, with two turns.
+    let stored = env.provisioner.store.load(&id).await.unwrap().unwrap();
+    assert_eq!(stored.turns, 2);
+    assert_eq!(stored.messages.len(), 4);
+    let in_a_day = chrono_now() + 24 * 3600;
+    assert!(
+        (stored.expires_at - in_a_day).abs() < 120,
+        "{}",
+        stored.expires_at
+    );
+    // It has no user, no GSI key, and every message expires with it.
+    let pk = format!("DEMO#CONV#{id}");
+    for item in env
+        .app
+        .dynamodb
+        .query()
+        .table_name(&env.app.table)
+        .key_condition_expression("pk = :pk")
+        .expression_attribute_values(":pk", AttributeValue::S(pk))
+        .send()
+        .await
+        .unwrap()
+        .items()
+    {
+        assert!(!item.contains_key("gsi1pk") && !item.contains_key("gsi1sk"));
+        assert!(!item.contains_key("userId"));
+        assert_eq!(
+            item.get("ttl"),
+            Some(&AttributeValue::N(stored.expires_at.to_string()))
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs AWS Emulator; run make test-integration"]
+async fn an_unknown_forged_or_expired_conversation_starts_fresh() {
+    let env = demo_env().await;
+    env.provision().await;
+    let router = env.router(&[]);
+    let first = ask(&router, "What does the Pythagorean theorem say?", PEER).await;
+    let id = first.sse()[0].1["conversationId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let with = |conversation_id: String| {
+        let router = router.clone();
+        async move {
+            send_anonymous(
+                &router,
+                "/api/demo/chat",
+                Some(json!({"message": "What is photosynthesis?", "conversationId": conversation_id})),
+                Some(PEER),
+                &[],
+            )
+            .await
+        }
+    };
+    // A guessed ID, a wrong shape, and an upper-case copy never reach the stored conversation.
+    for forged in [
+        "0".repeat(48),
+        id[..47].to_owned(),
+        id.to_uppercase(),
+        format!("{id}0"),
+        "../../../etc/passwd".to_owned(),
+    ] {
+        let reply = with(forged.clone()).await;
+        assert_eq!(reply.status, StatusCode::OK, "{forged}: {}", reply.text);
+        let new_id = reply.sse()[0].1["conversationId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert_ne!(new_id, id);
+        assert!(demo::is_conversation_id(&new_id));
+    }
+    for request in answer_requests(&env).iter().skip(1) {
+        assert_eq!(request.turns.len(), 1, "no history from a forged ID");
+    }
+
+    // After the TTL the conversation is gone, even if DynamoDB still holds the item.
+    env.app
+        .dynamodb
+        .update_item()
+        .table_name(&env.app.table)
+        .key("pk", AttributeValue::S(format!("DEMO#CONV#{id}")))
+        .key("sk", AttributeValue::S("META".into()))
+        .update_expression("SET #ttl = :past")
+        .expression_attribute_names("#ttl", "ttl")
+        .expression_attribute_values(":past", AttributeValue::N((chrono_now() - 10).to_string()))
+        .send()
+        .await
+        .unwrap();
+    let reply = with(id.clone()).await;
+    assert_ne!(reply.sse()[0].1["conversationId"], id.as_str());
+    let last = answer_requests(&env).pop().unwrap();
+    assert_eq!(
+        last.turns.len(),
+        1,
+        "an expired conversation has no history"
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs AWS Emulator; run make test-integration"]
+async fn a_conversation_has_at_most_ten_turns() {
+    let env = demo_env().await;
+    env.provision().await;
+    let router = env.router(&[
+        ("OPENBOOK_DEMO_LIMIT_VISITOR_PER_10_MIN", "50"),
+        ("OPENBOOK_DEMO_LIMIT_VISITOR_PER_DAY", "50"),
+    ]);
+    let first = ask(&router, "What is photosynthesis?", PEER).await;
+    let id = first.sse()[0].1["conversationId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for turn in 2..=10 {
+        let reply = send_anonymous(
+            &router,
+            "/api/demo/chat",
+            Some(json!({"message": format!("Tell me more, part {turn}"), "conversationId": id})),
+            Some(PEER),
+            &[],
+        )
+        .await;
+        assert_eq!(
+            reply.sse()[0].1["conversationId"],
+            id.as_str(),
+            "turn {turn}"
+        );
+    }
+    assert_eq!(
+        env.provisioner
+            .store
+            .load(&id)
+            .await
+            .unwrap()
+            .unwrap()
+            .turns,
+        10
+    );
+    // The eleventh question starts a fresh conversation with a new ID and no history.
+    let eleventh = send_anonymous(
+        &router,
+        "/api/demo/chat",
+        Some(json!({"message": "One more?", "conversationId": id})),
+        Some(PEER),
+        &[],
+    )
+    .await;
+    assert_ne!(eleventh.sse()[0].1["conversationId"], id.as_str());
+    assert_eq!(answer_requests(&env).last().unwrap().turns.len(), 1);
+    assert_eq!(
+        env.provisioner
+            .store
+            .load(&id)
+            .await
+            .unwrap()
+            .unwrap()
+            .turns,
+        10
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs AWS Emulator; run make test-integration"]
+async fn demo_conversations_are_in_no_user_route() {
+    let env = demo_env().await;
+    env.provision().await;
+    let router = env.router(&[]);
+    let first = ask(&router, "What does the Pythagorean theorem say?", PEER).await;
+    let id = first.sse()[0].1["conversationId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let teacher = env.app.user("teacher").await;
+    let own = env.app.course(&teacher, "Own course").await;
+    let own_id = own["id"].as_str().unwrap().to_owned();
+    // The ID is no ULID, and it is not stored under a user, so no conversation route finds it.
+    for path in [
+        format!("/api/conversations/{id}"),
+        format!("/api/conversations/{}", openbook_core::ids::new_id()),
+    ] {
+        assert_eq!(
+            send_to(&router, Method::GET, &path, Some(&teacher.token), None)
+                .await
+                .status,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            send_to(&router, Method::DELETE, &path, Some(&teacher.token), None)
+                .await
+                .status,
+            StatusCode::NOT_FOUND
+        );
+    }
+    let list = env
+        .app
+        .get(&format!("/api/courses/{own_id}/conversations"), &teacher)
+        .await
+        .json();
+    assert_eq!(list["conversations"].as_array().unwrap().len(), 0);
+    // No GSI query by user finds it either.
+    let (items, _) = env.snapshot().await;
+    assert!(items.keys().any(|(pk, _)| pk == &format!("DEMO#CONV#{id}")));
+    assert!(
+        items
+            .iter()
+            .filter(|((pk, _), _)| pk.starts_with("DEMO#CONV#"))
+            .all(|(_, v)| !v.contains("gsi1pk"))
     );
 }
 
@@ -928,9 +1283,10 @@ async fn the_salt_is_daily_and_no_address_or_hash_is_stored_or_logged() {
         logs.contains("outcome=done") || logs.contains("outcome=\"done\""),
         "{logs}"
     );
-    assert!(logs.contains("outcome=\"not_covered\""), "{logs}");
     assert!(
-        logs.contains("duration_ms=") && logs.contains("input_tokens="),
+        logs.contains("duration_ms=")
+            && logs.contains("input_tokens=")
+            && logs.contains("cost_micro_usd="),
         "{logs}"
     );
     assert!(!logs.contains("203.0.113"), "the address is logged: {logs}");

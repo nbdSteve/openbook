@@ -21,8 +21,9 @@ pub enum ChatEvent {
         title: String,
         model: String,
     },
-    /// The `meta` event of a demo answer: no conversation exists, so it has the model and the credits.
+    /// The `meta` event of a demo answer: no conversation exists, so it has the ID of the demo conversation, the model, and the credits.
     DemoMeta {
+        conversation_id: String,
         model: String,
         attribution: Vec<openbook_core::demo::Attribution>,
     },
@@ -69,9 +70,15 @@ impl ChatEvent {
                 "title": title,
                 "model": model,
             }),
-            ChatEvent::DemoMeta { model, attribution } => {
-                json!({ "model": model, "attribution": attribution })
-            }
+            ChatEvent::DemoMeta {
+                conversation_id,
+                model,
+                attribution,
+            } => json!({
+                "conversationId": conversation_id,
+                "model": model,
+                "attribution": attribution,
+            }),
             ChatEvent::Sources { sources } => json!({ "sources": sources }),
             ChatEvent::Delta { text } => json!({ "text": text }),
             ChatEvent::Done { usage, stop_reason } => json!({

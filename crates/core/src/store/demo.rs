@@ -5,13 +5,19 @@ use async_trait::async_trait;
 use aws_sdk_dynamodb::primitives::Blob;
 use aws_sdk_dynamodb::types::AttributeValue;
 
+use aws_sdk_dynamodb::types::{Put, TransactWriteItem, Update};
+
 use super::{
-    CourseItem, Item, META_SK, Store, StoreError, course_pk, from_item, internal,
+    CourseItem, Item, META_SK, Query, Store, StoreError, cancel_is, course_pk, from_item, internal,
     is_conditional_failure, n, s, to_item,
 };
-use crate::demo::{Counter, DemoCounters, DemoCourse, OWNER_ID, SALT_BYTES, SaltStore};
-use crate::domain::{CourseRecord, TutoringStyle};
+use crate::demo::{
+    Counter, DemoConversations, DemoCounters, DemoCourse, MAX_TURNS, OWNER_ID, SALT_BYTES,
+    SaltStore, StoredConversation,
+};
+use crate::domain::{CourseRecord, MessageRole, TutoringStyle};
 use crate::ids;
+use crate::prompt::HISTORY_WINDOW;
 
 /// The reserved partition of the course pointer.
 const COURSE_PK: &str = "DEMO#COURSE";
@@ -163,22 +169,31 @@ impl SaltStore for Store {
 
 #[async_trait]
 impl DemoCounters for Store {
-    async fn reserve(&self, counter: &Counter, limit: u32) -> Result<bool, StoreError> {
+    async fn reserve(
+        &self,
+        counter: &Counter,
+        amount: u64,
+        limit: u64,
+    ) -> Result<bool, StoreError> {
+        // The sum stays at or below the limit: `count <= limit - amount`, or no count yet.
+        let Some(room) = limit.checked_sub(amount) else {
+            return Ok(false);
+        };
         let result = self
             .client
             .update_item()
             .table_name(&self.table)
             .key("pk", s(&counter.pk))
             .key("sk", s(&counter.sk))
-            .update_expression("SET #type = :type, #ttl = if_not_exists(#ttl, :ttl) ADD #c :one")
-            .condition_expression("attribute_not_exists(#c) OR #c < :limit")
+            .update_expression("SET #type = :type, #ttl = if_not_exists(#ttl, :ttl) ADD #c :amount")
+            .condition_expression("attribute_not_exists(#c) OR #c <= :room")
             .expression_attribute_names("#type", "type")
             .expression_attribute_names("#ttl", "ttl")
             .expression_attribute_names("#c", "count")
             .expression_attribute_values(":type", s("demo_counter"))
             .expression_attribute_values(":ttl", n(counter.expires_at))
-            .expression_attribute_values(":one", n(1))
-            .expression_attribute_values(":limit", n(limit))
+            .expression_attribute_values(":amount", n(amount))
+            .expression_attribute_values(":room", n(room))
             .send()
             .await;
         match result {
@@ -188,24 +203,166 @@ impl DemoCounters for Store {
         }
     }
 
-    async fn release(&self, counter: &Counter) -> Result<(), StoreError> {
-        let result = self
+    async fn release(&self, counter: &Counter, amount: u64) -> Result<(), StoreError> {
+        if amount == 0 {
+            return Ok(());
+        }
+        // Never below zero: when less than `amount` is left, set it to zero.
+        let first = self
             .client
             .update_item()
             .table_name(&self.table)
             .key("pk", s(&counter.pk))
             .key("sk", s(&counter.sk))
-            .update_expression("ADD #c :minusOne")
-            .condition_expression("#c > :zero")
+            .update_expression("SET #c = #c - :amount")
+            .condition_expression("#c >= :amount")
             .expression_attribute_names("#c", "count")
-            .expression_attribute_values(":minusOne", n(-1))
-            .expression_attribute_values(":zero", n(0))
+            .expression_attribute_values(":amount", n(amount))
+            .send()
+            .await;
+        match first {
+            Ok(_) => Ok(()),
+            Err(e) if is_conditional_failure(&e) => {
+                let zero = self
+                    .client
+                    .update_item()
+                    .table_name(&self.table)
+                    .key("pk", s(&counter.pk))
+                    .key("sk", s(&counter.sk))
+                    .update_expression("SET #c = :zero")
+                    .condition_expression("attribute_exists(#c)")
+                    .expression_attribute_names("#c", "count")
+                    .expression_attribute_values(":zero", n(0))
+                    .send()
+                    .await;
+                match zero {
+                    Ok(_) => Ok(()),
+                    // The counter is gone: nothing to give back.
+                    Err(e) if is_conditional_failure(&e) => Ok(()),
+                    Err(e) => Err(internal(e)),
+                }
+            }
+            Err(e) => Err(internal(e)),
+        }
+    }
+
+    async fn charge(&self, counter: &Counter, amount: u64) -> Result<(), StoreError> {
+        self.client
+            .update_item()
+            .table_name(&self.table)
+            .key("pk", s(&counter.pk))
+            .key("sk", s(&counter.sk))
+            .update_expression("SET #type = :type, #ttl = if_not_exists(#ttl, :ttl) ADD #c :amount")
+            .expression_attribute_names("#type", "type")
+            .expression_attribute_names("#ttl", "ttl")
+            .expression_attribute_names("#c", "count")
+            .expression_attribute_values(":type", s("demo_counter"))
+            .expression_attribute_values(":ttl", n(counter.expires_at))
+            .expression_attribute_values(":amount", n(amount))
+            .send()
+            .await
+            .map_err(internal)?;
+        Ok(())
+    }
+}
+
+fn conversation_pk(id: &str) -> String {
+    format!("DEMO#CONV#{id}")
+}
+
+#[async_trait]
+impl DemoConversations for Store {
+    async fn load(&self, id: &str) -> Result<Option<StoredConversation>, StoreError> {
+        let mut q = Query::new("pk = :pk");
+        q.values.push((":pk", s(conversation_pk(id))));
+        let items = self.query(q).await?;
+        let number = |item: &Item, name: &str| match item.get(name) {
+            Some(AttributeValue::N(v)) => v.parse::<i64>().ok(),
+            _ => None,
+        };
+        let text = |item: &Item, name: &str| match item.get(name) {
+            Some(AttributeValue::S(v)) => Some(v.clone()),
+            _ => None,
+        };
+        let Some(meta) = items
+            .iter()
+            .find(|i| text(i, "sk").as_deref() == Some("META"))
+        else {
+            return Ok(None);
+        };
+        let mut messages: Vec<(String, MessageRole, String)> = items
+            .iter()
+            .filter_map(|i| {
+                let sk = text(i, "sk")?;
+                sk.starts_with("M#").then_some(())?;
+                let role = match text(i, "role")?.as_str() {
+                    "user" => MessageRole::User,
+                    "assistant" => MessageRole::Assistant,
+                    _ => return None,
+                };
+                Some((sk, role, text(i, "content")?))
+            })
+            .collect();
+        messages.sort_by(|a, b| a.0.cmp(&b.0));
+        let keep = messages.len().saturating_sub(HISTORY_WINDOW);
+        Ok(Some(StoredConversation {
+            turns: u32::try_from(number(meta, "turns").unwrap_or(0)).unwrap_or(0),
+            expires_at: number(meta, "ttl").unwrap_or(0),
+            messages: messages
+                .into_iter()
+                .skip(keep)
+                .map(|(_, role, content)| (role, content))
+                .collect(),
+        }))
+    }
+
+    async fn append(
+        &self,
+        id: &str,
+        question: &str,
+        answer: &str,
+        expires_at: i64,
+    ) -> Result<bool, StoreError> {
+        let pk = conversation_pk(id);
+        let meta = Update::builder()
+            .table_name(&self.table)
+            .key("pk", s(&pk))
+            .key("sk", s("META"))
+            .update_expression("SET #type = :type, #ttl = if_not_exists(#ttl, :ttl) ADD turns :one")
+            .condition_expression("attribute_not_exists(turns) OR turns < :max")
+            .expression_attribute_names("#type", "type")
+            .expression_attribute_names("#ttl", "ttl")
+            .expression_attribute_values(":type", s("demo_conversation"))
+            .expression_attribute_values(":ttl", n(expires_at))
+            .expression_attribute_values(":one", n(1))
+            .expression_attribute_values(":max", n(MAX_TURNS))
+            .build()
+            .map_err(internal)?;
+        let message = |role: &str, content: &str| -> Result<TransactWriteItem, StoreError> {
+            let put = Put::builder()
+                .table_name(&self.table)
+                .item("pk", s(&pk))
+                // IDs from one process increase, so the question sorts before the answer.
+                .item("sk", s(format!("M#{}", ids::new_id())))
+                .item("type", s("demo_message"))
+                .item("role", s(role))
+                .item("content", s(content))
+                .item("ttl", n(expires_at))
+                .build()
+                .map_err(internal)?;
+            Ok(TransactWriteItem::builder().put(put).build())
+        };
+        let result = self
+            .client
+            .transact_write_items()
+            .transact_items(TransactWriteItem::builder().update(meta).build())
+            .transact_items(message("user", question)?)
+            .transact_items(message("assistant", answer)?)
             .send()
             .await;
         match result {
-            Ok(_) => Ok(()),
-            // The counter is already at zero or gone.
-            Err(e) if is_conditional_failure(&e) => Ok(()),
+            Ok(_) => Ok(true),
+            Err(e) if cancel_is(&e, 0, "ConditionalCheckFailed") => Ok(false),
             Err(e) => Err(internal(e)),
         }
     }

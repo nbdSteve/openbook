@@ -2,7 +2,6 @@
   "name": "Openbook demo course",
   "description": "Short excerpts from two OpenStax open textbooks: College Algebra (exponents, quadratic equations, functions, and exponential functions) and American Government 2e (the roots of the Constitution and federalism).",
   "tutoringStyle": "direct",
-  "coverage": "exponents and scientific notation, quadratic equations, functions, exponential functions, the roots of the US Constitution, and federalism",
   "examples": [
     "What is the product rule of exponents?",
     "What was the Great Compromise?",

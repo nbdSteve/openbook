@@ -1,8 +1,9 @@
 //! The public demo: anonymous questions about one demo course (`docs/api.md`, "Demo").
 //!
-//! This module holds the parts that need no AWS call and are easy to test: the visitor ID, the three
-//! limits, the fixed reply, and the types of the reserved DynamoDB item. `Store` implements the
-//! counters and the salt with DynamoDB (`store/demo.rs`).
+//! This module holds the parts that need no AWS call and are easy to test: the visitor ID, the
+//! per-visitor limits, the daily budget in US dollars, the conversation rules, and the types of the
+//! reserved DynamoDB item. `Store` implements the counters, the salt, and the conversations with
+//! DynamoDB (`store/demo.rs`).
 
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::sync::Mutex;
@@ -14,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
 use crate::config::DemoConfig;
+use crate::domain::MessageRole;
 use crate::quota::usage_date;
 use crate::store::StoreError;
 
@@ -22,16 +24,18 @@ use crate::store::StoreError;
 pub const OWNER_ID: &str = "demo";
 /// The longest question, in characters after trim.
 pub const MAX_MESSAGE_CHARS: usize = 300;
-/// The output limit of a demo answer. The server fixes it.
-pub const MAX_OUTPUT_TOKENS: i32 = 700;
 /// The length of the short window of the per-visitor limit.
 pub const WINDOW_SECONDS: i64 = 600;
 /// Counters and salts expire this long after the day they belong to starts.
 const DAY_ITEM_TTL_SECONDS: i64 = 2 * 24 * 3600;
 /// The size of the daily salt.
 pub const SALT_BYTES: usize = 32;
-/// The stop reason of a fixed reply (no model call).
-pub const NOT_COVERED_STOP_REASON: &str = "not_covered";
+/// A demo conversation expires this long after its first turn.
+pub const CONVERSATION_TTL_SECONDS: i64 = 24 * 3600;
+/// A demo conversation has at most this many turns (a question and its answer).
+pub const MAX_TURNS: u32 = 10;
+/// The size of the random part of a conversation ID.
+pub const CONVERSATION_ID_BYTES: usize = 24;
 
 /// Where a demo source comes from, for the credit line in the UI. The licence needs it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,24 +60,8 @@ pub struct DemoCourse {
     pub course_id: String,
     /// Hash of the manifest and the PDFs. The same value means the same content.
     pub fingerprint: String,
-    /// What the course covers, as part of a sentence: "exponents and quadratic equations".
-    pub coverage: String,
-    /// Two example questions for the fixed reply.
-    pub examples: Vec<String>,
     pub attribution: Vec<Attribution>,
     pub provisioned_at: String,
-}
-
-/// The fixed reply for a question that the materials do not cover. It makes no model call.
-pub fn not_covered_reply(coverage: &str, examples: &[String]) -> String {
-    let mut reply =
-        format!("I could not find that in the demo course materials. This demo covers {coverage}.");
-    if !examples.is_empty() {
-        reply.push_str(" Try one of these questions:\n\n");
-        let lines: Vec<String> = examples.iter().take(2).map(|e| format!("- {e}")).collect();
-        reply.push_str(&lines.join("\n"));
-    }
-    reply
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -212,25 +200,23 @@ pub struct Counter {
     pub expires_at: i64,
 }
 
-/// Which limit stopped a question.
+/// Which per-visitor limit stopped a question.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LimitHit {
     /// The visitor asked too often in the last 10 minutes.
     VisitorWindow,
     /// The visitor used all of today's questions.
     VisitorDay,
-    /// The whole demo used all of today's model calls.
-    Global,
 }
 
 impl LimitHit {
     /// How long until this visitor can ask again: the end of the 10-minute window, or midnight UTC.
-    /// Always at least 1. The global limit has no better answer than the time to midnight.
+    /// Always at least 1.
     pub fn retry_after_seconds(self, now: DateTime<Utc>) -> u64 {
         let ts = now.timestamp();
         let seconds = match self {
             LimitHit::VisitorWindow => (ts.div_euclid(WINDOW_SECONDS) + 1) * WINDOW_SECONDS - ts,
-            LimitHit::VisitorDay | LimitHit::Global => 86_400 - ts.rem_euclid(86_400),
+            LimitHit::VisitorDay => 86_400 - ts.rem_euclid(86_400),
         };
         u64::try_from(seconds.max(1)).unwrap_or(1)
     }
@@ -239,33 +225,34 @@ impl LimitHit {
         match self {
             LimitHit::VisitorWindow => "visitor_window",
             LimitHit::VisitorDay => "visitor_day",
-            LimitHit::Global => "global_day",
         }
     }
 }
 
-/// The counters behind the limits. `Store` implements it with DynamoDB.
+/// The counters behind the limits and the budget. `Store` implements it with DynamoDB.
+/// A counter holds a number (questions, or millionths of a US dollar).
 #[async_trait]
 pub trait DemoCounters: Send + Sync {
-    /// Adds one to the counter unless it is at `limit`. Returns whether it reserved.
-    async fn reserve(&self, counter: &Counter, limit: u32) -> Result<bool, StoreError>;
-    /// Gives one reservation back.
-    async fn release(&self, counter: &Counter) -> Result<(), StoreError>;
+    /// Adds `amount` to the counter when the result stays at or below `limit`. One atomic step.
+    /// Returns whether it added.
+    async fn reserve(&self, counter: &Counter, amount: u64, limit: u64)
+    -> Result<bool, StoreError>;
+    /// Takes `amount` back (never below zero).
+    async fn release(&self, counter: &Counter, amount: u64) -> Result<(), StoreError>;
+    /// Adds `amount` with no limit. Settlement uses it when a call cost more than it reserved.
+    async fn charge(&self, counter: &Counter, amount: u64) -> Result<(), StoreError>;
 }
 
-/// The three counters of one question. Keep it to give them back.
+/// The two per-visitor counters of one question. Keep it to give them back.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Reservation {
+pub struct VisitorReservation {
     window: Counter,
     day: Counter,
-    global: Counter,
 }
 
-impl Reservation {
+impl VisitorReservation {
     fn new(visitor: &str, now: DateTime<Utc>) -> Self {
         let window = now.timestamp().div_euclid(WINDOW_SECONDS);
-        let date = usage_date(now);
-        let day_expiry = now.timestamp() + DAY_ITEM_TTL_SECONDS;
         Self {
             window: Counter {
                 pk: format!("DEMO#V#{visitor}"),
@@ -275,79 +262,221 @@ impl Reservation {
             },
             day: Counter {
                 pk: format!("DEMO#V#{visitor}"),
-                sk: format!("D#{date}"),
-                expires_at: day_expiry,
-            },
-            global: Counter {
-                pk: "DEMO#GLOBAL".to_owned(),
-                sk: format!("D#{date}"),
-                expires_at: day_expiry,
+                sk: format!("D#{}", usage_date(now)),
+                expires_at: now.timestamp() + DAY_ITEM_TTL_SECONDS,
             },
         }
     }
 
-    /// Gives the global reservation back. A question that made no model call does this.
-    pub async fn release_global(&self, counters: &dyn DemoCounters) {
-        if let Err(error) = counters.release(&self.global).await {
-            tracing::error!(%error, "could not give back the demo global reservation");
-        }
-    }
-
-    /// Gives every reservation back. A question that the model did not answer does this.
-    pub async fn release_all(&self, counters: &dyn DemoCounters) {
-        for counter in [&self.window, &self.day, &self.global] {
-            if let Err(error) = counters.release(counter).await {
-                tracing::error!(%error, "could not give back a demo reservation");
+    /// Gives both counters back. A question that the model did not answer does this.
+    pub async fn release(&self, counters: &dyn DemoCounters) {
+        for counter in [&self.window, &self.day] {
+            if let Err(error) = counters.release(counter, 1).await {
+                tracing::error!(%error, "could not give back a demo visitor reservation");
             }
         }
     }
 }
 
-/// Reserves one question: the visitor's 10-minute window, the visitor's day, then the global day.
-/// A question that hits a limit leaves no counter changed. The windows are fixed 10-minute slots.
-pub async fn reserve(
+/// Reserves one question: the visitor's 10-minute window, then the visitor's day. A question that
+/// hits a limit leaves no counter changed. The windows are fixed 10-minute slots.
+pub async fn reserve_visitor(
     counters: &dyn DemoCounters,
     visitor: &str,
     now: DateTime<Utc>,
     limits: &DemoConfig,
-) -> Result<Result<Reservation, LimitHit>, StoreError> {
-    let reservation = Reservation::new(visitor, now);
-    let steps = [
-        (
-            &reservation.window,
-            limits.visitor_per_window,
-            LimitHit::VisitorWindow,
-        ),
-        (
-            &reservation.day,
-            limits.visitor_per_day,
-            LimitHit::VisitorDay,
-        ),
-        (&reservation.global, limits.global_per_day, LimitHit::Global),
-    ];
-    let mut done: Vec<&Counter> = Vec::new();
-    for (counter, limit, hit) in steps {
-        match counters.reserve(counter, limit).await {
-            Ok(true) => done.push(counter),
-            Ok(false) => {
-                give_back(counters, &done).await;
-                return Ok(Err(hit));
+) -> Result<Result<VisitorReservation, LimitHit>, StoreError> {
+    let reservation = VisitorReservation::new(visitor, now);
+    if !counters
+        .reserve(&reservation.window, 1, u64::from(limits.visitor_per_window))
+        .await?
+    {
+        return Ok(Err(LimitHit::VisitorWindow));
+    }
+    match counters
+        .reserve(&reservation.day, 1, u64::from(limits.visitor_per_day))
+        .await
+    {
+        Ok(true) => Ok(Ok(reservation)),
+        Ok(false) => {
+            if let Err(error) = counters.release(&reservation.window, 1).await {
+                tracing::error!(%error, "could not give back a demo window reservation");
             }
-            Err(error) => {
-                give_back(counters, &done).await;
-                return Err(error);
-            }
+            Ok(Err(LimitHit::VisitorDay))
+        }
+        Err(error) => {
+            let _ = counters.release(&reservation.window, 1).await;
+            Err(error)
         }
     }
-    Ok(Ok(reservation))
 }
 
-async fn give_back(counters: &dyn DemoCounters, done: &[&Counter]) {
-    for counter in done {
-        if let Err(error) = counters.release(counter).await {
-            tracing::error!(%error, "could not give back a demo reservation");
+// ---------------------------------------------------------------------------------------------
+// The budget
+// ---------------------------------------------------------------------------------------------
+
+/// The money that one turn may still spend: a reservation on the global counter of the day.
+///
+/// The turn reserves its worst case before it calls a model, and settles with the real cost after.
+/// The counter is the sum of the settled costs and the open reservations of the day (UTC), so two
+/// turns at once can never spend more than the budget by reservation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BudgetReservation {
+    counter: Counter,
+    reserved: u64,
+}
+
+impl BudgetReservation {
+    pub fn reserved_micro_usd(&self) -> u64 {
+        self.reserved
+    }
+
+    /// Replaces the reservation with the real cost: it gives back the unused part, or charges the
+    /// part that went over the reservation (the estimate of the input was too low).
+    pub async fn settle(self, counters: &dyn DemoCounters, actual_micro_usd: u64) {
+        let result = if actual_micro_usd <= self.reserved {
+            counters
+                .release(&self.counter, self.reserved - actual_micro_usd)
+                .await
+        } else {
+            tracing::warn!(
+                reserved = self.reserved,
+                actual = actual_micro_usd,
+                "a demo turn cost more than its reservation"
+            );
+            counters
+                .charge(&self.counter, actual_micro_usd - self.reserved)
+                .await
+        };
+        if let Err(error) = result {
+            tracing::error!(%error, "could not settle the demo budget");
         }
     }
+}
+
+/// The global counter of a day: the money in millionths of a US dollar.
+pub fn budget_counter(now: DateTime<Utc>) -> Counter {
+    Counter {
+        pk: "DEMO#GLOBAL".to_owned(),
+        sk: format!("D#{}", usage_date(now)),
+        expires_at: now.timestamp() + DAY_ITEM_TTL_SECONDS,
+    }
+}
+
+/// Reserves `amount` of the day's budget. `None` means that it does not fit.
+pub async fn reserve_budget(
+    counters: &dyn DemoCounters,
+    now: DateTime<Utc>,
+    amount_micro_usd: u64,
+    budget_micro_usd: u64,
+) -> Result<Option<BudgetReservation>, StoreError> {
+    if amount_micro_usd > budget_micro_usd {
+        return Ok(None);
+    }
+    let counter = budget_counter(now);
+    if counters
+        .reserve(&counter, amount_micro_usd, budget_micro_usd)
+        .await?
+    {
+        Ok(Some(BudgetReservation {
+            counter,
+            reserved: amount_micro_usd,
+        }))
+    } else {
+        Ok(None)
+    }
+}
+
+/// An upper bound of the tokens in a text. The real count is about one token per 4 characters for
+/// English, and about one per 2 or 3 for dense LaTeX, so the bound uses 3 characters per token.
+pub fn worst_case_tokens(chars: usize) -> u64 {
+    (chars as u64).div_ceil(3)
+}
+
+/// Parses a price like `2` or `2.50` (US dollars) into millionths of a dollar.
+pub fn usd_to_micro(usd: f64) -> Option<u64> {
+    (usd.is_finite() && usd > 0.0 && usd <= 1_000_000.0).then(|| (usd * 1_000_000.0).round() as u64)
+}
+
+// ---------------------------------------------------------------------------------------------
+// Conversations
+// ---------------------------------------------------------------------------------------------
+
+/// The ID of a demo conversation: 24 random bytes (192 bits) as 48 hex characters. It is the only
+/// secret that gives access to the conversation, so it must not be guessable.
+pub fn new_conversation_id() -> Result<String, StoreError> {
+    let mut bytes = [0u8; CONVERSATION_ID_BYTES];
+    getrandom::fill(&mut bytes)
+        .map_err(|e| StoreError::Internal(format!("no random bytes: {e}")))?;
+    Ok(hex(&bytes))
+}
+
+/// True for the shape of an ID from `new_conversation_id`. Anything else is not looked up.
+pub fn is_conversation_id(id: &str) -> bool {
+    id.len() == CONVERSATION_ID_BYTES * 2
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// A stored demo conversation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredConversation {
+    /// Questions and answers so far.
+    pub turns: u32,
+    /// Epoch seconds. After this the conversation does not exist, although DynamoDB may keep the item.
+    pub expires_at: i64,
+    /// The messages, oldest first.
+    pub messages: Vec<(MessageRole, String)>,
+}
+
+/// Where demo conversations live. `Store` implements it with DynamoDB.
+#[async_trait]
+pub trait DemoConversations: Send + Sync {
+    async fn load(&self, id: &str) -> Result<Option<StoredConversation>, StoreError>;
+    /// Adds one turn. It returns false (and writes nothing) when the conversation already has
+    /// `MAX_TURNS` turns.
+    async fn append(
+        &self,
+        id: &str,
+        question: &str,
+        answer: &str,
+        expires_at: i64,
+    ) -> Result<bool, StoreError>;
+}
+
+/// The conversation that a request continues, or a fresh one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Resumed {
+    pub id: String,
+    /// The earlier messages, oldest first. Empty for a fresh conversation.
+    pub history: Vec<(MessageRole, String)>,
+    pub expires_at: i64,
+}
+
+/// Continues the conversation of `requested` when it exists, has not expired, and has room for one
+/// more turn. In every other case the request starts a fresh conversation with a new ID.
+pub async fn resume(
+    store: &dyn DemoConversations,
+    requested: Option<&str>,
+    now: DateTime<Utc>,
+) -> Result<Resumed, StoreError> {
+    if let Some(id) = requested.filter(|id| is_conversation_id(id))
+        && let Some(found) = store.load(id).await?
+        && found.expires_at > now.timestamp()
+        && found.turns < MAX_TURNS
+    {
+        return Ok(Resumed {
+            id: id.to_owned(),
+            history: found.messages,
+            expires_at: found.expires_at,
+        });
+    }
+    Ok(Resumed {
+        id: new_conversation_id()?,
+        history: Vec::new(),
+        expires_at: now.timestamp() + CONVERSATION_TTL_SECONDS,
+    })
 }
 
 #[cfg(test)]
@@ -356,15 +485,17 @@ mod tests {
 
     use super::*;
 
+    /// Counters in memory. The mutex makes each step atomic, like a conditional update.
     #[derive(Default)]
     struct Memory {
-        counts: Mutex<HashMap<(String, String), u32>>,
+        counts: Mutex<HashMap<(String, String), u64>>,
         salts: Mutex<HashMap<String, Vec<u8>>>,
         salt_calls: Mutex<u32>,
+        conversations: Mutex<HashMap<String, StoredConversation>>,
     }
 
     impl Memory {
-        fn count(&self, pk: &str, sk: &str) -> u32 {
+        fn count(&self, pk: &str, sk: &str) -> u64 {
             *self
                 .counts
                 .lock()
@@ -376,22 +507,25 @@ mod tests {
 
     #[async_trait]
     impl DemoCounters for Memory {
-        async fn reserve(&self, counter: &Counter, limit: u32) -> Result<bool, StoreError> {
+        async fn reserve(&self, c: &Counter, amount: u64, limit: u64) -> Result<bool, StoreError> {
             let mut counts = self.counts.lock().unwrap();
-            let slot = counts
-                .entry((counter.pk.clone(), counter.sk.clone()))
-                .or_insert(0);
-            if *slot >= limit {
+            let slot = counts.entry((c.pk.clone(), c.sk.clone())).or_insert(0);
+            if *slot + amount > limit {
                 return Ok(false);
             }
-            *slot += 1;
+            *slot += amount;
             Ok(true)
         }
-        async fn release(&self, counter: &Counter) -> Result<(), StoreError> {
+        async fn release(&self, c: &Counter, amount: u64) -> Result<(), StoreError> {
             let mut counts = self.counts.lock().unwrap();
-            if let Some(slot) = counts.get_mut(&(counter.pk.clone(), counter.sk.clone())) {
-                *slot = slot.saturating_sub(1);
+            if let Some(slot) = counts.get_mut(&(c.pk.clone(), c.sk.clone())) {
+                *slot = slot.saturating_sub(amount);
             }
+            Ok(())
+        }
+        async fn charge(&self, c: &Counter, amount: u64) -> Result<(), StoreError> {
+            let mut counts = self.counts.lock().unwrap();
+            *counts.entry((c.pk.clone(), c.sk.clone())).or_insert(0) += amount;
             Ok(())
         }
     }
@@ -415,6 +549,38 @@ mod tests {
         }
     }
 
+    #[async_trait]
+    impl DemoConversations for Memory {
+        async fn load(&self, id: &str) -> Result<Option<StoredConversation>, StoreError> {
+            Ok(self.conversations.lock().unwrap().get(id).cloned())
+        }
+        async fn append(
+            &self,
+            id: &str,
+            question: &str,
+            answer: &str,
+            expires_at: i64,
+        ) -> Result<bool, StoreError> {
+            let mut all = self.conversations.lock().unwrap();
+            let conversation = all.entry(id.to_owned()).or_insert(StoredConversation {
+                turns: 0,
+                expires_at,
+                messages: Vec::new(),
+            });
+            if conversation.turns >= MAX_TURNS {
+                return Ok(false);
+            }
+            conversation.turns += 1;
+            conversation
+                .messages
+                .push((MessageRole::User, question.to_owned()));
+            conversation
+                .messages
+                .push((MessageRole::Assistant, answer.to_owned()));
+            Ok(true)
+        }
+    }
+
     fn at(text: &str) -> DateTime<Utc> {
         DateTime::parse_from_rfc3339(text)
             .unwrap()
@@ -424,37 +590,36 @@ mod tests {
     fn limits() -> DemoConfig {
         DemoConfig {
             enabled: true,
-            visitor_per_window: 5,
-            visitor_per_day: 20,
-            global_per_day: 200,
+            visitor_per_window: 10,
+            visitor_per_day: 40,
+            budget_micro_usd_per_day: 2_000_000,
         }
     }
 
     #[tokio::test]
-    async fn a_visitor_gets_five_questions_in_ten_minutes() {
+    async fn a_visitor_gets_ten_questions_in_ten_minutes() {
         let memory = Memory::default();
         let now = at("2026-11-17T10:00:30Z");
-        for _ in 0..5 {
+        for _ in 0..10 {
             assert!(
-                reserve(&memory, "v1", now, &limits())
+                reserve_visitor(&memory, "v1", now, &limits())
                     .await
                     .unwrap()
                     .is_ok()
             );
         }
         assert_eq!(
-            reserve(&memory, "v1", now, &limits())
+            reserve_visitor(&memory, "v1", now, &limits())
                 .await
                 .unwrap()
                 .unwrap_err(),
             LimitHit::VisitorWindow
         );
-        // A hit changes no counter: the day and the global counter stay at 5.
-        assert_eq!(memory.count("DEMO#V#v1", "D#2026-11-17"), 5);
-        assert_eq!(memory.count("DEMO#GLOBAL", "D#2026-11-17"), 5);
+        // A hit changes no counter: the day counter stays at 10.
+        assert_eq!(memory.count("DEMO#V#v1", "D#2026-11-17"), 10);
         // Another visitor is not affected.
         assert!(
-            reserve(&memory, "v2", now, &limits())
+            reserve_visitor(&memory, "v2", now, &limits())
                 .await
                 .unwrap()
                 .is_ok()
@@ -462,7 +627,7 @@ mod tests {
         // The next window starts fresh.
         let later = at("2026-11-17T10:10:00Z");
         assert!(
-            reserve(&memory, "v1", later, &limits())
+            reserve_visitor(&memory, "v1", later, &limits())
                 .await
                 .unwrap()
                 .is_ok()
@@ -470,14 +635,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_visitor_gets_twenty_questions_a_day() {
+    async fn a_visitor_gets_forty_questions_a_day() {
         let memory = Memory::default();
         let mut now = at("2026-11-17T00:00:00Z");
-        for i in 0..20 {
+        for i in 0..40 {
             // One question every 11 minutes stays under the window limit.
             now += chrono::Duration::minutes(11);
             assert!(
-                reserve(&memory, "v1", now, &limits())
+                reserve_visitor(&memory, "v1", now, &limits())
                     .await
                     .unwrap()
                     .is_ok(),
@@ -486,45 +651,38 @@ mod tests {
         }
         now += chrono::Duration::minutes(11);
         assert_eq!(
-            reserve(&memory, "v1", now, &limits())
+            reserve_visitor(&memory, "v1", now, &limits())
                 .await
                 .unwrap()
                 .unwrap_err(),
             LimitHit::VisitorDay
         );
-        assert_eq!(memory.count("DEMO#GLOBAL", "D#2026-11-17"), 20);
+        // The refusal gave the window slot back.
+        let window = now.timestamp() / WINDOW_SECONDS;
+        assert_eq!(memory.count("DEMO#V#v1", &format!("W#{window}")), 0);
     }
 
     #[tokio::test]
-    async fn the_whole_demo_gets_a_fixed_number_of_model_calls_a_day() {
+    async fn giving_back_a_visitor_question_makes_room() {
         let memory = Memory::default();
         let now = at("2026-11-17T10:00:00Z");
         let limits = DemoConfig {
-            global_per_day: 3,
+            visitor_per_window: 1,
             ..limits()
         };
-        for visitor in ["a", "b", "c"] {
-            assert!(
-                reserve(&memory, visitor, now, &limits)
-                    .await
-                    .unwrap()
-                    .is_ok()
-            );
-        }
-        assert_eq!(
-            reserve(&memory, "d", now, &limits)
+        let first = reserve_visitor(&memory, "v", now, &limits)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            reserve_visitor(&memory, "v", now, &limits)
                 .await
                 .unwrap()
-                .unwrap_err(),
-            LimitHit::Global
+                .is_err()
         );
-        // The visitor of the refused question keeps the question for later.
-        assert_eq!(memory.count("DEMO#V#d", "D#2026-11-17"), 0);
-        let window = now.timestamp() / WINDOW_SECONDS;
-        assert_eq!(memory.count("DEMO#V#d", &format!("W#{window}")), 0);
-        // The next day has a new global counter.
+        first.release(&memory).await;
         assert!(
-            reserve(&memory, "d", at("2026-11-18T00:00:00Z"), &limits)
+            reserve_visitor(&memory, "v", now, &limits)
                 .await
                 .unwrap()
                 .is_ok()
@@ -532,21 +690,119 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn giving_back_makes_room() {
+    async fn the_budget_reserves_atomically_so_two_turns_cannot_overspend() {
+        let memory = std::sync::Arc::new(Memory::default());
+        let now = at("2026-11-17T10:00:00Z");
+        // Room for exactly one reservation of 600 out of 1000, tried by 8 turns at once.
+        let mut tasks = Vec::new();
+        for _ in 0..8 {
+            let memory = memory.clone();
+            tasks.push(tokio::spawn(async move {
+                reserve_budget(&*memory, now, 600, 1000).await.unwrap()
+            }));
+        }
+        let mut won = 0;
+        for task in tasks {
+            if task.await.unwrap().is_some() {
+                won += 1;
+            }
+        }
+        assert_eq!(won, 1, "exactly one reservation fits");
+        assert_eq!(memory.count("DEMO#GLOBAL", "D#2026-11-17"), 600);
+        // A smaller one still fits in the rest.
+        assert!(
+            reserve_budget(&*memory, now, 400, 1000)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            reserve_budget(&*memory, now, 1, 1000)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn settling_refunds_the_unused_part_and_charges_an_overrun() {
         let memory = Memory::default();
         let now = at("2026-11-17T10:00:00Z");
-        let limits = DemoConfig {
-            visitor_per_window: 1,
-            ..limits()
-        };
-        let first = reserve(&memory, "v", now, &limits).await.unwrap().unwrap();
-        // A question with no model call gives back only the global call.
-        first.release_global(&memory).await;
-        assert_eq!(memory.count("DEMO#GLOBAL", "D#2026-11-17"), 0);
-        assert_eq!(memory.count("DEMO#V#v", "D#2026-11-17"), 1);
-        assert!(reserve(&memory, "v", now, &limits).await.unwrap().is_err());
-        first.release_all(&memory).await;
-        assert!(reserve(&memory, "v", now, &limits).await.unwrap().is_ok());
+        let held = reserve_budget(&memory, now, 600, 1000)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(held.reserved_micro_usd(), 600);
+        held.settle(&memory, 150).await;
+        assert_eq!(memory.count("DEMO#GLOBAL", "D#2026-11-17"), 150);
+        // The refund made room for another.
+        let second = reserve_budget(&memory, now, 800, 1000)
+            .await
+            .unwrap()
+            .unwrap();
+        // This call cost more than it reserved: the difference is charged.
+        second.settle(&memory, 900).await;
+        assert_eq!(memory.count("DEMO#GLOBAL", "D#2026-11-17"), 150 + 900);
+        // The overrun used the room: nothing more fits today.
+        assert!(
+            reserve_budget(&memory, now, 50, 1000)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        // A call that cost nothing gives everything back.
+        let other = at("2026-11-18T10:00:00Z");
+        let third = reserve_budget(&memory, other, 50, 1000)
+            .await
+            .unwrap()
+            .unwrap();
+        third.settle(&memory, 0).await;
+        assert_eq!(memory.count("DEMO#GLOBAL", "D#2026-11-18"), 0);
+        // A reservation above the whole budget never fits.
+        assert!(
+            reserve_budget(&memory, now, 1001, 1000)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn the_budget_starts_again_every_utc_day() {
+        let memory = Memory::default();
+        let late = at("2026-11-17T23:59:59Z");
+        let held = reserve_budget(&memory, late, 1000, 1000)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            reserve_budget(&memory, late, 1, 1000)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        // One second later it is a new day with a full budget.
+        let next = at("2026-11-18T00:00:00Z");
+        assert!(
+            reserve_budget(&memory, next, 1000, 1000)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        // A turn that began before midnight settles on its own day.
+        held.settle(&memory, 100).await;
+        assert_eq!(memory.count("DEMO#GLOBAL", "D#2026-11-17"), 100);
+        assert_eq!(memory.count("DEMO#GLOBAL", "D#2026-11-18"), 1000);
+    }
+
+    #[test]
+    fn prices_and_bounds() {
+        assert_eq!(usd_to_micro(2.0), Some(2_000_000));
+        assert_eq!(usd_to_micro(0.5), Some(500_000));
+        assert_eq!(usd_to_micro(0.0), None);
+        assert_eq!(usd_to_micro(f64::NAN), None);
+        assert_eq!(worst_case_tokens(9), 3);
+        assert_eq!(worst_case_tokens(10), 4);
     }
 
     #[test]
@@ -557,7 +813,6 @@ mod tests {
             LimitHit::VisitorDay.retry_after_seconds(now),
             13 * 3600 + 56 * 60 + 30
         );
-        // The first second of a window waits a full window.
         assert_eq!(
             LimitHit::VisitorWindow.retry_after_seconds(at("2026-11-17T10:10:00Z")),
             600
@@ -571,11 +826,11 @@ mod tests {
     #[test]
     fn counters_expire() {
         let now = at("2026-11-17T10:03:00Z");
-        let r = Reservation::new("v", now);
+        let r = VisitorReservation::new("v", now);
         assert!(r.window.expires_at > now.timestamp() + WINDOW_SECONDS);
         assert!(r.window.expires_at <= now.timestamp() + 3 * WINDOW_SECONDS);
         assert_eq!(r.day.expires_at, now.timestamp() + DAY_ITEM_TTL_SECONDS);
-        assert_eq!(r.global.expires_at, r.day.expires_at);
+        assert_eq!(budget_counter(now).expires_at, r.day.expires_at);
     }
 
     #[tokio::test]
@@ -667,23 +922,73 @@ mod tests {
     }
 
     #[test]
-    fn the_fixed_reply_names_the_topics_and_two_questions() {
-        let reply = not_covered_reply(
-            "exponents and the US Constitution",
-            &["What is a quadratic?".into(), "What is federalism?".into()],
+    fn conversation_ids_have_enough_randomness_and_a_strict_shape() {
+        let a = new_conversation_id().unwrap();
+        let b = new_conversation_id().unwrap();
+        assert_eq!(a.len(), 48, "192 bits as hex");
+        assert_ne!(a, b);
+        assert!(is_conversation_id(&a));
+        for bad in [
+            "",
+            "abc",
+            &a.to_uppercase(),
+            &format!("{a}0"),
+            &"g".repeat(48),
+            "../../etc/passwd",
+        ] {
+            assert!(!is_conversation_id(bad), "{bad:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_conversation_continues_until_it_is_unknown_expired_or_full() {
+        let store = Memory::default();
+        let now = at("2026-11-17T10:00:00Z");
+        // No ID: fresh.
+        let first = resume(&store, None, now).await.unwrap();
+        assert!(first.history.is_empty());
+        assert_eq!(first.expires_at, now.timestamp() + CONVERSATION_TTL_SECONDS);
+        assert!(
+            store
+                .append(&first.id, "q1", "a1", first.expires_at)
+                .await
+                .unwrap()
         );
-        assert!(reply.contains("This demo covers exponents and the US Constitution."));
-        assert!(reply.contains("- What is a quadratic?"));
-        assert!(reply.contains("- What is federalism?"));
-        assert!(!reply.contains('\u{2014}'));
-        // The same input always gives the same text.
-        assert_eq!(
-            reply,
-            not_covered_reply(
-                "exponents and the US Constitution",
-                &["What is a quadratic?".into(), "What is federalism?".into()]
-            )
+        // The ID continues it, with the stored messages.
+        let again = resume(&store, Some(&first.id), now).await.unwrap();
+        assert_eq!(again.id, first.id);
+        assert_eq!(again.history.len(), 2);
+        assert_eq!(again.history[0], (MessageRole::User, "q1".to_owned()));
+        // An unknown ID starts fresh with a new ID, and nothing of the old one.
+        let unknown = new_conversation_id().unwrap();
+        let fresh = resume(&store, Some(&unknown), now).await.unwrap();
+        assert_ne!(fresh.id, unknown);
+        assert!(fresh.history.is_empty());
+        // A bad shape is never looked up.
+        let junk = resume(&store, Some("../x"), now).await.unwrap();
+        assert!(junk.history.is_empty());
+        // After 24 hours it has expired.
+        let late = now + chrono::Duration::hours(24) + chrono::Duration::seconds(1);
+        let expired = resume(&store, Some(&first.id), late).await.unwrap();
+        assert_ne!(expired.id, first.id);
+        assert!(expired.history.is_empty());
+        // Ten turns is the most. The eleventh question starts a fresh conversation.
+        for turn in 2..=MAX_TURNS {
+            assert!(
+                store
+                    .append(&first.id, &format!("q{turn}"), "a", first.expires_at)
+                    .await
+                    .unwrap()
+            );
+        }
+        assert!(
+            !store
+                .append(&first.id, "q11", "a", first.expires_at)
+                .await
+                .unwrap()
         );
-        assert!(!not_covered_reply("x", &[]).contains("Try one"));
+        let full = resume(&store, Some(&first.id), now).await.unwrap();
+        assert_ne!(full.id, first.id);
+        assert!(full.history.is_empty());
     }
 }

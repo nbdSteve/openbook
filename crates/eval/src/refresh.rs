@@ -350,6 +350,8 @@ fn eval_entry(model_id: &str) -> ModelEntry {
         max_output_tokens: Some(4096),
         temperature: None,
         vision: true,
+        input_usd_per_million: None,
+        output_usd_per_million: None,
     }
 }
 

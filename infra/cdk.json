@@ -27,7 +27,9 @@
         "modelId": "au.anthropic.claude-sonnet-4-6",
         "residency": "au",
         "maxOutputTokens": 2000,
-        "vision": true
+        "vision": true,
+        "inputUsdPerMillion": 3,
+        "outputUsdPerMillion": 15
       },
       {
         "id": "claude-haiku",
@@ -37,7 +39,9 @@
         "modelId": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
         "residency": "au",
         "maxOutputTokens": 2000,
-        "vision": true
+        "vision": true,
+        "inputUsdPerMillion": 1,
+        "outputUsdPerMillion": 5
       },
       {
         "id": "gpt-oss-120b",
@@ -47,7 +51,9 @@
         "modelId": "openai.gpt-oss-120b-1:0",
         "residency": "au",
         "maxOutputTokens": 2000,
-        "vision": false
+        "vision": false,
+        "inputUsdPerMillion": 0.15,
+        "outputUsdPerMillion": 0.6
       }
     ],
     "defaultChatModel": "claude-sonnet",
@@ -62,12 +68,22 @@
       "dev": {
         "limitDailyMessagesGlobal": 100,
         "limitDailyTokensGlobal": 500000,
-        "limitDailyTranscribedPagesGlobal": 100
+        "limitDailyTranscribedPagesGlobal": 100,
+        "limitDemoGlobalPerDay": 100
       },
       "prod": {
         "limitDailyMessagesGlobal": 300,
         "limitDailyTokensGlobal": 1500000,
-        "limitDailyTranscribedPagesGlobal": 300
+        "limitDailyTranscribedPagesGlobal": 300,
+        "limitDemoGlobalPerDay": 100
+      }
+    },
+    "stageDemo": {
+      "dev": {
+        "enabled": true
+      },
+      "prod": {
+        "enabled": false
       }
     },
     "embeddingModelId": "amazon.titan-embed-text-v2:0"

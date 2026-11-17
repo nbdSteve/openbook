@@ -53,10 +53,8 @@ pub struct Manifest {
     pub name: String,
     pub description: String,
     pub tutoring_style: TutoringStyle,
-    /// What the course covers, as part of a sentence. The fixed reply uses it.
-    pub coverage: String,
-    /// Four to six example questions, half from each book, in alternating order. The fixed reply
-    /// shows the first two, and the landing page shows all of them.
+    /// Four to six example questions, half from each book, in alternating order. The landing page
+    /// shows them (the CDK app reads them from this file for the public web config).
     pub examples: Vec<String>,
     pub sources: Vec<SourceSpec>,
 }
@@ -130,9 +128,6 @@ impl Loaded {
         if m.description.chars().count() > MAX_DESCRIPTION_CHARS {
             return bad("description must be at most 500 characters");
         }
-        if m.coverage.trim().is_empty() {
-            return bad("coverage is required");
-        }
         if !(4..=6).contains(&m.examples.len()) || m.examples.iter().any(|e| e.trim().is_empty()) {
             return bad("examples must be 4 to 6 questions");
         }
@@ -159,15 +154,14 @@ impl Loaded {
     }
 
     /// A hash of everything that decides what the demo course holds: the text of the manifest
-    /// (not the file paths) and the bytes of every PDF.
+    /// (not the file paths, and not the examples, which the course does not store) and the bytes of
+    /// every PDF.
     pub fn fingerprint(&self) -> String {
         let m = &self.manifest;
         let text = serde_json::json!({
             "name": m.name,
             "description": m.description,
             "tutoringStyle": m.tutoring_style,
-            "coverage": m.coverage,
-            "examples": m.examples,
             "attribution": m.sources.iter().map(|s| &s.attribution).collect::<Vec<_>>(),
         });
         let mut hash = Sha256::new();
@@ -257,8 +251,6 @@ impl Provisioner {
         let demo = DemoCourse {
             course_id: course.id.clone(),
             fingerprint,
-            coverage: m.coverage.trim().to_owned(),
-            examples: m.examples.iter().map(|e| e.trim().to_owned()).collect(),
             attribution: loaded.attribution(),
             provisioned_at: openbook_core::domain::now(),
         };
@@ -382,7 +374,6 @@ mod tests {
                 name: "Demo".into(),
                 description: "A demo.".into(),
                 tutoring_style: TutoringStyle::Direct,
-                coverage: "things".into(),
                 examples: ["One?", "Two?", "Three?", "Four?"].map(Into::into).to_vec(),
                 sources: vec![SourceSpec {
                     files: vec!["a.pdf".into()],
@@ -411,7 +402,7 @@ mod tests {
         other_bytes.pdfs[0].bytes.push(b'x');
         assert_ne!(base.fingerprint(), other_bytes.fingerprint());
         let mut other_text = loaded();
-        other_text.manifest.coverage = "other things".into();
+        other_text.manifest.description = "Other things.".into();
         assert_ne!(base.fingerprint(), other_text.fingerprint());
         let mut other_credit = loaded();
         other_credit.manifest.sources[0].attribution.changes = "More.".into();
@@ -424,10 +415,6 @@ mod tests {
         type Change = Box<dyn Fn(&mut Loaded)>;
         let breaks: Vec<(&str, Change)> = vec![
             ("name", Box::new(|l| l.manifest.name = " ".into())),
-            (
-                "coverage",
-                Box::new(|l| l.manifest.coverage = String::new()),
-            ),
             (
                 "three examples",
                 Box::new(|l| l.manifest.examples.truncate(3)),
@@ -471,7 +458,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("openbook-demo-{}", ids::new_id()));
         std::fs::create_dir_all(&dir).unwrap();
         let manifest = serde_json::json!({
-            "name": "Demo", "description": "", "tutoringStyle": "direct", "coverage": "things",
+            "name": "Demo", "description": "", "tutoringStyle": "direct",
             "examples": ["One?", "Two?", "Three?", "Four?"],
             "sources": [{ "files": ["nope.pdf"], "attribution": attribution() }]
         });
