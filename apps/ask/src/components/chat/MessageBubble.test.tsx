@@ -190,6 +190,8 @@ describe('answer sources', () => {
       'colon at line start': 'Line\n\n[1]: https://x.test\n\n[2]',
       'link to a source': 'A [this](#cite-3) and [that](#cite-9) and [1].',
       'link text': 'See [about [2]](https://x.test) and [1].',
+      'reference definition': 'Claim [1].\n\n[1]: https://x.test\n\nthen [2]',
+      'reference to a file name': 'Claim [1] and [2].\n\n[1]: Lecture4.pdf',
       'half-written link': 'See [1](https://x',
       'table cell': '| a | b |\n|---|---|\n| x [2] | y [1] |',
       'heading and emphasis': '# Title [4]\n\n*em [3]* and **bold [5]**',
@@ -231,6 +233,8 @@ describe('answer sources', () => {
         'colon in a line': [1, 2],
         'link to a source': [3, 1],
         'table cell': [2, 1],
+        'reference definition': [1, 2],
+        'reference to a file name': [1, 2],
         'unknown numbers': [],
       };
       for (const [name, want] of Object.entries(expected)) {

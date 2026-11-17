@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Source } from '@/services/api/types';
-import { citationNumber, chipName, citedNumbers, normalizeMath } from './citations';
+import { citedNumbers, normalizeMath } from './citations';
+import { chipName, citationNumber } from './sourceText';
 
 const source = (n: number): Source => ({ n, documentId: 'D', documentName: 'a.pdf', snippet: 's' });
 
@@ -43,6 +44,12 @@ describe('citedNumbers', () => {
     expect(citedNumbers('Claim [1]: more text.', sources)).toEqual([1]);
     expect(citedNumbers('See [1](https://x', sources)).toEqual([]);
     expect(citedNumbers('See [1] (really).', sources)).toEqual([1]);
+  });
+
+  it('counts a bare number that has a reference definition, but not a full reference', () => {
+    expect(citedNumbers('Claim [1].\n\n[1]: https://x.test', sources)).toEqual([1]);
+    expect(citedNumbers('Claim [1][].\n\n[1]: Lecture4.pdf', sources)).toEqual([1]);
+    expect(citedNumbers('See [text][1].\n\n[1]: https://x.test', sources)).toEqual([]);
   });
 
   it('counts a model-written link to a known source, and not to an unknown one', () => {

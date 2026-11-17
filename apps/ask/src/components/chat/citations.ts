@@ -2,7 +2,8 @@ import type { Parent, Root, RootContent } from 'mdast';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import remarkParse from 'remark-parse';
-import { unified } from 'unified';
+import { unified, type PluggableList, type Transformer } from 'unified';
+import { VFile } from 'vfile';
 import type { Source } from '@/services/api/types';
 
 const CODE_SEGMENT = /(```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]*`)/;
@@ -34,8 +35,11 @@ export function normalizeMath(input: string): string {
 const MARKER = /\[(\d{1,3})\](?!\()/g;
 const CITE_HREF = /^#cite-(\d+)$/;
 
-/** The parser that the renderer uses (react-markdown with these two plugins). */
-const parser = unified().use(remarkParse).use(remarkGfm).use(remarkMath).freeze();
+/**
+ * The plugins that the renderer and `citedNumbers` share, in order. Both add `remarkCitations` after
+ * them. A plugin that is added here runs in both places.
+ */
+export const markdownPlugins: PluggableList = [remarkGfm, remarkMath];
 
 /**
  * Turn `[n]` markers in the text nodes of the tree into links to `#cite-n`, and return the
@@ -56,7 +60,14 @@ function citeInTree(tree: Root, known: Set<number>): number[] {
         if (known.has(n)) note(n);
         children.push(child);
       } else if (child.type === 'linkReference') {
-        children.push(child);
+        // "[1]" with a definition "[1]: ..." in the text is a reference, not a link that the author wrote.
+        // It is a citation when it is the bare number of a known source.
+        const only = child.children.length === 1 ? child.children[0] : undefined;
+        const n = only?.type === 'text' && /^\d{1,3}$/.test(only.value) ? Number(only.value) : NaN;
+        if (child.referenceType !== 'full' && known.has(n)) {
+          children.push({ type: 'link', url: `#cite-${n}`, children: [{ type: 'text', value: String(n) }] });
+          note(n);
+        } else children.push(child);
       } else if (child.type === 'text') {
         let last = 0;
         for (const match of child.value.matchAll(MARKER)) {
@@ -81,38 +92,32 @@ function citeInTree(tree: Root, known: Set<number>): number[] {
 }
 
 /**
- * A remark plugin for the renderer. It links the citation markers of the sources that exist.
- * Give it the same `sources` as `citedNumbers`, so that the badges and the sources list agree.
+ * A remark plugin. It links the citation markers of the sources that exist, and writes the numbers
+ * that are cited, in the order of their first citation, to `file.data.citedNumbers`. The renderer
+ * and `citedNumbers` use it with the same `markdownPlugins` and the same `sources`, so the badges
+ * and the sources list agree.
  */
 export function remarkCitations(options: { sources: Source[] | undefined }) {
   const known = new Set((options.sources ?? []).map((s) => s.n));
-  return (tree: Root) => {
-    if (known.size > 0) citeInTree(tree, known);
+  const transform: Transformer<Root, Root> = (tree, file) => {
+    (file.data as CitedData).citedNumbers = known.size > 0 ? citeInTree(tree, known) : [];
   };
+  return transform;
+}
+
+interface CitedData {
+  citedNumbers?: number[];
 }
 
 /**
- * The source numbers that the answer cites, in the order of their first citation. It parses the
- * text with the renderer's parser and runs the same step as `remarkCitations`, so "cited" means
- * "shown as a badge". Give it the raw message content.
+ * The source numbers that the answer cites, in the order of their first citation. It runs the
+ * renderer's parser and plugins on the text, so "cited" means "shown as a badge". Give it the raw
+ * message content.
  */
 export function citedNumbers(content: string, sources: Source[] | undefined): number[] {
   if (!sources || sources.length === 0) return [];
-  const tree = parser.parse(normalizeMath(content));
-  return citeInTree(tree, new Set(sources.map((s) => s.n)));
-}
-
-export function citationNumber(href: string | undefined): number | null {
-  const match = href?.match(/^#cite-(\d+)$/);
-  return match ? Number(match[1]) : null;
-}
-
-/** "Algebra notes.pdf, p. 12". The page is left out when the source has none. */
-export function sourceLabel(source: Pick<Source, 'documentName' | 'page'>): string {
-  return source.page !== undefined ? `${source.documentName}, p. ${source.page}` : source.documentName;
-}
-
-/** The document name for a chip: without a trailing ".pdf", which only wastes space. The popover keeps the full name. */
-export function chipName(documentName: string): string {
-  return documentName.replace(/\.pdf$/i, '');
+  const processor = unified().use(remarkParse).use(markdownPlugins).use(remarkCitations, { sources });
+  const file = new VFile(normalizeMath(content));
+  processor.runSync(processor.parse(file), file);
+  return (file.data as CitedData).citedNumbers ?? [];
 }

@@ -3,7 +3,7 @@ import { ChevronRight } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { cn } from '@/lib/cn';
 import type { Source } from '@/services/api/types';
-import { chipName, sourceLabel } from './citations';
+import { chipName, sourceLabel } from './sourceText';
 import { useSourceHighlight } from './SourceHighlight';
 
 interface Position {
@@ -43,6 +43,9 @@ export function SourceButton({ source, variant }: SourceButtonProps) {
   const open = position !== null;
   const highlighted = active === source.n;
 
+  // True while this button is the one that set the highlight. Only then does it clear the highlight.
+  const setsHighlight = useRef(false);
+
   const setPinned = (value: boolean) => {
     pinned.current = value;
     setIsPinned(value);
@@ -50,6 +53,7 @@ export function SourceButton({ source, variant }: SourceButtonProps) {
 
   const show = () => {
     window.clearTimeout(hideTimer.current);
+    setsHighlight.current = true;
     onActive(source.n);
     const rect = button.current?.getBoundingClientRect();
     if (!rect) return;
@@ -67,6 +71,7 @@ export function SourceButton({ source, variant }: SourceButtonProps) {
   const hide = () => {
     window.clearTimeout(hideTimer.current);
     setPinned(false);
+    setsHighlight.current = false;
     onActive(null);
     setPosition(null);
   };
@@ -83,6 +88,7 @@ export function SourceButton({ source, variant }: SourceButtonProps) {
     if (!open) return;
     const close = () => {
       setPinned(false);
+      setsHighlight.current = false;
       onActive(null);
       setPosition(null);
     };
@@ -119,16 +125,16 @@ export function SourceButton({ source, variant }: SourceButtonProps) {
 
   useEffect(() => () => window.clearTimeout(hideTimer.current), []);
 
-  // A button that unmounts while it is the highlighted one must clear the highlight, or the ring stays.
-  const latest = useRef({ active, onActive });
+  // A button that unmounts after it set the highlight must clear it, or the ring stays.
+  const latest = useRef(onActive);
   useEffect(() => {
-    latest.current = { active, onActive };
+    latest.current = onActive;
   });
   useEffect(
     () => () => {
-      if (latest.current.active === source.n) latest.current.onActive(null);
+      if (setsHighlight.current) latest.current(null);
     },
-    [source.n],
+    [],
   );
 
   const content: ReactNode =

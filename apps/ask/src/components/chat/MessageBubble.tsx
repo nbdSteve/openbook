@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useDeferredValue, useMemo, useState } from 'react';
 import { clsx } from 'clsx';
 import { AlertCircle, CircleStop, Globe } from 'lucide-react';
 import { useModels } from '@/services/models/ModelsContext';
@@ -16,15 +16,17 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
   const [activeSource, setActiveSource] = useState<number | null>(null);
   const streaming = message.state === 'streaming';
   const waiting = streaming && message.content === '';
+  // While the answer streams, the list can lag one frame behind the text. It never blocks the text.
+  const deferredContent = useDeferredValue(message.content);
   // Only the sources that the answer cites are the list. The renderer links the same markers.
   const { cited, other } = useMemo(() => {
     const all = message.sources ?? [];
-    const numbers = citedNumbers(message.content, all);
+    const numbers = citedNumbers(deferredContent, all);
     return {
       cited: numbers.flatMap((n) => all.filter((s) => s.n === n).slice(0, 1)),
       other: all.filter((s) => !numbers.includes(s.n)),
     };
-  }, [message.content, message.sources]);
+  }, [deferredContent, message.sources]);
 
   return (
     <SourceHighlightContext.Provider value={{ active: activeSource, onActive: setActiveSource }}>

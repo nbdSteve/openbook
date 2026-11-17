@@ -1,11 +1,11 @@
 import { lazy, Suspense, useMemo } from 'react';
+import type { PluggableList } from 'unified';
 import ReactMarkdown, { type Components } from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
 import type { Source } from '@/services/api/types';
-import { citationNumber, normalizeMath, remarkCitations } from './citations';
+import { markdownPlugins, normalizeMath, remarkCitations } from './citations';
+import { citationNumber } from './sourceText';
 import { rehypeKeepMathTogether } from './rehypeKeepMathTogether';
 import { SourceButton } from './SourceBadge';
 
@@ -22,6 +22,7 @@ interface MessageContentProps {
 }
 
 export function MessageContent({ content, sources, className = '' }: MessageContentProps) {
+  const remarkPlugins = useMemo(() => [...markdownPlugins, [remarkCitations, { sources }]] as PluggableList, [sources]);
   const text = useMemo(() => normalizeMath(content), [content]);
 
   const components = useMemo<Components>(
@@ -102,7 +103,7 @@ export function MessageContent({ content, sources, className = '' }: MessageCont
   return (
     <div className={`message-content min-w-0 text-[0.95rem] ${className}`}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath, [remarkCitations, { sources }]]}
+        remarkPlugins={remarkPlugins}
         rehypePlugins={[rehypeKatex, rehypeKeepMathTogether]}
         components={components}
         disallowedElements={DISALLOWED}
