@@ -300,7 +300,8 @@ if [ -n "$bedrock_profile" ]; then
 else
   # `fake` is the default chat and fast model (residency au). `fake-global` has residency
   # global, so the model picker and its global label can be tested.
-  models='[{"id":"fake","label":"Local fake model","vendor":"openbook","provider":"fake","modelId":"fake","residency":"au","maxOutputTokens":2000,"vision":true},{"id":"fake-global","label":"Local fake global model","vendor":"openbook","provider":"fake","modelId":"fake-global","residency":"global","maxOutputTokens":2000,"vision":true}]'
+  # The prices are the Claude Sonnet prices, so that the demo budget works like the real one.
+  models='[{"id":"fake","label":"Local fake model","vendor":"openbook","provider":"fake","modelId":"fake","residency":"au","maxOutputTokens":2000,"vision":true,"inputUsdPerMillion":3,"outputUsdPerMillion":15},{"id":"fake-global","label":"Local fake global model","vendor":"openbook","provider":"fake","modelId":"fake-global","residency":"global","maxOutputTokens":2000,"vision":true,"inputUsdPerMillion":3,"outputUsdPerMillion":15}]'
   default_chat="fake"
   fast_model="fake"
   # The local worker embeds with a hashed bag of words and transcribes with the fake model.
@@ -332,6 +333,9 @@ fi
   if [ -n "$daily_messages_per_user" ]; then
     echo "OPENBOOK_LIMIT_DAILY_MESSAGES_PER_USER=${daily_messages_per_user}"
   fi
+  # The public demo is on locally. The limits and the budget are the defaults of the API.
+  # The stack scripts provision the demo course after the ingest worker starts.
+  echo "OPENBOOK_DEMO_ENABLED=true"
   if [ -n "$bedrock_profile" ]; then
     echo "OPENBOOK_BEDROCK_PROFILE=$(sq "$bedrock_profile")"
   else
@@ -349,8 +353,14 @@ fi
   echo "RUST_LOG=${RUST_LOG:-info}"
 } | write_atomic "$env_file" 600
 
-jq -n --arg pool "$pool_id" --arg client "$client_id" --arg endpoint "/__aws/" \
-  '{stage: "local", region: "us-east-1", cognito: {userPoolId: $pool, clientId: $client, endpoint: $endpoint}}' \
+# The demo part of the web config comes from demo/course.json, as in the deployed stack.
+demo_label="$(jq -r --arg id "$default_chat" '[.[] | select(.id == $id)][0].label // $id' <<< "$models")"
+jq -n --arg pool "$pool_id" --arg client "$client_id" --arg endpoint "/__aws/" --arg label "$demo_label" \
+  --slurpfile course "${repo_root}/demo/course.json" \
+  '{stage: "local", region: "us-east-1", cognito: {userPoolId: $pool, clientId: $client, endpoint: $endpoint},
+    demo: {enabled: true, model: {label: $label},
+      sources: [$course[0].sources[].attribution | {title: .title, license: .license, url: .sourceUrl}],
+      examples: $course[0].examples}}' \
   | write_atomic "$web_config" 644
 
 log "wrote ${env_file}"

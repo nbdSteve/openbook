@@ -53,6 +53,8 @@ stack_start web stack_run_web "$emulator_port" "$api_port" "$web_port" "${repo_r
 stack_wait_url "API" "http://127.0.0.1:${api_port}/api/health" 120
 # The worker has no health endpoint. It logs this line when it starts to poll the queue.
 stack_wait_log ingest "polling the ingest queue" 120
+# The demo course, ingested with the fake models, for the demo flow of the tests.
+stack_provision_demo "${stack_dir}/api.env"
 stack_wait_url "web" "http://localhost:${web_port}/config.json" 120
 stack_wait_url "web proxy to the API" "http://localhost:${web_port}/api/health" 30
 

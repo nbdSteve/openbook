@@ -133,6 +133,13 @@ stack_run_ingest() {
   stack_run_bin "$1" "$(stack_binary openbook-ingest)" --poll
 }
 
+# stack_run_demo <env-file> [args...]: the demo provisioning command (`openbook-demo provision`).
+stack_run_demo() {
+  local env_file="$1"
+  shift
+  stack_run_bin "$env_file" "$(stack_binary openbook-demo)" provision "$@"
+}
+
 # stack_run_web <emulator-port> <api-port> <web-port> <web-config-file>: run the Vite dev server.
 # The dev server serves the web config file as /config.json.
 stack_run_web() {
@@ -152,8 +159,18 @@ stack_run_web() {
 # silently while the scripts wait, and the wait times out. The output stays visible, so a CI
 # log shows the progress. After it, the scripts start the built binaries directly.
 stack_build() {
-  stack_log "building openbook-api and openbook-ingest"
-  cargo build -p openbook-api -p openbook-ingest
+  stack_log "building openbook-api, openbook-ingest, and openbook-demo"
+  cargo build -p openbook-api -p openbook-ingest -p openbook-demo
+}
+
+# stack_provision_demo <env-file>: create or refresh the public demo course of the local stack
+# through the normal ingestion path. The ingest worker must be running. A second run says
+# "up to date". It fails the stack when the demo cannot be provisioned.
+stack_provision_demo() {
+  local env_file="$1"
+  stack_log "provisioning the demo course (the ingest worker processes its PDFs)"
+  # shellcheck disable=SC2310 # the exit code is read from PIPESTATUS on purpose
+  (stack_run_demo "$env_file" --wait-seconds 600 2>&1 | awk '{ print "[demo] " $0; fflush() }') || return 1
 }
 
 # stack_wait_log <label> <text> <timeout-seconds>: wait until the log of a started program
