@@ -99,7 +99,7 @@ fn write_manifest(dir: &Path, biology_pages: &[&[&str]]) {
     let manifest = json!({
         "name": "Test demo", "description": "Geometry and biology.", "tutoringStyle": "direct",
         "examples": [
-            "What does the Pythagorean theorem say?", "What is photosynthesis?",
+            "What is the Pythagorean theorem?", "What is photosynthesis?",
             "What is a right triangle?", "What do chloroplasts do?"
         ],
         "sources": [
