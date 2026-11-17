@@ -266,6 +266,10 @@ fn occurrences(page: &Page, phrase: &[&str]) -> Vec<usize> {
 }
 
 /// What happens to the first occurrence of a running phrase.
+///
+/// Round 2 compared the two (`evals/results/2026-11-18.md`) and production uses `Keep`: `Drop` gave
+/// a lower gate accuracy on the algebra corpus and the same ranking. `Drop` stays only so that the
+/// evaluation grid can show the comparison. Nothing in the ingestion worker or the API uses it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FirstOccurrence {
     /// It stays when it is at the top of its page (it may be the real section heading).
@@ -289,7 +293,7 @@ impl FirstOccurrence {
     }
 }
 
-/// The variant of production.
+/// The variant of production. Do not change it without a new comparison in the grid.
 pub const PRODUCTION_VARIANT: FirstOccurrence = FirstOccurrence::Keep;
 
 /// Removes the running headers and footers of a document. `pages` has `(page number, Markdown)` in

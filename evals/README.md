@@ -55,6 +55,7 @@ For tuning, `offline` takes these flags. They change the numbers for one run, an
 | `--max-per-document N` | The soft per-document cap |
 | `--dense-candidates N`, `--lexical-candidates N` | How many candidates each retriever returns |
 | `--chunk-tokens N` | The chunk target (300, 400, and 600 are in the cache) |
+| `--header-variant keep-first\|drop-all` | What the removal of running headers does with the first occurrence of a phrase (production: keep-first) |
 | `--cap-off` | Turn the per-document cap off: every chunk gets the same document ID (the chunks and their section titles do not change) |
 | `--gate any\|dense\|combined` | The gate rule: any BM25 hit, the dense distance only, or the dense distance or a strong lexical match |
 | `--gate-distance X`, `--gate-coverage X`, `--gate-matched N` | The numbers of the gate rule |
@@ -67,7 +68,7 @@ The report always shows the cap-off mode too, and the gate inputs and the gate s
 cargo run -p openbook-eval -- grid
 ```
 
-`make eval-grid` is the short form. It runs every combination of RRF `k` (30, 60, 100), final sources (6, 8, 10), candidates (20, 40), most sources per document (2, 3, 4, 6), BM25 weight (0.5, 1.0), and chunk target (300, 400, 600 tokens), each in both document modes, and writes `target/eval/grid.md` (one table per knob, then the best settings) and `grid.json` (every row). It keeps the gate rule of the cache's embedding model, and it takes the gate flags. The chunk targets other than 400 need their chunk embeddings in the cache.
+`make eval-grid` is the short form. It runs every combination of RRF `k` (30, 60, 100), final sources (6, 8, 10), candidates (20, 40), most sources per document (2, 3, 4, 6, 8), BM25 weight (0.5, 0.75, 1.0, 1.5), chunk target (300, 400, 600 tokens), and header variant (keep-first, drop-all), each in both document modes, for each corpus and pooled, and writes `target/eval/grid.md` (one table per knob and scope, then the best settings) and `grid.json` (every row). `grid --tiny` runs two rows (the tests use it). It keeps the gate rule of the cache's embedding model, and it takes the gate flags. The chunk targets other than 400 need their chunk embeddings in the cache.
 
 ### Refresh the live cache (real AWS)
 

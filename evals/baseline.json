@@ -1,22 +1,66 @@
 {
   "cacheKind": "live",
   "embeddingModel": "amazon.titan-embed-text-v2:0",
-  "hybrid": {
-    "recallAt5": 0.9605,
-    "recallAt8": 0.9868,
-    "ndcgAt8": 0.5758,
-    "mrr": 0.852,
-    "gateAccuracy": 0.8785,
-    "falseGateRate": 0.0,
-    "missedGateRate": 0.4194
+  "corpora": {
+    "american-government": {
+      "hybrid": {
+        "recallAt5": 0.9574,
+        "recallAt8": 0.9787,
+        "ndcgAt8": 0.6534,
+        "mrr": 0.8936,
+        "gateAccuracy": 0.9178,
+        "falseGateRate": 0.0,
+        "missedGateRate": 0.2308
+      },
+      "capOff": {
+        "recallAt5": 0.9574,
+        "recallAt8": 0.9787,
+        "ndcgAt8": 0.6651,
+        "mrr": 0.8936,
+        "gateAccuracy": 0.9178,
+        "falseGateRate": 0.0,
+        "missedGateRate": 0.2308
+      }
+    },
+    "college-algebra": {
+      "hybrid": {
+        "recallAt5": 0.9605,
+        "recallAt8": 0.9868,
+        "ndcgAt8": 0.5796,
+        "mrr": 0.8662,
+        "gateAccuracy": 0.8879,
+        "falseGateRate": 0.0,
+        "missedGateRate": 0.3871
+      },
+      "capOff": {
+        "recallAt5": 0.9605,
+        "recallAt8": 0.9868,
+        "ndcgAt8": 0.6079,
+        "mrr": 0.8662,
+        "gateAccuracy": 0.8879,
+        "falseGateRate": 0.0,
+        "missedGateRate": 0.3871
+      }
+    }
   },
-  "capOff": {
-    "recallAt5": 0.9605,
-    "recallAt8": 1.0,
-    "ndcgAt8": 0.6076,
-    "mrr": 0.8536,
-    "gateAccuracy": 0.8785,
-    "falseGateRate": 0.0,
-    "missedGateRate": 0.4194
+  "combined": {
+    "hybrid": {
+      "recallAt5": 0.9593,
+      "recallAt8": 0.9837,
+      "ndcgAt8": 0.6078,
+      "mrr": 0.8767,
+      "gateAccuracy": 0.9,
+      "falseGateRate": 0.0,
+      "missedGateRate": 0.3158
+    },
+    "capOff": {
+      "recallAt5": 0.9593,
+      "recallAt8": 0.9837,
+      "ndcgAt8": 0.6298,
+      "mrr": 0.8767,
+      "gateAccuracy": 0.9,
+      "falseGateRate": 0.0,
+      "missedGateRate": 0.3158
+    }
   }
 }

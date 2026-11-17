@@ -340,7 +340,8 @@ pub fn chunk_pages_with(pages: &[(u32, String)], target: usize) -> Vec<Chunk> {
     chunk_pages_variant(pages, target, crate::headers::PRODUCTION_VARIANT)
 }
 
-/// `chunk_pages_with` with a choice for the first occurrence of a running header.
+/// `chunk_pages_with` with a choice for the first occurrence of a running header. Only the
+/// evaluation grid calls it with another variant than the one of production.
 pub fn chunk_pages_variant(
     pages: &[(u32, String)],
     target: usize,
