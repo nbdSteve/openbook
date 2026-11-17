@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import { ChevronRight } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { cn } from '@/lib/cn';
 import type { Source } from '@/services/api/types';
@@ -206,18 +207,74 @@ export function SourceButton({ source, variant }: SourceButtonProps) {
   );
 }
 
-/** The compact sources list under an answer. */
-export function SourcesList({ sources }: { sources: Source[] }) {
+const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+interface SourcesListProps {
+  /** The sources that the answer cites, in the order of the first citation. */
+  cited: Source[];
+  /** The other retrieved sources. They stay hidden until the student opens them. */
+  other: Source[];
+  /** While the answer streams, the set of cited sources is not final, so the other sources stay hidden. */
+  streaming?: boolean;
+}
+
+/**
+ * The compact sources list under an answer. It lists only the sources that the answer cites.
+ * The other retrieved passages sit behind a disclosure, so they do not look like evidence.
+ */
+export function SourcesList({ cited, other, streaming = false }: SourcesListProps) {
+  const [expanded, setExpanded] = useState(false);
+  const otherId = useId();
+  const showOther = other.length > 0 && !streaming;
+  if (cited.length === 0 && !showOther) return null;
+  const noneUsed = cited.length === 0;
+  const label = noneUsed
+    ? `Searched ${plural(other.length, 'passage', 'passages')}, none used`
+    : `${expanded ? 'Hide' : 'Show'} ${plural(other.length, 'other passage', 'other passages')} that ${other.length === 1 ? 'was' : 'were'} searched`;
+
   return (
     <div className="mt-3 border-t border-border-subtle pt-2.5" data-testid="sources">
-      <p className="mb-1.5 text-xs font-medium text-text-muted">Sources</p>
-      <ul className="flex flex-wrap gap-1.5" aria-label="Sources for this answer">
-        {sources.map((source) => (
-          <li key={source.n} className="min-w-0 max-w-full">
-            <SourceButton source={source} variant="entry" />
-          </li>
-        ))}
-      </ul>
+      {cited.length > 0 && (
+        <>
+          <p className="mb-1.5 text-xs font-medium text-text-muted">Sources</p>
+          <ul className="flex flex-wrap gap-1.5" aria-label="Sources for this answer">
+            {cited.map((source) => (
+              <li key={source.n} className="min-w-0 max-w-full">
+                <SourceButton source={source} variant="entry" />
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      {showOther && (
+        <>
+          <button
+            type="button"
+            aria-expanded={expanded}
+            aria-controls={otherId}
+            data-testid="other-sources-toggle"
+            onClick={() => setExpanded((value) => !value)}
+            className={cn(
+              '-ml-1 inline-flex min-h-8 items-center gap-1 rounded-lg px-1 text-left text-xs text-text-muted transition-colors hover:text-text-secondary',
+              cited.length > 0 && 'mt-1',
+            )}
+          >
+            <ChevronRight className={cn('h-3.5 w-3.5 shrink-0 transition-transform', expanded && 'rotate-90')} aria-hidden="true" />
+            <span>{label}</span>
+          </button>
+          <div id={otherId} hidden={!expanded}>
+            {expanded && (
+              <ul className="mt-1 flex flex-wrap gap-1.5" aria-label="Other passages that were searched">
+                {other.map((source) => (
+                  <li key={source.n} className="min-w-0 max-w-full">
+                    <SourceButton source={source} variant="entry" />
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </>
+      )}
     </div>
   );
 }

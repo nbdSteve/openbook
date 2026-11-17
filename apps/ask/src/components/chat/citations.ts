@@ -27,6 +27,15 @@ export function normalizeMath(input: string): string {
   );
 }
 
+const MARKER = /\[(\d{1,3})\](?![(:])/g;
+
+/** Call `onMarker` for each `[n]` marker outside code and math, and return the text with the results put in. */
+function replaceMarkers(content: string, replace: (match: string, n: number) => string): string {
+  return outside(content, CODE_SEGMENT, (part) =>
+    outside(part, MATH_SEGMENT, (text) => text.replace(MARKER, (match, n: string) => replace(match, Number(n)))),
+  );
+}
+
 /**
  * Turn `[n]` citation markers into links to `#cite-n`, but only for numbers that have a source.
  * Code, math, and links like `[1](url)` stay as they are.
@@ -34,11 +43,23 @@ export function normalizeMath(input: string): string {
 export function linkCitations(content: string, sources: Source[] | undefined): string {
   if (!sources || sources.length === 0) return content;
   const known = new Set(sources.map((s) => s.n));
-  return outside(content, CODE_SEGMENT, (part) =>
-    outside(part, MATH_SEGMENT, (text) =>
-      text.replace(/\[(\d{1,3})\](?![(:])/g, (match, n: string) => (known.has(Number(n)) ? `[${n}](#cite-${n})` : match)),
-    ),
-  );
+  return replaceMarkers(content, (match, n) => (known.has(n) ? `[${n}](#cite-${n})` : match));
+}
+
+/**
+ * The source numbers that the answer cites, in the order of their first citation. A source is
+ * cited when `linkCitations` links its marker, so this uses the same scan on the same text that
+ * the renderer gets (after `normalizeMath`). Give it the raw message content.
+ */
+export function citedNumbers(content: string, sources: Source[] | undefined): number[] {
+  if (!sources || sources.length === 0) return [];
+  const known = new Set(sources.map((s) => s.n));
+  const cited: number[] = [];
+  replaceMarkers(normalizeMath(content), (match, n) => {
+    if (known.has(n) && !cited.includes(n)) cited.push(n);
+    return match;
+  });
+  return cited;
 }
 
 export function citationNumber(href: string | undefined): number | null {

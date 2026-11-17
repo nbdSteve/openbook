@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { ModelsContext } from '@/services/models/ModelsContext';
 import type { Source } from '@/services/api/types';
@@ -9,10 +9,10 @@ const sources: Source[] = [
   { n: 2, documentId: 'D2', documentName: 'Geometry.pdf', snippet: 'Second passage' },
 ];
 
-function renderAnswer(content: string, state?: 'streaming' | 'failed') {
+function renderAnswer(content: string, state?: 'streaming' | 'stopped' | 'failed', list: Source[] = sources) {
   return render(
     <ModelsContext.Provider value={{ models: [], find: () => undefined, defaultModel: undefined }}>
-      <MessageBubble message={{ id: 'A', role: 'assistant', content, createdAt: '', sources, state }} />
+      <MessageBubble message={{ id: 'A', role: 'assistant', content, createdAt: '', sources: list, state }} />
     </ModelsContext.Provider>,
   );
 }
@@ -75,5 +75,67 @@ describe('answer sources', () => {
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(entry).toHaveFocus();
+  });
+
+  describe('cited and other passages', () => {
+    const eight: Source[] = Array.from({ length: 8 }, (_, i) => ({ n: i + 1, documentId: `D${i}`, documentName: `Doc ${i + 1}.pdf`, snippet: `Passage ${i + 1}` }));
+
+    it('lists only the cited sources, in the order of first citation', () => {
+      renderAnswer('First [5], then [2], and [5] again.', undefined, eight);
+      const list = screen.getByRole('list', { name: 'Sources for this answer' });
+      const names = within(list).getAllByRole('listitem').map((li) => li.textContent);
+      expect(names).toEqual(['5Doc 5.pdf', '2Doc 2.pdf']);
+    });
+
+    it('puts the other passages behind a disclosure that is closed at first', () => {
+      renderAnswer('Claim [1] and [2].', undefined, eight);
+      const toggle = screen.getByRole('button', { name: 'Show 6 other passages that were searched' });
+      expect(toggle).toHaveAttribute('aria-expanded', 'false');
+      expect(screen.queryByRole('list', { name: 'Other passages that were searched' })).toBeNull();
+      fireEvent.click(toggle);
+      expect(toggle).toHaveAttribute('aria-expanded', 'true');
+      expect(toggle).toHaveAccessibleName('Hide 6 other passages that were searched');
+      const other = screen.getByRole('list', { name: 'Other passages that were searched' });
+      expect(other.parentElement?.id).toBe(toggle.getAttribute('aria-controls'));
+      expect(within(other).getAllByRole('listitem')).toHaveLength(6);
+      fireEvent.click(toggle);
+      expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    });
+
+    it('shows no Sources heading when the answer cites nothing', () => {
+      renderAnswer('The course does not cover this.', undefined, eight);
+      expect(screen.queryByText('Sources')).toBeNull();
+      expect(screen.queryByRole('list', { name: 'Sources for this answer' })).toBeNull();
+      expect(screen.getByRole('button', { name: 'Searched 8 passages, none used' })).toHaveAttribute('aria-expanded', 'false');
+    });
+
+    it('does not count a marker with no source, or one in code', () => {
+      renderAnswer('Unknown [9] and `a[1]`.', undefined, eight);
+      expect(screen.queryByRole('list', { name: 'Sources for this answer' })).toBeNull();
+    });
+
+    it('adds a source when its marker first appears while streaming, and hides the others until the end', () => {
+      const view = renderAnswer('Start of the answer', 'streaming', eight);
+      expect(screen.queryByTestId('sources')).toBeNull();
+      view.rerender(
+        <ModelsContext.Provider value={{ models: [], find: () => undefined, defaultModel: undefined }}>
+          <MessageBubble message={{ id: 'A', role: 'assistant', content: 'Start of the answer [3]', createdAt: '', sources: eight, state: 'streaming' }} />
+        </ModelsContext.Provider>,
+      );
+      const list = screen.getByRole('list', { name: 'Sources for this answer' });
+      expect(within(list).getAllByRole('listitem')).toHaveLength(1);
+      expect(screen.queryByTestId('other-sources-toggle')).toBeNull();
+    });
+
+    it('applies the same rule to a stopped answer', () => {
+      renderAnswer('Partial [4]', 'stopped', eight);
+      expect(within(screen.getByRole('list', { name: 'Sources for this answer' })).getAllByRole('listitem')).toHaveLength(1);
+      expect(screen.getByRole('button', { name: 'Show 7 other passages that were searched' })).toBeInTheDocument();
+    });
+
+    it('uses the singular for one other passage', () => {
+      renderAnswer('Claim [1].', undefined, sources);
+      expect(screen.getByRole('button', { name: 'Show 1 other passage that was searched' })).toBeInTheDocument();
+    });
   });
 });

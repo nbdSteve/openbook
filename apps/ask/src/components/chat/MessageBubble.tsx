@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { clsx } from 'clsx';
 import { AlertCircle, CircleStop, Globe } from 'lucide-react';
 import { useModels } from '@/services/models/ModelsContext';
+import { citedNumbers } from './citations';
 import { MessageContent } from './MessageContent';
 import { SourcesList } from './SourceBadge';
 import { SourceHighlightContext } from './SourceHighlight';
@@ -15,6 +16,15 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
   const [activeSource, setActiveSource] = useState<number | null>(null);
   const streaming = message.state === 'streaming';
   const waiting = streaming && message.content === '';
+  // Only the sources that the answer cites are the list. The renderer links the same markers.
+  const { cited, other } = useMemo(() => {
+    const all = message.sources ?? [];
+    const numbers = citedNumbers(message.content, all);
+    return {
+      cited: numbers.flatMap((n) => all.filter((s) => s.n === n).slice(0, 1)),
+      other: all.filter((s) => !numbers.includes(s.n)),
+    };
+  }, [message.content, message.sources]);
 
   return (
     <SourceHighlightContext.Provider value={{ active: activeSource, onActive: setActiveSource }}>
@@ -65,9 +75,7 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
               </div>
             )}
 
-            {!isUser && message.sources && message.sources.length > 0 && message.state !== 'failed' && (
-              <SourcesList sources={message.sources} />
-            )}
+            {!isUser && message.state !== 'failed' && <SourcesList cited={cited} other={other} streaming={streaming} />}
 
             {message.state === 'stopped' && (
               <p className="mt-2 flex items-center gap-1.5 text-xs text-text-muted">
