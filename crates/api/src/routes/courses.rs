@@ -31,6 +31,7 @@ pub struct UpdateCourse {
     name: Option<String>,
     description: Option<String>,
     tutoring_style: Option<TutoringStyle>,
+    allow_style_choice: Option<bool>,
     model: Option<String>,
 }
 
@@ -137,6 +138,7 @@ pub async fn update(
             .map(validate::description)
             .transpose()?,
         tutoring_style: body.tutoring_style,
+        allow_style_choice: body.allow_style_choice,
         model: body
             .model
             .as_deref()

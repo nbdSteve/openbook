@@ -31,6 +31,42 @@ pub enum TutoringStyle {
     Direct,
 }
 
+impl TutoringStyle {
+    /// Every style, in display order.
+    pub const ALL: [TutoringStyle; 5] = [
+        TutoringStyle::Socratic,
+        TutoringStyle::Hints,
+        TutoringStyle::StepByStep,
+        TutoringStyle::Concepts,
+        TutoringStyle::Direct,
+    ];
+
+    /// The ID of the style in the API.
+    pub fn id(self) -> &'static str {
+        match self {
+            TutoringStyle::Socratic => "socratic",
+            TutoringStyle::Hints => "hints",
+            TutoringStyle::StepByStep => "step_by_step",
+            TutoringStyle::Concepts => "concepts",
+            TutoringStyle::Direct => "direct",
+        }
+    }
+}
+
+/// The style that one answer uses. The course owner can lock the course style. A locked course
+/// always uses its own style. An unlocked course uses the style of the request, else the style of
+/// the conversation, else the course default.
+pub fn effective_style(
+    course: &CourseRecord,
+    requested: Option<TutoringStyle>,
+    conversation: Option<TutoringStyle>,
+) -> TutoringStyle {
+    if !course.allow_style_choice {
+        return course.tutoring_style;
+    }
+    requested.or(conversation).unwrap_or(course.tutoring_style)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DocumentStatus {
@@ -81,7 +117,10 @@ pub struct Course {
     pub id: String,
     pub name: String,
     pub description: String,
+    /// The default style. It is the only style when `allow_style_choice` is false.
     pub tutoring_style: TutoringStyle,
+    /// Learners can pick another style for a conversation.
+    pub allow_style_choice: bool,
     /// The course default model (a catalog ID).
     pub model: String,
     pub role: Role,
@@ -98,6 +137,8 @@ pub struct CourseRecord {
     pub name: String,
     pub description: String,
     pub tutoring_style: TutoringStyle,
+    /// Learners can pick another style for a conversation. Courses from before this setting allow it.
+    pub allow_style_choice: bool,
     /// The stored catalog ID. It may no longer be in the catalog.
     pub model: String,
     pub owner_id: String,
@@ -121,6 +162,7 @@ impl CourseRecord {
             name: self.name.clone(),
             description: self.description.clone(),
             tutoring_style: self.tutoring_style,
+            allow_style_choice: self.allow_style_choice,
             model: model.to_owned(),
             role,
             invite_code: (role == Role::Owner).then(|| self.invite_code.clone()),
@@ -193,6 +235,9 @@ pub struct Conversation {
     pub title: String,
     /// Catalog ID of the last answer.
     pub model: String,
+    /// The style of the last answer. Older conversations have none, and use the course default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<TutoringStyle>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -221,6 +266,9 @@ pub struct Message {
     /// Assistant messages only: the catalog ID that wrote it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Assistant messages only: the style that the answer used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<TutoringStyle>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -246,6 +294,7 @@ mod tests {
             name: "Algebra".into(),
             description: String::new(),
             tutoring_style: TutoringStyle::StepByStep,
+            allow_style_choice: true,
             model: "claude".into(),
             owner_id: "u".into(),
             invite_code: "ABCD2345".into(),
@@ -259,7 +308,7 @@ mod tests {
         assert_eq!(
             owner,
             json!({
-                "id": "C", "name": "Algebra", "description": "", "tutoringStyle": "step_by_step", "model": "claude",
+                "id": "C", "name": "Algebra", "description": "", "tutoringStyle": "step_by_step", "allowStyleChoice": true, "model": "claude",
                 "role": "owner", "inviteCode": "ABCD2345", "createdAt": "t", "updatedAt": "t"
             })
         );
@@ -334,6 +383,46 @@ mod tests {
             (TutoringStyle::Direct, "direct"),
         ] {
             assert_eq!(serde_json::to_value(style).unwrap(), json!(id));
+            assert_eq!(style.id(), id);
         }
+        assert_eq!(TutoringStyle::ALL.len(), 5);
+    }
+
+    fn record(allow: bool, style: TutoringStyle) -> CourseRecord {
+        CourseRecord {
+            id: "C".into(),
+            name: "n".into(),
+            description: String::new(),
+            tutoring_style: style,
+            allow_style_choice: allow,
+            model: "m".into(),
+            owner_id: "u".into(),
+            invite_code: "I".into(),
+            bm25_version: None,
+            bm25_key: None,
+            deleting: false,
+            created_at: "t".into(),
+            updated_at: "t".into(),
+        }
+    }
+
+    #[test]
+    fn the_request_beats_the_conversation_beats_the_course_style() {
+        use TutoringStyle::*;
+        let open = record(true, Socratic);
+        assert_eq!(effective_style(&open, Some(Direct), Some(Hints)), Direct);
+        assert_eq!(effective_style(&open, None, Some(Hints)), Hints);
+        assert_eq!(effective_style(&open, None, None), Socratic);
+    }
+
+    #[test]
+    fn a_locked_course_always_uses_its_own_style() {
+        use TutoringStyle::*;
+        let locked = record(false, Socratic);
+        assert_eq!(
+            effective_style(&locked, Some(Direct), Some(Hints)),
+            Socratic
+        );
+        assert_eq!(effective_style(&locked, None, Some(Hints)), Socratic);
     }
 }

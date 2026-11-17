@@ -14,7 +14,9 @@ use futures::stream::{self, BoxStream, StreamExt};
 
 use crate::catalog::{Catalog, ModelEntry, ProviderKind};
 use crate::domain::MessageRole;
-use crate::prompt::{NOT_COVERED_NOTICE, REWRITE_LAST_MESSAGE_MARKER, REWRITE_SYSTEM_PROMPT};
+use crate::prompt::{
+    NOT_COVERED_NOTICE, REWRITE_LAST_MESSAGE_MARKER, REWRITE_SYSTEM_PROMPT, style_in_prompt,
+};
 
 /// One earlier or new message in the conversation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,6 +107,19 @@ impl FakeChat {
         Self::answer_with(model, question, "")
     }
 
+    /// The answer to a question in a course without sources, as a chat in that style gets it.
+    pub fn answer_styled(
+        model: &str,
+        question: &str,
+        style: crate::domain::TutoringStyle,
+    ) -> String {
+        Self::answer_with(
+            model,
+            question,
+            &format!("Tutoring style in use: `{}`.", style.id()),
+        )
+    }
+
     /// The answer with a paragraph about the course materials (empty for none).
     pub fn answer_with(model: &str, question: &str, materials: &str) -> String {
         let materials = if materials.is_empty() {
@@ -163,7 +178,14 @@ impl FakeChat {
                 .trim()
                 .to_owned();
         }
-        Self::answer_with(model, question, &Self::materials_paragraph(&request.system))
+        // The fake model says which style reached it, so tests can check the style end to end.
+        // Real models never do this: the line is in the fake provider only.
+        let style = style_in_prompt(&request.system)
+            .map(|style| format!("Tutoring style in use: `{}`.\n\n", style.id()))
+            .unwrap_or_default();
+        let materials = Self::materials_paragraph(&request.system);
+        let preface = format!("{style}{materials}");
+        Self::answer_with(model, question, preface.trim_end())
     }
 
     /// The answer split into the deltas that the stream sends.

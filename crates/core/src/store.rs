@@ -109,6 +109,10 @@ fn epoch_in_days(days: i64) -> i64 {
 // Stored item shapes
 // ---------------------------------------------------------------------------------------------
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CourseItem {
@@ -119,6 +123,9 @@ struct CourseItem {
     name: String,
     description: String,
     tutoring_style: TutoringStyle,
+    /// Learners can pick another style. Items from before the setting have no value, and allow it.
+    #[serde(default = "default_true")]
+    allow_style_choice: bool,
     model: String,
     owner_id: String,
     invite_code: String,
@@ -142,6 +149,7 @@ impl CourseItem {
             name: record.name.clone(),
             description: record.description.clone(),
             tutoring_style: record.tutoring_style,
+            allow_style_choice: record.allow_style_choice,
             model: record.model.clone(),
             owner_id: record.owner_id.clone(),
             invite_code: record.invite_code.clone(),
@@ -163,6 +171,7 @@ impl CourseItem {
             name: self.name,
             description: self.description,
             tutoring_style: self.tutoring_style,
+            allow_style_choice: self.allow_style_choice,
             model: self.model,
             owner_id: self.owner_id,
             invite_code: self.invite_code,
@@ -324,6 +333,8 @@ struct ConversationItem {
     course_id: String,
     title: String,
     model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    style: Option<TutoringStyle>,
     created_at: String,
     updated_at: String,
 }
@@ -339,6 +350,7 @@ impl ConversationItem {
             course_id: c.course_id.clone(),
             title: c.title.clone(),
             model: c.model.clone(),
+            style: c.style,
             created_at: c.created_at.clone(),
             updated_at: c.updated_at.clone(),
         }
@@ -350,6 +362,7 @@ impl ConversationItem {
             course_id: self.course_id,
             title: self.title,
             model: self.model,
+            style: self.style,
             created_at: self.created_at,
             updated_at: self.updated_at,
         }
@@ -372,6 +385,9 @@ struct MessageItem {
     trace: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     model: Option<String>,
+    /// The tutoring style that the answer used. Assistant messages only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    style: Option<TutoringStyle>,
     #[serde(default)]
     input_tokens: u64,
     #[serde(default)]
@@ -388,6 +404,7 @@ impl MessageItem {
             created_at: self.created_at,
             sources: self.sources,
             model: self.model,
+            style: self.style,
         }
     }
 }
@@ -434,6 +451,7 @@ pub struct CoursePatch {
     pub name: Option<String>,
     pub description: Option<String>,
     pub tutoring_style: Option<TutoringStyle>,
+    pub allow_style_choice: Option<bool>,
     pub model: Option<String>,
 }
 
@@ -449,6 +467,8 @@ pub struct NewMessage {
     pub trace: Option<String>,
     /// Assistant messages only.
     pub model: Option<String>,
+    /// The tutoring style of the answer. Assistant messages only.
+    pub style: Option<TutoringStyle>,
     pub usage: TokenUsage,
 }
 
@@ -697,6 +717,7 @@ impl Store {
                 name: name.into(),
                 description: description.into(),
                 tutoring_style: style,
+                allow_style_choice: true,
                 model: model.into(),
                 owner_id: owner.user_id.clone(),
                 invite_code: ids::new_invite_code(),
@@ -884,6 +905,12 @@ impl Store {
             request = request
                 .expression_attribute_names("#style", "tutoringStyle")
                 .expression_attribute_values(":style", value);
+        }
+        if let Some(allow) = patch.allow_style_choice {
+            sets.push("#allowStyle = :allowStyle");
+            request = request
+                .expression_attribute_names("#allowStyle", "allowStyleChoice")
+                .expression_attribute_values(":allowStyle", AttributeValue::Bool(allow));
         }
         if let Some(model) = &patch.model {
             sets.push("#model = :model");
@@ -1288,24 +1315,31 @@ impl Store {
             .collect()
     }
 
-    /// Sets `model`, `updatedAt`, and `gsi1sk` after a chat message.
+    /// Sets `model`, `style`, `updatedAt`, and `gsi1sk` after a chat message.
     /// Returns false when the conversation was deleted in the meantime.
     pub async fn touch_conversation(
         &self,
         user_id: &str,
         conversation_id: &str,
         model: &str,
+        style: TutoringStyle,
         updated_at: &str,
     ) -> Result<bool, StoreError> {
+        let style =
+            serde_dynamo::to_attribute_value::<_, AttributeValue>(style).map_err(internal)?;
         let result = self
             .client
             .update_item()
             .table_name(&self.table)
             .key("pk", s(user_pk(user_id)))
             .key("sk", s(conv_sk(conversation_id)))
-            .update_expression("SET updatedAt = :at, gsi1sk = :sk, #model = :model")
+            .update_expression(
+                "SET updatedAt = :at, gsi1sk = :sk, #model = :model, #style = :style",
+            )
             .condition_expression("attribute_exists(pk)")
             .expression_attribute_names("#model", "model")
+            .expression_attribute_names("#style", "style")
+            .expression_attribute_values(":style", style)
             .expression_attribute_values(":model", s(model))
             .expression_attribute_values(":at", s(updated_at))
             .expression_attribute_values(":sk", s(format!("{updated_at}#{conversation_id}")))
@@ -1376,6 +1410,7 @@ impl Store {
             sources: message.sources.clone(),
             trace: message.trace.clone(),
             model: message.model.clone(),
+            style: message.style,
             input_tokens: message.usage.input_tokens,
             output_tokens: message.usage.output_tokens,
             created_at: message.created_at.clone(),

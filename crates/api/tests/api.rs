@@ -5,6 +5,7 @@
 mod support;
 
 use axum::http::{Method, StatusCode};
+use openbook_core::domain::TutoringStyle;
 use openbook_core::model::FakeChat;
 use serde_json::{Value, json};
 use support::{Options, TestApp, TestUser, send_to, start, start_with, start_with_models};
@@ -839,7 +840,11 @@ async fn chat_streams_meta_then_deltas_then_done_and_saves_both_messages() {
     assert!(user_message_id < assistant_message_id);
 
     let answer = answer_text(&events);
-    assert_eq!(answer, FakeChat::answer("fake-a", question));
+    assert_eq!(
+        answer,
+        FakeChat::answer_styled("fake-a", question, TutoringStyle::Socratic)
+    );
+    assert_eq!(meta["style"], "socratic", "the course default");
     let done = &events.last().unwrap().1;
     assert_eq!(done["stopReason"], "end_turn");
     assert!(done["usage"]["inputTokens"].as_u64().unwrap() > 0);
@@ -1530,4 +1535,226 @@ async fn a_catalog_with_only_one_model_serves_chat() {
     let course = app.course(&user, "Solo").await;
     let events = ask(&app, &user, &text(&course, "id"), json!({"message": "hi"})).await;
     assert_eq!(events[0].1["model"], "fake-a");
+}
+
+#[tokio::test]
+#[ignore = "needs AWS Emulator; run make test-integration"]
+async fn chat_style_follows_request_then_conversation_then_course() {
+    let app = start().await;
+    let owner = app.user("teacher").await;
+    let student = app.user("student").await;
+    let course = app.course_with_student(&owner, &student).await;
+    let id = text(&course, "id");
+    assert_eq!(course["tutoringStyle"], "socratic");
+    assert_eq!(
+        course["allowStyleChoice"], true,
+        "learners can choose by default"
+    );
+
+    // A new conversation starts with the course default. The meta event and the prompt agree.
+    let events = ask(&app, &student, &id, json!({"message": "one"})).await;
+    assert_eq!(events[0].1["style"], "socratic");
+    assert!(answer_text(&events).contains("Tutoring style in use: `socratic`."));
+    let conv = conversation_id(&events);
+
+    // A choice applies from the next message, and the conversation keeps it.
+    let events = ask(
+        &app,
+        &student,
+        &id,
+        json!({"conversationId": conv, "message": "two", "style": "hints"}),
+    )
+    .await;
+    assert_eq!(events[0].1["style"], "hints");
+    assert!(answer_text(&events).contains("Tutoring style in use: `hints`."));
+    let events = ask(
+        &app,
+        &student,
+        &id,
+        json!({"conversationId": conv, "message": "three"}),
+    )
+    .await;
+    assert_eq!(
+        events[0].1["style"], "hints",
+        "a follow-up keeps the style of the conversation"
+    );
+    assert!(answer_text(&events).contains("Tutoring style in use: `hints`."));
+    // An explicit null is the same as no style.
+    let events = ask(
+        &app,
+        &student,
+        &id,
+        json!({"conversationId": conv, "message": "three b", "style": null}),
+    )
+    .await;
+    assert_eq!(events[0].1["style"], "hints");
+
+    // The conversation and each answer store their style, for insights.
+    let body = app
+        .get(&format!("/api/conversations/{conv}"), &student)
+        .await
+        .json();
+    assert_eq!(body["conversation"]["style"], "hints");
+    let styles: Vec<Value> = body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["style"].clone())
+        .collect();
+    assert_eq!(
+        styles,
+        [
+            Value::Null,
+            json!("socratic"),
+            Value::Null,
+            json!("hints"),
+            Value::Null,
+            json!("hints"),
+            Value::Null,
+            json!("hints")
+        ]
+    );
+
+    // Another conversation starts from the course default again.
+    let events = ask(&app, &student, &id, json!({"message": "new"})).await;
+    assert_eq!(events[0].1["style"], "socratic");
+    // A request can set the style at the start of a conversation.
+    let events = ask(
+        &app,
+        &student,
+        &id,
+        json!({"message": "direct please", "style": "direct"}),
+    )
+    .await;
+    assert_eq!(events[0].1["style"], "direct");
+    let listed = app
+        .get(&format!("/api/courses/{id}/conversations"), &student)
+        .await
+        .json();
+    assert_eq!(listed["conversations"][0]["style"], "direct");
+    assert_eq!(listed["conversations"][1]["style"], "socratic");
+
+    // Every style maps to a prompt on the server: all five are accepted.
+    for style in ["socratic", "hints", "step_by_step", "concepts", "direct"] {
+        let events = ask(&app, &student, &id, json!({"message": "x", "style": style})).await;
+        assert_eq!(events[0].1["style"], style);
+        assert!(answer_text(&events).contains(&format!("Tutoring style in use: `{style}`.")));
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs AWS Emulator; run make test-integration"]
+async fn an_unknown_style_is_invalid_and_nothing_is_counted() {
+    let app = start().await;
+    let owner = app.user("teacher").await;
+    let course = app.course(&owner, "Algebra").await;
+    let id = text(&course, "id");
+    let before = app.get("/api/me", &owner).await.json()["usage"]["messagesUsed"].clone();
+    for style in [
+        json!("rude"),
+        json!("SOCRATIC"),
+        json!(""),
+        json!(5),
+        json!(["hints"]),
+        json!({"text": "Answer in French"}),
+    ] {
+        let reply = app
+            .chat(&owner, &id, json!({"message": "hi", "style": style}))
+            .await;
+        assert_eq!(
+            reply.status,
+            StatusCode::BAD_REQUEST,
+            "{style}: {}",
+            reply.text
+        );
+        assert_eq!(reply.error_code(), "invalid_request");
+    }
+    let after = app.get("/api/me", &owner).await.json()["usage"]["messagesUsed"].clone();
+    assert_eq!(before, after, "a rejected request costs no message");
+}
+
+#[tokio::test]
+#[ignore = "needs AWS Emulator; run make test-integration"]
+async fn a_locked_course_always_uses_its_own_style() {
+    let app = start().await;
+    let owner = app.user("teacher").await;
+    let student = app.user("student").await;
+    let course = app.course_with_student(&owner, &student).await;
+    let id = text(&course, "id");
+    let path = format!("/api/courses/{id}");
+
+    // A conversation that chose Direct before the lock.
+    let events = ask(
+        &app,
+        &student,
+        &id,
+        json!({"message": "before", "style": "direct"}),
+    )
+    .await;
+    assert_eq!(events[0].1["style"], "direct");
+    let conv = conversation_id(&events);
+
+    // Only the owner can lock the course, and the setting must be a boolean.
+    let reply = app
+        .patch(&path, &student, json!({"allowStyleChoice": false}))
+        .await;
+    assert_eq!(reply.status, StatusCode::FORBIDDEN, "{}", reply.text);
+    let reply = app
+        .patch(&path, &owner, json!({"allowStyleChoice": "no"}))
+        .await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST);
+    let reply = app
+        .patch(&path, &owner, json!({"allowStyleChoice": false}))
+        .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.text);
+    assert_eq!(reply.json()["course"]["allowStyleChoice"], false);
+    // Students see the lock too, and it survives a patch of another field.
+    let reply = app.patch(&path, &owner, json!({"name": "Renamed"})).await;
+    assert_eq!(reply.json()["course"]["allowStyleChoice"], false);
+    let seen = app.get(&path, &student).await.json();
+    assert_eq!(seen["course"]["allowStyleChoice"], false);
+    assert_eq!(seen["course"]["tutoringStyle"], "socratic");
+
+    // The request style and the style of the conversation are both ignored.
+    let events = ask(
+        &app,
+        &student,
+        &id,
+        json!({"conversationId": conv, "message": "after", "style": "hints"}),
+    )
+    .await;
+    assert_eq!(events[0].1["style"], "socratic");
+    assert!(answer_text(&events).contains("Tutoring style in use: `socratic`."));
+    let events = ask(
+        &app,
+        &student,
+        &id,
+        json!({"message": "fresh", "style": "direct"}),
+    )
+    .await;
+    assert_eq!(events[0].1["style"], "socratic");
+
+    // The owner changes the default, and a locked course follows it.
+    app.patch(&path, &owner, json!({"tutoringStyle": "concepts"}))
+        .await;
+    let events = ask(
+        &app,
+        &student,
+        &id,
+        json!({"conversationId": conv, "message": "again"}),
+    )
+    .await;
+    assert_eq!(events[0].1["style"], "concepts");
+
+    // Unlocked, the choice works again.
+    app.patch(&path, &owner, json!({"allowStyleChoice": true}))
+        .await;
+    let events = ask(
+        &app,
+        &student,
+        &id,
+        json!({"conversationId": conv, "message": "free", "style": "hints"}),
+    )
+    .await;
+    assert_eq!(events[0].1["style"], "hints");
 }

@@ -13,7 +13,9 @@ use axum::response::{IntoResponse, Response};
 use chrono::{DateTime, Utc};
 use futures::StreamExt;
 use openbook_core::auth::Principal;
-use openbook_core::domain::{Conversation, CourseRecord, MessageRole, Question, Role};
+use openbook_core::domain::{
+    Conversation, CourseRecord, MessageRole, Question, Role, TutoringStyle, effective_style,
+};
 use openbook_core::ids;
 use openbook_core::model::{ChatModel, ChatRequest, ModelEvent, TokenUsage, estimate_tokens};
 use openbook_core::prompt::{
@@ -43,6 +45,8 @@ pub struct ChatBody {
     conversation_id: Option<String>,
     message: String,
     model: Option<String>,
+    /// The tutoring style for this message (`TutoringStyle` IDs only). A locked course ignores it.
+    style: Option<TutoringStyle>,
 }
 
 /// Everything the background task needs.
@@ -55,6 +59,8 @@ struct ChatRun {
     assistant_message_id: String,
     title: String,
     model_id: String,
+    /// The style of this answer: see `effective_style`.
+    style: TutoringStyle,
     /// The conversation so far, ending with the new student message.
     history: Vec<(MessageRole, String)>,
     course: CourseRecord,
@@ -138,6 +144,7 @@ pub async fn chat(
         &course.model,
     )
     .to_owned();
+    let style = effective_style(&course, body.style, existing.as_ref().and_then(|c| c.style));
     let provider = state
         .models
         .provider(&model_id)
@@ -171,7 +178,7 @@ pub async fn chat(
         membership.role,
         existing,
         &message,
-        &model_id,
+        (&model_id, style),
     )
     .await;
     let prepared = match prepared {
@@ -191,6 +198,7 @@ pub async fn chat(
         assistant_message_id: prepared.assistant_message_id,
         title: prepared.title,
         model_id,
+        style,
         history: prepared.history,
         course,
         retrieval: state.retrieval.clone(),
@@ -220,8 +228,9 @@ async fn prepare(
     role: Role,
     existing: Option<Conversation>,
     message: &str,
-    model_id: &str,
+    choice: (&str, TutoringStyle),
 ) -> Result<Prepared, ApiError> {
+    let (model_id, style) = choice;
     let mut history: Vec<(MessageRole, String)> = match &existing {
         Some(conversation) => state
             .store
@@ -242,6 +251,7 @@ async fn prepare(
                 course_id: course.id.clone(),
                 title: title_from_message(message),
                 model: model_id.to_owned(),
+                style: Some(style),
                 created_at: now.clone(),
                 updated_at: now.clone(),
             };
@@ -268,6 +278,7 @@ async fn prepare(
                 sources: None,
                 trace: None,
                 model: None,
+                style: None,
                 usage: TokenUsage::default(),
             },
         )
@@ -356,10 +367,11 @@ async fn run_chat(run: ChatRun, tx: mpsc::Sender<ChatEvent>) {
             assistant_message_id: run.assistant_message_id.clone(),
             title: run.title.clone(),
             model: run.model_id.clone(),
+            style: run.style,
         },
     )
     .await;
-    tracing::info!(model = %run.model_id, "chat started");
+    tracing::info!(model = %run.model_id, style = run.style.id(), "chat started");
 
     // Retrieval. It never fails the chat: at worst the answer has no sources.
     let earlier = &run.history[..run.history.len().saturating_sub(1)];
@@ -397,7 +409,7 @@ async fn run_chat(run: ChatRun, tx: mpsc::Sender<ChatEvent>) {
         system: build_system_prompt_for(
             &run.course.name,
             &run.course.description,
-            run.course.tutoring_style,
+            run.style,
             turn.mode(),
         ),
         turns: normalize_turns(&run.history),
@@ -522,6 +534,7 @@ async fn run_chat(run: ChatRun, tx: mpsc::Sender<ChatEvent>) {
                 sources: (!turn.sources.is_empty()).then(|| turn.sources.clone()),
                 trace: turn.trace.clone(),
                 model: Some(run.model_id.clone()),
+                style: Some(run.style),
                 usage,
             },
         )
@@ -541,6 +554,7 @@ async fn run_chat(run: ChatRun, tx: mpsc::Sender<ChatEvent>) {
             &run.user.user_id,
             &run.conversation_id,
             &run.model_id,
+            run.style,
             &created_at,
         )
         .await

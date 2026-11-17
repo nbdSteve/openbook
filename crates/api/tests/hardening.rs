@@ -929,6 +929,7 @@ async fn messages_saved_after_a_conversation_was_deleted_expire() {
                 sources: None,
                 trace: None,
                 model: Some("fake-a".into()),
+                style: None,
                 usage: Default::default(),
             },
         )
@@ -936,7 +937,13 @@ async fn messages_saved_after_a_conversation_was_deleted_expire() {
         .unwrap();
     assert!(
         !store
-            .touch_conversation(&user.id, &conv, "fake-a", &openbook_core::domain::now())
+            .touch_conversation(
+                &user.id,
+                &conv,
+                "fake-a",
+                openbook_core::domain::TutoringStyle::Socratic,
+                &openbook_core::domain::now(),
+            )
             .await
             .unwrap()
     );

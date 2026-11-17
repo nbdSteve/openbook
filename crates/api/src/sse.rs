@@ -6,6 +6,7 @@ use std::time::Duration;
 use axum::response::Sse;
 use axum::response::sse::{Event, KeepAlive};
 use futures::Stream;
+use openbook_core::domain::TutoringStyle;
 use openbook_core::model::TokenUsage;
 use serde_json::{Value, json};
 
@@ -20,11 +21,14 @@ pub enum ChatEvent {
         assistant_message_id: String,
         title: String,
         model: String,
+        /// The tutoring style of the answer (the effective style).
+        style: TutoringStyle,
     },
     /// The `meta` event of a demo answer: no conversation exists, so it has the ID of the demo conversation, the model, and the credits.
     DemoMeta {
         conversation_id: String,
         model: String,
+        style: TutoringStyle,
         attribution: Vec<openbook_core::demo::Attribution>,
     },
     /// The sources of the answer. It comes after `meta` and before the first `delta`.
@@ -63,20 +67,24 @@ impl ChatEvent {
                 assistant_message_id,
                 title,
                 model,
+                style,
             } => json!({
                 "conversationId": conversation_id,
                 "userMessageId": user_message_id,
                 "assistantMessageId": assistant_message_id,
                 "title": title,
                 "model": model,
+                "style": style,
             }),
             ChatEvent::DemoMeta {
                 conversation_id,
                 model,
+                style,
                 attribution,
             } => json!({
                 "conversationId": conversation_id,
                 "model": model,
+                "style": style,
                 "attribution": attribution,
             }),
             ChatEvent::Sources { sources } => json!({ "sources": sources }),
@@ -134,6 +142,7 @@ mod tests {
                 assistant_message_id: "A".into(),
                 title: "Hi".into(),
                 model: "fake".into(),
+                style: TutoringStyle::Hints,
             },
             ChatEvent::Delta {
                 text: "He said \"hi\"\nand left".into(),
@@ -154,7 +163,7 @@ mod tests {
         assert_eq!(parts.headers["content-type"], "text/event-stream");
         let expected = concat!(
             "event: meta\n",
-            "data: {\"assistantMessageId\":\"A\",\"conversationId\":\"C\",\"model\":\"fake\",\"title\":\"Hi\",\"userMessageId\":\"U\"}\n\n",
+            "data: {\"assistantMessageId\":\"A\",\"conversationId\":\"C\",\"model\":\"fake\",\"style\":\"hints\",\"title\":\"Hi\",\"userMessageId\":\"U\"}\n\n",
             "event: delta\n",
             "data: {\"text\":\"He said \\\"hi\\\"\\nand left\"}\n\n",
             "event: done\n",

@@ -101,6 +101,7 @@ impl Store {
             name: name.into(),
             description: description.into(),
             tutoring_style: style,
+            allow_style_choice: true,
             model: model.into(),
             owner_id: OWNER_ID.into(),
             invite_code: String::new(),

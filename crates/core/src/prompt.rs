@@ -44,6 +44,14 @@ pub fn style_instructions(style: TutoringStyle) -> &'static str {
     }
 }
 
+/// The style whose instructions a system prompt holds. The local fake model uses it to show which
+/// style reached the model. It is `None` for a prompt that was not built by `build_system_prompt_for`.
+pub fn style_in_prompt(system: &str) -> Option<TutoringStyle> {
+    TutoringStyle::ALL
+        .into_iter()
+        .find(|style| system.contains(style_instructions(*style)))
+}
+
 /// Removes control characters and cuts the course name, because it goes into the prompt.
 fn clean_line(name: &str, max_chars: usize) -> String {
     let single_line: String = name

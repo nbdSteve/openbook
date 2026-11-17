@@ -1515,8 +1515,11 @@ async fn a_course_without_ready_documents_gets_no_sources_event_and_no_rewrite()
         .await;
     assert!(!names(&events).contains(&"sources"), "{:?}", names(&events));
     let conversation = text(&events[0].1, "conversationId");
-    let plain =
-        openbook_core::model::FakeChat::answer("fake-a", "What is the Pythagorean theorem?");
+    let plain = openbook_core::model::FakeChat::answer_styled(
+        "fake-a",
+        "What is the Pythagorean theorem?",
+        openbook_core::domain::TutoringStyle::Socratic,
+    );
     assert_eq!(
         answer_of(&events),
         plain,

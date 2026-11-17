@@ -24,7 +24,9 @@ use openbook_core::demo::{
     self, BudgetHit, BudgetReservation, DemoConversations, DemoCourse, LimitHit,
     VisitorReservation, parse_viewer_address, source_token_bound, token_bound,
 };
-use openbook_core::domain::{CourseRecord, Document, DocumentStatus, MessageRole};
+use openbook_core::domain::{
+    CourseRecord, Document, DocumentStatus, MessageRole, TutoringStyle, effective_style,
+};
 use openbook_core::model::{ChatModel, ChatRequest, ModelEvent, TokenUsage};
 use openbook_core::prompt::{
     NOT_COVERED_NOTICE, REWRITE_SYSTEM_PROMPT, SourceMode, build_system_prompt_for,
@@ -63,6 +65,8 @@ const SOURCE_WRAPPER_CHARS: usize = 200;
 struct DemoBody {
     message: String,
     conversation_id: Option<String>,
+    /// The style for this answer. Without it, the demo course style. A locked course ignores it.
+    style: Option<TutoringStyle>,
 }
 
 /// The address of the visitor. In Lambda it is the `CloudFront-Viewer-Address` header: the socket
@@ -147,6 +151,8 @@ struct DemoRun {
     retrieval: Arc<Retrieval>,
     message: String,
     max_output: u32,
+    /// The style of this answer: see `effective_style`.
+    style: TutoringStyle,
     conversation_id: String,
     expires_at: i64,
     /// The conversation before this question.
@@ -241,12 +247,20 @@ pub async fn chat(State(state): State<AppState>, request: Request) -> Result<Res
     // From here on, a failure must give the visitor's question back.
     let prepared = async {
         let resumed = demo::resume(&state.store, body.conversation_id.as_deref(), now).await?;
-        let system_tokens = token_bound(&build_system_prompt_for(
-            &course.name,
-            &course.description,
-            course.tutoring_style,
-            SourceMode::NotUsed,
-        )) + token_bound(NOT_COVERED_NOTICE)
+        // The visitor can pick any style, so reserve for the longest prompt.
+        let system_tokens = TutoringStyle::ALL
+            .into_iter()
+            .map(|style| {
+                token_bound(&build_system_prompt_for(
+                    &course.name,
+                    &course.description,
+                    style,
+                    SourceMode::NotUsed,
+                ))
+            })
+            .max()
+            .unwrap_or(0)
+            + token_bound(NOT_COVERED_NOTICE)
             + token_bound(DEMO_PROMPT_NOTE);
         let cost = worst_case_cost(
             &chat_entry,
@@ -300,6 +314,7 @@ pub async fn chat(State(state): State<AppState>, request: Request) -> Result<Res
         }
     };
 
+    let style = effective_style(&course, body.style, None);
     let run = DemoRun {
         store: state.store.clone(),
         provider,
@@ -312,6 +327,7 @@ pub async fn chat(State(state): State<AppState>, request: Request) -> Result<Res
         retrieval: state.retrieval.clone(),
         message,
         max_output,
+        style,
         conversation_id: resumed.id,
         expires_at: resumed.expires_at,
         earlier: resumed.history,
@@ -338,6 +354,7 @@ async fn run_demo(run: DemoRun, tx: mpsc::Sender<ChatEvent>) {
         retrieval,
         message,
         max_output,
+        style,
         conversation_id,
         expires_at,
         earlier,
@@ -353,6 +370,7 @@ async fn run_demo(run: DemoRun, tx: mpsc::Sender<ChatEvent>) {
         ChatEvent::DemoMeta {
             conversation_id: conversation_id.clone(),
             model: model_id.clone(),
+            style,
             attribution: demo.attribution.clone(),
         },
     )
@@ -384,12 +402,7 @@ async fn run_demo(run: DemoRun, tx: mpsc::Sender<ChatEvent>) {
     }
     let mut history = earlier;
     history.push((MessageRole::User, message.clone()));
-    let mut system = build_system_prompt_for(
-        &course.name,
-        &course.description,
-        course.tutoring_style,
-        turn.mode(),
-    );
+    let mut system = build_system_prompt_for(&course.name, &course.description, style, turn.mode());
     system.push_str(DEMO_PROMPT_NOTE);
     let request = ChatRequest {
         system,
