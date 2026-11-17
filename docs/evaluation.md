@@ -21,6 +21,10 @@ A chunk is relevant when its page range includes a labeled page. Every metric is
 - `evals/corpora/<id>/cache-dev/`: a development cache (PDF text layer and fake embeddings) that shows the harness works. It is never used for the baseline, and `--check` refuses it.
 - `evals/corpora/<id>/cache/`: the inputs that make the offline mode deterministic: the page Markdown that real ingestion produced for the corpus (Claude transcription included), and the embeddings of every chunk and every question (keyed by embedding model and the SHA-256 of the exact embedded text, stored as compressed 16-bit floats).
 
+## Benchmarks
+
+`evals/benchmarks.json` is a small public summary of the evaluation, for the README and the landing page. `offline --write-baseline` writes it with the baseline, and `offline --check` fails when it is stale. It has a stable schema (`schema: 1`): the embedding model, the number of questions, for each corpus the id, title, licence, source URL on openstax.org, pages and questions (from `corpus.json` of the corpus), the retrieval metrics (Recall@5, Recall@8, nDCG@8, MRR) for hybrid, dense only, and BM25 only, and the gate metrics (accuracy, false-gate rate, and the share of `off_topic` and of `not_covered` questions that the gate caught), each for all corpora pooled and for each corpus. The README table between `<!-- benchmarks:start -->` and `<!-- benchmarks:end -->` is generated from it (`make benchmarks`, and `make eval` checks it), and the badges of the README read the file on the main branch. The questions are the ones that the retrieval was tuned on, so the numbers are in-sample. The pooled numbers weigh every question the same, not every corpus, so the larger corpus counts more (college-algebra has 107 of 180 questions, about 59 percent).
+
 ## Modes
 
 - **Offline** (`make eval`): chunk the cached pages with the real chunker, build the real BM25 index and an in-memory dense index from the cached embeddings, run the real retrieval and fusion code for every golden question, and print the metrics table. No AWS, no network, deterministic, a few seconds. A missing cache entry is an error, not a silent skip.

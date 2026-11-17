@@ -16,6 +16,8 @@ The evaluation runs the same retrieval code as the API (`openbook_search::retrie
 | `corpora/<id>/golden.jsonl` | The golden questions. Page numbers are pages of the excerpt. |
 | `corpora/<id>/cache/` | The live cache (made by `refresh`, reviewed and committed like code). |
 | `corpora/<id>/cache-dev/` | The development cache. It proves that the harness works. It is never a baseline. |
+| `corpora/<id>/corpus.json` | The title, the licence, and the source URL of the book, for `benchmarks.json`. |
+| `benchmarks.json` | The public summary (schema 1) of the same numbers, for the README and the landing page. Written with the baseline. `--check` fails when it is stale. |
 | `baseline.json` | The hybrid metrics of the committed code, from the live caches: one entry for each corpus and one for all corpora pooled. |
 
 ## Commands
@@ -61,6 +63,15 @@ For tuning, `offline` takes these flags. They change the numbers for one run, an
 | `--gate-distance X`, `--gate-coverage X`, `--gate-matched N` | The numbers of the gate rule |
 
 The report always shows the cap-off mode too, and the gate inputs and the gate sweep.
+
+### The benchmark tables
+
+```
+cargo run -p openbook-eval -- readme
+cargo run -p openbook-eval -- readme --check
+```
+
+`make benchmarks` is the short form of the first command. It writes the tables of `benchmarks.json` between the `<!-- benchmarks:start -->` and `<!-- benchmarks:end -->` markers of `README.md`. `--check` writes nothing and exits 1 when the block is stale; `make eval` runs it. The pooled rows weigh every question the same, so the larger corpus counts more.
 
 ### The grid
 

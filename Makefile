@@ -74,8 +74,13 @@ fmt: ## Format the Rust code
 	$(call part,rust fmt,Cargo.toml,cargo fmt --all)
 
 .PHONY: eval
-eval: ## Retrieval evaluation, offline, checked against evals/baseline.json (no network)
+eval: ## Retrieval evaluation, offline, checked against evals/baseline.json and evals/benchmarks.json, and the README tables (no network)
 	cargo run -q -p openbook-eval -- offline --check
+	cargo run -q -p openbook-eval -- readme --check
+
+.PHONY: benchmarks
+benchmarks: ## Write the benchmark tables of evals/benchmarks.json into README.md (no network)
+	cargo run -q -p openbook-eval -- readme
 
 .PHONY: eval-dev
 eval-dev: ## Retrieval evaluation on the development cache (shows that the harness works; never a baseline)

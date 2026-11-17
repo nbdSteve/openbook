@@ -431,12 +431,31 @@ fn running_headers_are_stripped_from_the_committed_pages() {
         let cache = Cache::load(&corpus.cache_dir(dev)).unwrap();
         let stats = offline::header_stats(&sections, &cache.pages, 1600).unwrap();
         assert!(stats.running_lines >= 4, "{id}: {stats:?}");
-        assert!(stats.removed_lines >= 20, "{id}: {stats:?}");
+        assert!(stats.removed_lines >= 15, "{id}: {stats:?}");
+        // Nothing is left of a header that a longer header covers, such as `# SECTION` from
+        // `# SECTION 5.1 QUADRATIC FUNCTIONS`.
+        assert_eq!(stats.chunks_with_fragment_after, 0, "{id}: {stats:?}");
         assert!(
             stats.chunks_with_header_after < stats.chunks_with_header_before
                 || stats.chunks_with_header_before == 0,
             "{id}: {stats:?}"
         );
+        // Real pages 27 and 28 of college-algebra (the first two pages of the section that starts
+        // at excerpt page 26 are the chapter opener and the first page; 27 and 28 follow): the
+        // header of page 27 has a title at its end, and page 28 has the title alone.
+        if id == "college-algebra" {
+            let stripped = openbook_search::headers::strip_running_lines(
+                &cache.pages[25..37]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (_, t))| (u32::try_from(i + 1).unwrap(), t.clone()))
+                    .collect::<Vec<_>>(),
+            );
+            for (_, text) in &stripped.pages {
+                assert!(!text.lines().any(|l| l.trim() == "# SECTION"), "{text}");
+                assert!(!text.contains("CHAPTER 5 5.1"), "{text}");
+            }
+        }
         // The phrase is gone from the chunks, except for its first occurrence in each section.
         let chunks = offline::build_chunks(&sections, &cache.pages, 1600).unwrap();
         let in_chunks = chunks
@@ -555,6 +574,7 @@ fn live_looking_copy() -> tempfile::TempDir {
         for name in [
             "sections.json".to_owned(),
             "golden.jsonl".to_owned(),
+            "corpus.json".to_owned(),
             corpus
                 .pdf_path()
                 .unwrap()
@@ -702,4 +722,93 @@ fn the_live_refresh_does_not_start_without_the_go_ahead() {
     for corpus in openbook_eval::corpus::discover(dir.path()).unwrap() {
         assert!(!corpus.cache_dir(false).exists());
     }
+}
+
+#[test]
+fn benchmarks_come_with_the_baseline_and_a_stale_file_fails_the_check() {
+    let dir = live_looking_copy();
+    let evals = dir.path().to_str().unwrap();
+    let out = eval(&["offline", "--write-baseline", "--evals", evals]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let path = dir.path().join("benchmarks.json");
+    let original = std::fs::read_to_string(&path).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&original).unwrap();
+    assert_eq!(value["schema"], 1);
+    assert_eq!(value["questions"], 180);
+    assert_eq!(value["corpora"].as_array().unwrap().len(), 2);
+    assert_eq!(value["corpora"][0]["licence"], "CC BY 4.0");
+    assert!(
+        value["corpora"][0]["source"]
+            .as_str()
+            .unwrap()
+            .starts_with("https://openstax.org/")
+    );
+    for scope in ["combined", "corpora"] {
+        assert!(value["retrieval"][scope].is_object());
+        assert!(value["gate"][scope].is_object());
+    }
+    assert!(value["gate"]["combined"]["offTopicCaught"].is_number());
+
+    let out = eval(&["offline", "--check", "--evals", evals]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+
+    // A file that is not what the code gives now fails the check, even when the baseline holds.
+    let mut stale = value.clone();
+    stale["retrieval"]["combined"]["hybrid"]["recallAt8"] = serde_json::json!(0.5);
+    std::fs::write(&path, serde_json::to_string_pretty(&stale).unwrap()).unwrap();
+    let out = eval(&["offline", "--check", "--evals", evals]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));
+    assert!(text(&out.stderr).contains("stale"), "{}", text(&out.stderr));
+    // A missing file says what to do.
+    std::fs::remove_file(&path).unwrap();
+    let out = eval(&["offline", "--check", "--evals", evals]);
+    assert!(!out.status.success());
+    assert!(text(&out.stderr).contains("--write-baseline"));
+}
+
+#[test]
+fn the_readme_block_is_written_and_a_stale_block_fails_the_check() {
+    let dir = live_looking_copy();
+    let evals = dir.path().to_str().unwrap();
+    let out = eval(&["offline", "--write-baseline", "--evals", evals]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let readme = dir.path().join("README.md");
+    let readme_arg = readme.to_str().unwrap();
+    std::fs::write(
+        &readme,
+        "# Title\n\n<!-- benchmarks:start -->\n<!-- benchmarks:end -->\n\nAfter.\n",
+    )
+    .unwrap();
+    let out = eval(&[
+        "readme", "--check", "--evals", evals, "--readme", readme_arg,
+    ]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));
+    let out = eval(&["readme", "--evals", evals, "--readme", readme_arg]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let written = std::fs::read_to_string(&readme).unwrap();
+    assert!(
+        written.contains("| All corpora | 180 | Hybrid |"),
+        "{written}"
+    );
+    assert!(
+        written.contains("| Gate accuracy | False-gate rate |")
+            || written.contains("Gate accuracy")
+    );
+    assert!(written.starts_with("# Title") && written.ends_with("After.\n"));
+    let out = eval(&[
+        "readme", "--check", "--evals", evals, "--readme", readme_arg,
+    ]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    std::fs::write(&readme, written.replace("| Hybrid |", "| Hybrid! |")).unwrap();
+    let out = eval(&[
+        "readme", "--check", "--evals", evals, "--readme", readme_arg,
+    ]);
+    assert_eq!(out.status.code(), Some(1));
+    // The README of the repository has the markers, and its block is what the table generator gives
+    // from a benchmarks file when there is one.
+    let real = std::fs::read_to_string(evals_dir().join("../README.md")).unwrap();
+    assert!(real.contains("<!-- benchmarks:start -->") && real.contains("<!-- benchmarks:end -->"));
+    assert!(real.contains(
+        "raw.githubusercontent.com%2FnbdSteve%2Fopenbook%2Fmain%2Fevals%2Fbenchmarks.json"
+    ));
 }

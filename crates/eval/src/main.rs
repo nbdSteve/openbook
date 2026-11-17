@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use openbook_eval::benchmarks::{self, Benchmarks};
 use openbook_eval::cache::{Cache, CacheKind};
 use openbook_eval::offline::{GateKind, Tuning};
 use openbook_eval::report::{Baseline, check_suite, suite_improved};
@@ -15,6 +16,7 @@ Usage:
                         [--cache DIR] [--evals DIR] [--json FILE] [--markdown FILE] [TUNING]
   openbook-eval grid    [--dev-cache] [--corpus ID] [--cache DIR] [--evals DIR] [--out DIR] [TUNING]
   openbook-eval refresh [--dev-cache] [--missing-only] [--yes] [--corpus ID] [--cache DIR] [--evals DIR]
+  openbook-eval readme  [--check] [--evals DIR] [--readme FILE]
 
 The corpora are the directories of evals/corpora. Without --corpus every command works on all of
 them, and the report shows each corpus and all of them pooled. --cache needs --corpus.
@@ -28,9 +30,12 @@ TUNING (changes the numbers for one run; not allowed with --check or --write-bas
 offline   Runs the evaluation from the caches. No network, no AWS. Prints a Markdown table.
           --check            compares with evals/baseline.json (every corpus and all pooled) and
                              exits 1 on a regression
-          --write-baseline   writes evals/baseline.json from the live caches of all corpora
+          --write-baseline   writes evals/baseline.json and evals/benchmarks.json from the live
+                             caches of all corpora (--check fails when benchmarks.json is stale)
           --dev-cache        uses the cache-dev of each corpus (a development cache; never a baseline)
           --cap-off  treats the whole PDF as one document (the report always shows both)
+readme    Writes the benchmark tables of evals/benchmarks.json between the markers of README.md.
+          --check            writes nothing and exits 1 when the README block is stale
 grid      Runs the whole tuning grid offline and writes grid.md and grid.json (default: target/eval).
           Chunk targets other than the production one need their chunk embeddings in the cache.
 refresh   Builds the caches.
@@ -51,6 +56,7 @@ struct Args {
     check: bool,
     write_baseline: bool,
     missing_only: bool,
+    readme: Option<PathBuf>,
     /// `grid` only: two rows, for the tests.
     tiny: bool,
     yes: bool,
@@ -102,6 +108,7 @@ fn parse(argv: impl Iterator<Item = String>) -> Result<Args, String> {
             "--chunk-tokens" => t.chunk_tokens = Some(number(value(&mut argv, &flag)?, &flag)?),
             "--cap-off" => t.cap_off = true,
             "--tiny" => args.tiny = true,
+            "--readme" => args.readme = Some(value(&mut argv, &flag)?.into()),
             "--header-variant" => {
                 let text = value(&mut argv, &flag)?;
                 t.header_variant =
@@ -195,6 +202,12 @@ async fn offline_command(args: &Args, evals: &Path) -> Result<ExitCode, Error> {
     if args.write_baseline {
         write_file(&baseline_path, &Baseline::from_suite(&report)?.to_json()?)?;
         eprintln!("Wrote {}", baseline_path.display());
+        let benchmarks_path = evals.join("benchmarks.json");
+        write_file(
+            &benchmarks_path,
+            &Benchmarks::from_suite(&report, &corpora)?.to_json()?,
+        )?;
+        eprintln!("Wrote {}", benchmarks_path.display());
     }
     if args.check {
         let baseline = Baseline::load(&baseline_path)?;
@@ -208,6 +221,16 @@ async fn offline_command(args: &Args, evals: &Path) -> Result<ExitCode, Error> {
                 "the baseline is for embedding model {:?} and the caches have {:?}",
                 baseline.embedding_model, report.combined.embedding_model
             )));
+        }
+        let benchmarks_path = evals.join("benchmarks.json");
+        let stale =
+            Benchmarks::load(&benchmarks_path)? != Benchmarks::from_suite(&report, &corpora)?;
+        if stale {
+            eprintln!(
+                "CHECK FAILED: {} is stale. Run `openbook-eval offline --write-baseline` and `openbook-eval readme`, and commit them.",
+                benchmarks_path.display()
+            );
+            return Ok(ExitCode::FAILURE);
         }
         let regressions = check_suite(&baseline, &report)?;
         if regressions.is_empty() {
@@ -289,6 +312,32 @@ async fn refresh_command(args: &Args, evals: &Path) -> Result<ExitCode, Error> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// `readme`: puts the tables of `evals/benchmarks.json` between the markers of the README.
+fn readme_command(args: &Args, evals: &Path) -> Result<ExitCode, Error> {
+    let benchmarks = Benchmarks::load(&evals.join("benchmarks.json"))?;
+    let path = args.readme.clone().unwrap_or_else(|| {
+        evals
+            .parent()
+            .map_or_else(|| PathBuf::from("README.md"), |root| root.join("README.md"))
+    });
+    let old = std::fs::read_to_string(&path).map_err(|e| Error::io(&path, &e))?;
+    let new = benchmarks::replace_block(&old, &benchmarks.to_markdown())?;
+    if new == old {
+        eprintln!("The benchmark block of {} is current.", path.display());
+        return Ok(ExitCode::SUCCESS);
+    }
+    if args.check {
+        eprintln!(
+            "CHECK FAILED: the benchmark block of {} is stale. Run `make benchmarks` and commit it.",
+            path.display()
+        );
+        return Ok(ExitCode::FAILURE);
+    }
+    write_file(&path, &new)?;
+    eprintln!("Wrote the benchmark block of {}", path.display());
+    Ok(ExitCode::SUCCESS)
+}
+
 async fn grid_command(args: &Args, evals: &Path) -> Result<ExitCode, Error> {
     let corpora = corpus::select(evals, args.corpus.as_deref())?;
     check_cache_flag(args, &corpora)?;
@@ -333,6 +382,7 @@ async fn main() -> ExitCode {
         "offline" => offline_command(&args, &evals).await,
         "grid" => grid_command(&args, &evals).await,
         "refresh" => refresh_command(&args, &evals).await,
+        "readme" => readme_command(&args, &evals),
         "help" | "--help" | "-h" => {
             println!("{USAGE}");
             return ExitCode::SUCCESS;

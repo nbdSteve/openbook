@@ -925,6 +925,22 @@ pub fn header_stats(
                 .split(" > ")
                 .any(|part| keys.contains(phrase_key(part).as_str()))
         };
+        // A fragment is a heading that is a part of a running phrase, such as `SECTION` from
+        // `SECTION 5.1 QUADRATIC FUNCTIONS`: what is left when a rule removes too little.
+        let fragment = |chunk: &openbook_search::chunker::Chunk| {
+            chunk.heading_path.split(" > ").any(|part| {
+                let part = phrase_key(part);
+                !part.is_empty()
+                    && !keys.contains(part.as_str())
+                    && keys.iter().any(|k| {
+                        // A part that is at most half of the phrase. A longer part is a heading of
+                        // its own (`1.2 EXPONENTS ...` is the end of `SECTION 1.2 EXPONENTS ...`).
+                        part.split(' ').count() * 2 <= k.split(' ').count()
+                            && (k.starts_with(&format!("{part} "))
+                                || k.ends_with(&format!(" {part}")))
+                    })
+            })
+        };
         let before = chunk_stripped_pages(&local, chunk_chars);
         let after = chunk_pages_with(&local, chunk_chars);
         stats.running_lines += stripped.lines.len();
@@ -937,6 +953,8 @@ pub fn header_stats(
         stats.chunks_with_header_before += before.iter().filter(|c| carries(c)).count();
         stats.chunks += after.len();
         stats.chunks_with_header_after += after.iter().filter(|c| carries(c)).count();
+        stats.chunks_with_fragment_before += before.iter().filter(|c| fragment(c)).count();
+        stats.chunks_with_fragment_after += after.iter().filter(|c| fragment(c)).count();
         for line in &stripped.lines {
             stats.lines.push(HeaderLine {
                 section: section.id.clone(),

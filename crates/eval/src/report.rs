@@ -274,6 +274,10 @@ pub struct HeaderStats {
     /// heading of the section).
     pub chunks_with_header_before: usize,
     pub chunks_with_header_after: usize,
+    /// Chunks with a heading that is a part of a running phrase (a fragment: something is left when
+    /// a rule removes too little), before and after. After the removal it must be 0.
+    pub chunks_with_fragment_before: usize,
+    pub chunks_with_fragment_after: usize,
     pub lines: Vec<HeaderLine>,
 }
 
@@ -286,6 +290,8 @@ impl HeaderStats {
         self.chunks_before += other.chunks_before;
         self.chunks_with_header_before += other.chunks_with_header_before;
         self.chunks_with_header_after += other.chunks_with_header_after;
+        self.chunks_with_fragment_before += other.chunks_with_fragment_before;
+        self.chunks_with_fragment_after += other.chunks_with_fragment_after;
     }
 }
 
@@ -520,13 +526,15 @@ impl Report {
             let _ = writeln!(out);
             let _ = writeln!(
                 out,
-                "Running headers and footers: {} lines found, removed {} times. Chunks with a running header in the heading path: {} of {} before the removal, {} of {} after it (what is left is the first occurrence of each line, which stays).",
+                "Running headers and footers: {} lines found, removed {} times. Chunks with a running header in the heading path: {} of {} before the removal, {} of {} after it (what is left is the first occurrence of each line, which stays). Chunks with a fragment of a running phrase in the heading path: {} before, {} after.",
                 h.running_lines,
                 h.removed_lines,
                 h.chunks_with_header_before,
                 h.chunks_before,
                 h.chunks_with_header_after,
-                h.chunks
+                h.chunks,
+                h.chunks_with_fragment_before,
+                h.chunks_with_fragment_after
             );
         }
         if sweep && !self.gate_sweep.is_empty() {
@@ -954,6 +962,8 @@ mod tests {
                 chunks_before: 12,
                 chunks_with_header_before: 7,
                 chunks_with_header_after: 3,
+                chunks_with_fragment_before: 2,
+                chunks_with_fragment_after: 0,
                 lines: vec![],
             }),
         };
