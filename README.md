@@ -28,21 +28,21 @@ Retrieval is measured offline on excerpts of two openly licensed OpenStax books,
 <!-- benchmarks:start -->
 | Corpus | Questions | Setup | Recall@1 | Recall@5 | Recall@8 | nDCG@8 | MRR |
 |---|---|---|---|---|---|---|---|
-| All corpora | 180 | Hybrid | 0.8130 | 0.9593 | 0.9756 | 0.6129 | 0.8806 |
-| All corpora | 180 | Dense only | 0.8293 | 0.9512 | 0.9675 | 0.6100 | 0.8861 |
-| All corpora | 180 | BM25 only | 0.6585 | 0.9512 | 0.9675 | 0.5497 | 0.7778 |
-| American Government 2e (OpenStax) | 73 | Hybrid | 0.8298 | 0.9574 | 0.9787 | 0.6552 | 0.8936 |
-| American Government 2e (OpenStax) | 73 | Dense only | 0.8298 | 0.9574 | 0.9787 | 0.6405 | 0.8863 |
-| American Government 2e (OpenStax) | 73 | BM25 only | 0.7447 | 0.9787 | 0.9787 | 0.6030 | 0.8429 |
-| College Algebra (OpenStax) | 107 | Hybrid | 0.8026 | 0.9605 | 0.9737 | 0.5867 | 0.8726 |
-| College Algebra (OpenStax) | 107 | Dense only | 0.8289 | 0.9474 | 0.9605 | 0.5911 | 0.8860 |
-| College Algebra (OpenStax) | 107 | BM25 only | 0.6053 | 0.9342 | 0.9605 | 0.5168 | 0.7376 |
+| All corpora | 180 | Hybrid | 0.7642 | 0.9675 | 0.9919 | 0.6064 | 0.8553 |
+| All corpora | 180 | Dense only | 0.8293 | 0.9593 | 0.9756 | 0.6062 | 0.8858 |
+| All corpora | 180 | BM25 only | 0.6423 | 0.9431 | 0.9675 | 0.5460 | 0.7672 |
+| American Government 2e (OpenStax) | 73 | Hybrid | 0.7660 | 0.9787 | 1.0000 | 0.6557 | 0.8606 |
+| American Government 2e (OpenStax) | 73 | Dense only | 0.8298 | 0.9574 | 0.9787 | 0.6413 | 0.8803 |
+| American Government 2e (OpenStax) | 73 | BM25 only | 0.7234 | 0.9787 | 0.9787 | 0.6077 | 0.8312 |
+| College Algebra (OpenStax) | 107 | Hybrid | 0.7632 | 0.9605 | 0.9868 | 0.5758 | 0.8520 |
+| College Algebra (OpenStax) | 107 | Dense only | 0.8289 | 0.9605 | 0.9737 | 0.5844 | 0.8893 |
+| College Algebra (OpenStax) | 107 | BM25 only | 0.5921 | 0.9211 | 0.9605 | 0.5078 | 0.7277 |
 
 | Corpus | Gate accuracy | False-gate rate | Off-topic questions caught | Not-covered questions caught |
 |---|---|---|---|---|
-| All corpora | 0.8722 | 0.0000 | 1.0000 | 0.3030 |
-| American Government 2e (OpenStax) | 0.8904 | 0.0000 | 1.0000 | 0.4286 |
-| College Algebra (OpenStax) | 0.8598 | 0.0000 | 1.0000 | 0.2105 |
+| All corpora | 0.8944 | 0.0000 | 1.0000 | 0.4242 |
+| American Government 2e (OpenStax) | 0.9178 | 0.0000 | 1.0000 | 0.5714 |
+| College Algebra (OpenStax) | 0.8785 | 0.0000 | 1.0000 | 0.3158 |
 <!-- benchmarks:end -->
 
 ## License
