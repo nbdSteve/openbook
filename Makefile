@@ -86,6 +86,15 @@ eval-live: ## Refresh evals/cache with REAL Bedrock calls: needs AWS_PROFILE. It
 	@test -n "$${AWS_PROFILE:-}" || { echo "error: set AWS_PROFILE (this calls real AWS)" >&2; exit 1; }
 	OPENBOOK_PDFIUM_PATH="$$(scripts/fetch-pdfium.sh | tail -1)" cargo run -q --release -p openbook-eval -- refresh $(if $(YES),--yes,)
 
+.PHONY: eval-grid
+eval-grid: ## Run the whole retrieval tuning grid offline; writes target/eval/grid.md and grid.json (no network)
+	cargo run -q -p openbook-eval -- grid
+
+.PHONY: eval-live-missing
+eval-live-missing: ## Add the missing embeddings and rewrites to evals/cache with REAL Bedrock calls, no transcription: needs AWS_PROFILE. It prints the calls and a cost bound; add YES=1 to start
+	@test -n "$${AWS_PROFILE:-}" || { echo "error: set AWS_PROFILE (this calls real AWS)" >&2; exit 1; }
+	cargo run -q -p openbook-eval -- refresh --missing-only $(if $(YES),--yes,)
+
 .PHONY: test-integration
 test-integration: ## Rust integration tests against AWS Emulator (port 9320)
 	$(call part,rust integration tests,Cargo.toml,scripts/test-integration.sh)

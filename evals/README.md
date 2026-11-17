@@ -2,7 +2,7 @@
 
 This directory holds the data of the retrieval evaluation. The design is in `docs/evaluation.md`. The code is the `openbook-eval` crate (`crates/eval`).
 
-The evaluation runs the same retrieval code as the API (`openbook_search::retrieval`: query cleaning, reciprocal rank fusion, the per-document cap, the relevance gate), the real chunker, and the real BM25 index. The dense index is in memory, over embeddings from the cache.
+The evaluation runs the same retrieval code as the API (`openbook_search::retrieval`: query cleaning, reciprocal rank fusion, the soft per-document cap, the relevance gate), the real chunker, and the real BM25 index. The dense index is in memory, over embeddings from the cache.
 
 ## What is here
 
@@ -42,7 +42,29 @@ cargo run -p openbook-eval -- offline --write-baseline
 
 `--check` and `--write-baseline` refuse a dev cache.
 
-For tuning, `offline` takes `--rrf-k N`, `--final-sources N`, `--max-per-document N`, and `--gate-distance X`. They change the numbers of fusion and the gate for one run. The production numbers are in `crates/search/src/retrieval.rs`.
+For tuning, `offline` takes these flags. They change the numbers for one run, and they cannot be used with `--check` or `--write-baseline`. The production numbers are in `crates/search/src/retrieval.rs`.
+
+| Flag | What it changes |
+|---|---|
+| `--rrf-k N` | The `k` of reciprocal rank fusion |
+| `--lexical-weight X` | The weight of the BM25 list in the fusion (the dense list has weight 1) |
+| `--final-sources N` | How many sources the run returns |
+| `--max-per-document N` | The soft per-document cap |
+| `--dense-candidates N`, `--lexical-candidates N` | How many candidates each retriever returns |
+| `--chunk-tokens N` | The chunk target (300, 400, and 600 are in the cache) |
+| `--single-document` | Treat the whole PDF as one document |
+| `--gate any\|dense\|combined` | The gate rule: any BM25 hit, the dense distance only, or the dense distance or a strong lexical match |
+| `--gate-distance X`, `--gate-coverage X`, `--gate-matched N` | The numbers of the gate rule |
+
+The report always shows the single-document mode too, and the gate inputs and the gate sweep.
+
+### The grid
+
+```
+cargo run -p openbook-eval -- grid
+```
+
+`make eval-grid` is the short form. It runs every combination of RRF `k` (30, 60, 100), final sources (6, 8, 10), candidates (20, 40), most sources per document (2, 3, 4, 6), BM25 weight (0.5, 1.0), and chunk target (300, 400, 600 tokens), each in both document modes, and writes `target/eval/grid.md` (one table per knob, then the best settings) and `grid.json` (every row). It keeps the gate rule of the cache's embedding model, and it takes the gate flags. The chunk targets other than 400 need their chunk embeddings in the cache.
 
 ### Refresh the live cache (real AWS)
 
@@ -59,6 +81,14 @@ This prints what it will call and about what it costs, and then stops. To start,
 
 It reads the normal AWS environment (`AWS_PROFILE`, `AWS_REGION`; the Region is `ap-southeast-2` when none is set). The model for transcription and rewrite is `au.anthropic.claude-haiku-4-5-20251001-v1:0` unless `OPENBOOK_EVAL_MODEL_ID` says another one. It does not touch S3, DynamoDB, SQS, or S3 Vectors. Review the diff of `evals/cache/`, then run `offline --write-baseline` and commit both.
 
+### Add what the cache lacks (real AWS, small)
+
+```
+AWS_PROFILE=<profile> cargo run -p openbook-eval -- refresh --missing-only
+```
+
+`AWS_PROFILE=<profile> make eval-live-missing` (with `YES=1` to start) is the short form. It reuses `evals/cache/pages`, does no page transcription, and does not need PDFium. It calls Bedrock only for the Titan embeddings and the follow-up rewrites that the cache does not have: new or changed questions, and the chunks of the other chunk targets. It prints each call and an upper bound of the cost first, and starts only with `--yes`. It keeps the models that the cache was made with, so the cache keys stay valid, and it drops entries that no run needs.
+
 ### Refresh the development cache (no AWS)
 
 ```
@@ -73,10 +103,11 @@ The pages are the PDF text layer, the embeddings are fake (hashed words), and a 
 - A chunk is relevant when its page range includes a labeled page. A chunk that includes only a page next to a labeled page has gain 1 for nDCG (the labeled page has gain 2).
 - The ranked lists are ten results deep, so that nDCG@10 has ten places. The API returns the first eight.
 - Dense only and BM25 only use the same gate rule and the same fusion code on one list. A covered question that the gate cuts off has no results, so it counts as a miss. The false-gate rate shows how often that happens.
-- A `not_covered` question is right when the gate gives no sources.
+- A `not_covered` or `off_topic` question is right when the gate gives no sources. The report gives the gate for covered questions, `not_covered`, `off_topic`, and both together.
+- Recall@5, Recall@8, and MRR read the list that the API returns (`final_sources` long). nDCG@10 reads a list that is ten deep, so it has ten places.
 
 ## The golden set
 
-Each line of `golden.jsonl` is `{ "id", "question", "relevantPages", "kind" }`, and a `followup` also has `context` (the earlier question). The kinds are `lookup`, `paraphrase`, `notation`, `followup`, and `not_covered`. The set needs at least 80 questions and at least 10 of each kind. The tests check this.
+Each line of `golden.jsonl` is `{ "id", "question", "relevantPages", "kind" }`, and a `followup` also has `context` (the earlier question). The kinds are `lookup`, `paraphrase`, `notation`, `followup`, `not_covered`, and `off_topic`. The set needs at least 80 questions and at least 10 of each kind. The tests check this.
 
-Every question was written from the text of the pages and checked against the page. `not_covered` questions are plausible student questions that the excerpt does not answer. To add a question, find the page in the PDF, write the question and its page numbers, and run `offline --dev-cache` to see that the file still loads.
+Every question was written from the text of the pages and checked against the page. `not_covered` questions are plausible student questions about nearby math that the excerpt does not teach (hard negatives for the gate). A question is `not_covered` only when no page teaches the answer: a mention in a chapter outline or a list of learning objectives does not count. `off_topic` questions have no relation to the course: general knowledge, other school subjects, and small talk such as "hi" and "thanks, that makes sense". To add a question, find the page in the PDF, write the question and its page numbers, and run `offline --dev-cache` to see that the file still loads.
