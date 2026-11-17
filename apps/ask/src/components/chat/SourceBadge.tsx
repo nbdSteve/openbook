@@ -3,7 +3,7 @@ import { ChevronRight } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { cn } from '@/lib/cn';
 import type { Source } from '@/services/api/types';
-import { sourceLabel } from './citations';
+import { chipName, sourceLabel } from './citations';
 import { useSourceHighlight } from './SourceHighlight';
 
 interface Position {
@@ -20,8 +20,8 @@ const POPOVER_MAX_HEIGHT = 320;
 
 interface SourceButtonProps {
   source: Source;
-  /** `badge` is the inline [n] mark. `entry` is a row in the sources list. */
-  variant: 'badge' | 'entry';
+  /** `badge` is the inline [n] mark. `entry` is a cited source in the list. `other` is a passage that was found but not cited. */
+  variant: 'badge' | 'entry' | 'other';
 }
 
 /**
@@ -119,15 +119,34 @@ export function SourceButton({ source, variant }: SourceButtonProps) {
 
   useEffect(() => () => window.clearTimeout(hideTimer.current), []);
 
+  // A button that unmounts while it is the highlighted one must clear the highlight, or the ring stays.
+  const latest = useRef({ active, onActive });
+  useEffect(() => {
+    latest.current = { active, onActive };
+  });
+  useEffect(
+    () => () => {
+      if (latest.current.active === source.n) latest.current.onActive(null);
+    },
+    [source.n],
+  );
+
   const content: ReactNode =
     variant === 'badge' ? (
       source.n
     ) : (
       <>
-        <span className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-md bg-teal-subtle px-1 text-[11px] font-bold text-teal">{source.n}</span>
-        <span className="flex min-w-0">
-          <span className="truncate">{source.documentName}</span>
-          {source.page !== undefined && <span className="shrink-0">, p. {source.page}</span>}
+        <span
+          className={cn(
+            'flex h-5 min-w-5 shrink-0 items-center justify-center rounded-md px-1 text-[11px] font-bold',
+            variant === 'other' ? 'bg-bg-tertiary text-text-muted' : 'bg-teal-subtle text-teal',
+          )}
+        >
+          {source.n}
+        </span>
+        <span className="flex min-w-0 gap-1.5">
+          <span className="truncate">{chipName(source.documentName)}</span>
+          {source.page !== undefined && <span className="shrink-0 text-text-muted">p. {source.page}</span>}
         </span>
       </>
     );
@@ -164,8 +183,11 @@ export function SourceButton({ source, variant }: SourceButtonProps) {
         className={cn(
           variant === 'badge'
             ? 'mx-0.5 inline-flex h-5 min-w-5 items-center justify-center rounded-md bg-teal-subtle px-1 align-baseline text-[11px] font-bold text-teal transition-colors hover:bg-teal-light'
-            : 'inline-flex min-h-8 max-w-full items-center gap-2 rounded-lg border border-border bg-bg-secondary px-2 py-1 text-left text-xs text-text-secondary transition-colors hover:bg-surface-hover',
-          highlighted && (variant === 'badge' ? 'bg-teal-light ring-2 ring-teal' : 'border-teal bg-teal-subtle text-text-primary ring-1 ring-teal'),
+            : variant === 'entry'
+              ? 'inline-flex min-h-8 max-w-full items-center gap-2 rounded-lg border border-border bg-bg-secondary px-2 py-1 text-left text-xs text-text-secondary transition-colors hover:bg-surface-hover'
+              : // A passage that was found but not cited: no border and muted text, so it does not look like evidence.
+                'inline-flex min-h-8 max-w-full items-center gap-2 rounded-lg px-2 py-1 text-left text-xs text-text-muted transition-colors hover:bg-surface-hover',
+          highlighted && (variant === 'badge' ? 'bg-teal-light ring-2 ring-teal' : 'bg-teal-subtle text-text-primary ring-1 ring-teal'),
         )}
       >
         {content}
@@ -220,24 +242,25 @@ interface SourcesListProps {
 
 /**
  * The compact sources list under an answer. It lists only the sources that the answer cites.
- * The other retrieved passages sit behind a disclosure, so they do not look like evidence.
+ * The other retrieved passages sit behind a disclosure, in a quieter style, so they do not look like evidence.
  */
 export function SourcesList({ cited, other, streaming = false }: SourcesListProps) {
   const [expanded, setExpanded] = useState(false);
   const otherId = useId();
   const showOther = other.length > 0 && !streaming;
   if (cited.length === 0 && !showOther) return null;
-  const noneUsed = cited.length === 0;
-  const label = noneUsed
-    ? `Searched ${plural(other.length, 'passage', 'passages')}, none used`
-    : `${expanded ? 'Hide' : 'Show'} ${plural(other.length, 'other passage', 'other passages')} that ${other.length === 1 ? 'was' : 'were'} searched`;
+  // The name stays the same in both states. The chevron and aria-expanded show the state.
+  const label =
+    cited.length === 0
+      ? `${plural(other.length, 'passage', 'passages')} found, none cited`
+      : `${plural(other.length, 'more passage', 'more passages')} found`;
 
   return (
-    <div className="mt-3 border-t border-border-subtle pt-2.5" data-testid="sources">
+    <div className="mt-3 border-t border-border pt-2.5" data-testid="sources">
       {cited.length > 0 && (
         <>
           <p className="mb-1.5 text-xs font-medium text-text-muted">Sources</p>
-          <ul className="flex flex-wrap gap-1.5" aria-label="Sources for this answer">
+          <ul role="list" className="flex flex-wrap gap-1.5" aria-label="Sources for this answer">
             {cited.map((source) => (
               <li key={source.n} className="min-w-0 max-w-full">
                 <SourceButton source={source} variant="entry" />
@@ -255,7 +278,7 @@ export function SourcesList({ cited, other, streaming = false }: SourcesListProp
             data-testid="other-sources-toggle"
             onClick={() => setExpanded((value) => !value)}
             className={cn(
-              '-ml-1 inline-flex min-h-8 items-start gap-1 rounded-lg px-1 py-2 text-left leading-4 text-xs text-text-muted transition-colors hover:text-text-secondary',
+              '-ml-1 inline-flex min-h-8 items-start gap-1 rounded-lg px-1 py-2 text-left text-xs leading-4 text-text-muted transition-colors hover:text-text-secondary',
               cited.length > 0 && 'mt-1',
             )}
           >
@@ -264,10 +287,10 @@ export function SourcesList({ cited, other, streaming = false }: SourcesListProp
           </button>
           <div id={otherId} hidden={!expanded}>
             {expanded && (
-              <ul className="mt-1 flex flex-wrap gap-1.5" aria-label="Other passages that were searched">
+              <ul role="list" className="mt-1 flex flex-wrap gap-1" aria-label="Passages found">
                 {other.map((source) => (
                   <li key={source.n} className="min-w-0 max-w-full">
-                    <SourceButton source={source} variant="entry" />
+                    <SourceButton source={source} variant="other" />
                   </li>
                 ))}
               </ul>

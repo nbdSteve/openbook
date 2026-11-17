@@ -160,7 +160,7 @@ const SCREENS: Screen[] = [
       const list = page.getByRole('list', { name: 'Sources for this answer' });
       await expect(list.getByRole('listitem')).toHaveCount(2);
       await expect(list.getByRole('listitem').first()).toContainText('Introduction to Plant Biology');
-      await expect(page.getByRole('button', { name: 'Show 6 other passages that were searched' })).toHaveAttribute('aria-expanded', 'false');
+      await expect(page.getByRole('button', { name: '6 more passages found' })).toHaveAttribute('aria-expanded', 'false');
     },
   },
   {
@@ -171,8 +171,8 @@ const SCREENS: Screen[] = [
       await expect(page.getByRole('list', { name: 'Sources for this answer' })).toBeVisible();
     },
     act: async (page) => {
-      await page.getByRole('button', { name: 'Show 6 other passages that were searched' }).click();
-      await expect(page.getByRole('list', { name: 'Other passages that were searched' }).getByRole('listitem')).toHaveCount(6);
+      await page.getByRole('button', { name: '6 more passages found' }).click();
+      await expect(page.getByRole('list', { name: 'Passages found' }).getByRole('listitem')).toHaveCount(6);
     },
   },
   {
@@ -201,7 +201,7 @@ const SCREENS: Screen[] = [
     ready: async (page) => {
       await expect(page.getByText('do not seem to cover that question')).toBeVisible();
       await expect(page.getByText('Sources', { exact: true })).toHaveCount(0);
-      await expect(page.getByRole('button', { name: 'Searched 8 passages, none used' })).toHaveAttribute('aria-expanded', 'false');
+      await expect(page.getByRole('button', { name: '8 passages found, none cited' })).toHaveAttribute('aria-expanded', 'false');
     },
   },
   {
@@ -209,11 +209,11 @@ const SCREENS: Screen[] = [
     url: `/app/c/${COURSE_ID}/chat/NONECITED`,
     signedIn: true,
     ready: async (page) => {
-      await expect(page.getByRole('button', { name: 'Searched 8 passages, none used' })).toBeVisible();
+      await expect(page.getByRole('button', { name: '8 passages found, none cited' })).toBeVisible();
     },
     act: async (page) => {
-      await page.getByRole('button', { name: 'Searched 8 passages, none used' }).click();
-      await expect(page.getByRole('list', { name: 'Other passages that were searched' }).getByRole('listitem')).toHaveCount(8);
+      await page.getByRole('button', { name: '8 passages found, none cited' }).click();
+      await expect(page.getByRole('list', { name: 'Passages found' }).getByRole('listitem')).toHaveCount(8);
     },
   },
   {

@@ -207,16 +207,28 @@ test('an answer from the uploaded PDF shows citations and sources, also after a 
   const checkSources = async () => {
     const answer = student.getByTestId('assistant-message').last();
     const list = answer.getByRole('list', { name: 'Sources for this answer' });
+    if (DEPLOYED) {
+      // The real model may cite nothing. Then the list is not there, and the passages sit behind the toggle.
+      if ((await list.count()) === 0) {
+        await answer.getByTestId('other-sources-toggle').click();
+        const entry = answer.getByRole('list', { name: 'Passages found' }).getByRole('button').first();
+        await expect(entry).toContainText('sample');
+        await entry.click();
+        await expect(student.getByRole('dialog', { name: /Source \d/ })).toBeVisible();
+        await student.keyboard.press('Escape');
+        await expect(student.getByRole('dialog')).toHaveCount(0);
+        return;
+      }
+    }
     await expect(list).toBeVisible();
-    const entry = list.getByRole('button').filter({ hasText: 'sample.pdf' }).first();
+    const entry = list.getByRole('button').filter({ hasText: 'sample' }).first();
     await expect(entry).toContainText('p. 1');
     if (!DEPLOYED) {
-      // The fake model cites [1] and [2], and they link to the list entries.
-      await expect(answer.locator('[data-variant="badge"]').first()).toBeVisible();
-      // The list holds only cited sources: each entry has a badge in the text.
-      for (const n of await list.locator('[data-variant="entry"]').evaluateAll((els) => els.map((el) => el.getAttribute('data-source-n')))) {
-        await expect(answer.locator(`[data-variant="badge"][data-source-n="${n}"]`).first()).toBeVisible();
-      }
+      // The fake model cites [1] and [2]. The list holds exactly the cited sources, in the same order as the badges.
+      const badgeNumbers = await answer.locator('[data-variant="badge"]').evaluateAll((els) => [...new Set(els.map((el) => el.getAttribute('data-source-n')))]);
+      const entryNumbers = await list.locator('[data-variant="entry"]').evaluateAll((els) => els.map((el) => el.getAttribute('data-source-n')));
+      expect(badgeNumbers.length).toBeGreaterThan(0);
+      expect(entryNumbers).toEqual(badgeNumbers);
     }
     // Opening a source shows its passage as plain text.
     await entry.click();

@@ -1,36 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { Source } from '@/services/api/types';
-import { citationNumber, citedNumbers, linkCitations, normalizeMath } from './citations';
+import { citationNumber, chipName, citedNumbers, normalizeMath } from './citations';
 
 const source = (n: number): Source => ({ n, documentId: 'D', documentName: 'a.pdf', snippet: 's' });
-
-describe('linkCitations', () => {
-  it('links only numbers that have a source', () => {
-    expect(linkCitations('See [1] and [3].', [source(1), source(2)])).toBe('See [1](#cite-1) and [3].');
-  });
-
-  it('leaves text alone when there are no sources', () => {
-    expect(linkCitations('Array [1] here', undefined)).toBe('Array [1] here');
-    expect(linkCitations('Array [1] here', [])).toBe('Array [1] here');
-  });
-
-  it('does not touch code spans, fenced code, or existing links', () => {
-    const text = 'Use `a[1]` and\n```\nb[1]\n```\nand [1](https://x.test) then [1].';
-    expect(linkCitations(text, [source(1)])).toBe('Use `a[1]` and\n```\nb[1]\n```\nand [1](https://x.test) then [1](#cite-1).');
-  });
-
-  it('does not touch math, but links text next to it', () => {
-    expect(linkCitations('Then $a[1]$ and $$b[1]$$ and see [1].', [source(1)])).toBe(
-      'Then $a[1]$ and $$b[1]$$ and see [1](#cite-1).',
-    );
-    expect(linkCitations('It costs $5 or $6 [1].', [source(1)])).toBe('It costs $5 or $6 [1](#cite-1).');
-  });
-
-  it('reads the number back from the link', () => {
-    expect(citationNumber('#cite-12')).toBe(12);
-    expect(citationNumber('https://x.test')).toBeNull();
-  });
-});
 
 describe('citedNumbers', () => {
   const sources = [source(1), source(2), source(3)];
@@ -47,28 +19,52 @@ describe('citedNumbers', () => {
     expect(citedNumbers('', sources)).toEqual([]);
   });
 
-  it('ignores markers in code and math, like linkCitations', () => {
-    expect(citedNumbers('Use `a[1]` and\n```\nb[2]\n```\nthen $a[1]$ and $$b[2]$$.', sources)).toEqual([]);
-    expect(citedNumbers('Math \\(a[1]\\) and \\[b[2]\\] and text [3].', sources)).toEqual([3]);
-    expect(citedNumbers('It costs $5 or $6 [1].', sources)).toEqual([1]);
+  it('ignores markers in code of every kind', () => {
+    expect(citedNumbers('Use `a[1]` and ``b[2]``.', sources)).toEqual([]);
+    expect(citedNumbers('```\nb[2]\n```', sources)).toEqual([]);
+    expect(citedNumbers('````\n```\n[1]\n```\n````', sources)).toEqual([]);
+    expect(citedNumbers('Text\n\n    indented [1]\n\nmore', sources)).toEqual([]);
+    expect(citedNumbers('Use `a\n[1]` here', sources)).toEqual([]);
+    expect(citedNumbers('```python\nx = arr[1]', sources)).toEqual([]);
   });
 
-  it('ignores a marker followed by ( or :', () => {
-    expect(citedNumbers('See [1](https://x.test) and [2]: note.', sources)).toEqual([]);
-    expect(citedNumbers('See [1] (really) and [2] : note.', sources)).toEqual([1, 2]);
+  it('ignores markers in math, but not in prices', () => {
+    expect(citedNumbers('Then $a[1]$ and $$b[2]$$.', sources)).toEqual([]);
+    expect(citedNumbers('Math \\(a[1]\\) and \\[b[2]\\] and text [3].', sources)).toEqual([3]);
+    expect(citedNumbers('It costs \\$5 per unit [1], up from \\$4.', sources)).toEqual([1]);
+  });
+
+  it('ignores markers in HTML and in the text of a link', () => {
+    expect(citedNumbers('<div>\n[1]\n</div>', sources)).toEqual([]);
+    expect(citedNumbers('See [about [2]](https://x.test) and [1](https://x.test).', sources)).toEqual([]);
+  });
+
+  it('counts a marker before a colon in a line, but not a half-written link', () => {
+    expect(citedNumbers('Claim [1]: more text.', sources)).toEqual([1]);
+    expect(citedNumbers('See [1](https://x', sources)).toEqual([]);
+    expect(citedNumbers('See [1] (really).', sources)).toEqual([1]);
+  });
+
+  it('counts a model-written link to a known source, and not to an unknown one', () => {
+    expect(citedNumbers('A [this](#cite-3) and [that](#cite-9).', sources)).toEqual([3]);
   });
 
   it('does not count a partial marker while the answer streams', () => {
     expect(citedNumbers('Claim [1', sources)).toEqual([]);
     expect(citedNumbers('Claim [1]', sources)).toEqual([1]);
   });
+});
 
-  it('agrees with linkCitations on every case above', () => {
-    const texts = ['B [2], A [1][2].', 'Use `a[1]` $a[1]$ [3]', '[1](u) [2]: x [3]', 'Math \\(a[1]\\) [2]'];
-    for (const text of texts) {
-      const linked = [...linkCitations(normalizeMath(text), sources).matchAll(/\[(\d+)\]\(#cite-\d+\)/g)].map((m) => Number(m[1]));
-      expect(citedNumbers(text, sources)).toEqual([...new Set(linked)]);
-    }
+describe('citationNumber and chipName', () => {
+  it('reads the number back from the link', () => {
+    expect(citationNumber('#cite-12')).toBe(12);
+    expect(citationNumber('https://x.test')).toBeNull();
+  });
+
+  it('drops a trailing .pdf in any case, and nothing else', () => {
+    expect(chipName('Lecture 4.pdf')).toBe('Lecture 4');
+    expect(chipName('Lecture 4.PDF')).toBe('Lecture 4');
+    expect(chipName('a.pdf.docx')).toBe('a.pdf.docx');
   });
 });
 

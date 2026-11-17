@@ -5,7 +5,7 @@ import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
 import type { Source } from '@/services/api/types';
-import { citationNumber, linkCitations, normalizeMath } from './citations';
+import { citationNumber, normalizeMath, remarkCitations } from './citations';
 import { rehypeKeepMathTogether } from './rehypeKeepMathTogether';
 import { SourceButton } from './SourceBadge';
 
@@ -22,7 +22,7 @@ interface MessageContentProps {
 }
 
 export function MessageContent({ content, sources, className = '' }: MessageContentProps) {
-  const text = useMemo(() => linkCitations(normalizeMath(content), sources), [content, sources]);
+  const text = useMemo(() => normalizeMath(content), [content]);
 
   const components = useMemo<Components>(
     () => ({
@@ -102,7 +102,7 @@ export function MessageContent({ content, sources, className = '' }: MessageCont
   return (
     <div className={`message-content min-w-0 text-[0.95rem] ${className}`}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath]}
+        remarkPlugins={[remarkGfm, remarkMath, [remarkCitations, { sources }]]}
         rehypePlugins={[rehypeKatex, rehypeKeepMathTogether]}
         components={components}
         disallowedElements={DISALLOWED}

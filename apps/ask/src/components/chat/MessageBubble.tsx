@@ -75,7 +75,7 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
               </div>
             )}
 
-            {!isUser && message.state !== 'failed' && <SourcesList cited={cited} other={other} streaming={streaming} />}
+            {!isUser && message.state !== 'failed' && message.content.trim() !== '' && <SourcesList cited={cited} other={other} streaming={streaming} />}
 
             {message.state === 'stopped' && (
               <p className="mt-2 flex items-center gap-1.5 text-xs text-text-muted">

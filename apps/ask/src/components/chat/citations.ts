@@ -1,8 +1,11 @@
+import type { Parent, Root, RootContent } from 'mdast';
+import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import remarkParse from 'remark-parse';
+import { unified } from 'unified';
 import type { Source } from '@/services/api/types';
 
 const CODE_SEGMENT = /(```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]*`)/;
-// Display math, then inline math whose dollar signs touch the formula (so prices such as "$5 or $6" stay text).
-const MATH_SEGMENT = /(\$\$[\s\S]*?\$\$|\$[^$\s](?:[^$\n]*[^$\s])?\$)/;
 
 /** Apply `change` to the text outside the given segments (code, math), and keep the segments as they are. */
 function outside(text: string, segment: RegExp, change: (part: string) => string): string {
@@ -27,39 +30,76 @@ export function normalizeMath(input: string): string {
   );
 }
 
-const MARKER = /\[(\d{1,3})\](?![(:])/g;
+// A marker is `[n]` with one to three digits. A `(` right after it is a half-written link, so it stays text.
+const MARKER = /\[(\d{1,3})\](?!\()/g;
+const CITE_HREF = /^#cite-(\d+)$/;
 
-/** Call `onMarker` for each `[n]` marker outside code and math, and return the text with the results put in. */
-function replaceMarkers(content: string, replace: (match: string, n: number) => string): string {
-  return outside(content, CODE_SEGMENT, (part) =>
-    outside(part, MATH_SEGMENT, (text) => text.replace(MARKER, (match, n: string) => replace(match, Number(n)))),
-  );
-}
+/** The parser that the renderer uses (react-markdown with these two plugins). */
+const parser = unified().use(remarkParse).use(remarkGfm).use(remarkMath).freeze();
 
 /**
- * Turn `[n]` citation markers into links to `#cite-n`, but only for numbers that have a source.
- * Code, math, and links like `[1](url)` stay as they are.
+ * Turn `[n]` markers in the text nodes of the tree into links to `#cite-n`, and return the
+ * numbers that are cited, in the order of their first citation. Only the parser decides what is
+ * text: code, math, HTML, images, and the text of a link are never touched. A link to `#cite-n`
+ * that the model wrote itself counts as a citation too. A number without a source is not cited.
  */
-export function linkCitations(content: string, sources: Source[] | undefined): string {
-  if (!sources || sources.length === 0) return content;
-  const known = new Set(sources.map((s) => s.n));
-  return replaceMarkers(content, (match, n) => (known.has(n) ? `[${n}](#cite-${n})` : match));
+function citeInTree(tree: Root, known: Set<number>): number[] {
+  const cited: number[] = [];
+  const note = (n: number) => {
+    if (!cited.includes(n)) cited.push(n);
+  };
+  const walk = (parent: Parent) => {
+    const children: RootContent[] = [];
+    for (const child of parent.children) {
+      if (child.type === 'link') {
+        const n = Number(CITE_HREF.exec(child.url)?.[1]);
+        if (known.has(n)) note(n);
+        children.push(child);
+      } else if (child.type === 'linkReference') {
+        children.push(child);
+      } else if (child.type === 'text') {
+        let last = 0;
+        for (const match of child.value.matchAll(MARKER)) {
+          const n = Number(match[1]);
+          if (!known.has(n)) continue;
+          if (match.index > last) children.push({ type: 'text', value: child.value.slice(last, match.index) });
+          children.push({ type: 'link', url: `#cite-${n}`, children: [{ type: 'text', value: String(n) }] });
+          note(n);
+          last = match.index + match[0].length;
+        }
+        if (last === 0) children.push(child);
+        else if (last < child.value.length) children.push({ type: 'text', value: child.value.slice(last) });
+      } else {
+        if ('children' in child) walk(child as Parent);
+        children.push(child);
+      }
+    }
+    parent.children = children as Parent['children'];
+  };
+  walk(tree);
+  return cited;
 }
 
 /**
- * The source numbers that the answer cites, in the order of their first citation. A source is
- * cited when `linkCitations` links its marker, so this uses the same scan on the same text that
- * the renderer gets (after `normalizeMath`). Give it the raw message content.
+ * A remark plugin for the renderer. It links the citation markers of the sources that exist.
+ * Give it the same `sources` as `citedNumbers`, so that the badges and the sources list agree.
+ */
+export function remarkCitations(options: { sources: Source[] | undefined }) {
+  const known = new Set((options.sources ?? []).map((s) => s.n));
+  return (tree: Root) => {
+    if (known.size > 0) citeInTree(tree, known);
+  };
+}
+
+/**
+ * The source numbers that the answer cites, in the order of their first citation. It parses the
+ * text with the renderer's parser and runs the same step as `remarkCitations`, so "cited" means
+ * "shown as a badge". Give it the raw message content.
  */
 export function citedNumbers(content: string, sources: Source[] | undefined): number[] {
   if (!sources || sources.length === 0) return [];
-  const known = new Set(sources.map((s) => s.n));
-  const cited: number[] = [];
-  replaceMarkers(normalizeMath(content), (match, n) => {
-    if (known.has(n) && !cited.includes(n)) cited.push(n);
-    return match;
-  });
-  return cited;
+  const tree = parser.parse(normalizeMath(content));
+  return citeInTree(tree, new Set(sources.map((s) => s.n)));
 }
 
 export function citationNumber(href: string | undefined): number | null {
@@ -70,4 +110,9 @@ export function citationNumber(href: string | undefined): number | null {
 /** "Algebra notes.pdf, p. 12". The page is left out when the source has none. */
 export function sourceLabel(source: Pick<Source, 'documentName' | 'page'>): string {
   return source.page !== undefined ? `${source.documentName}, p. ${source.page}` : source.documentName;
+}
+
+/** The document name for a chip: without a trailing ".pdf", which only wastes space. The popover keeps the full name. */
+export function chipName(documentName: string): string {
+  return documentName.replace(/\.pdf$/i, '');
 }
