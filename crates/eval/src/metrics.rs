@@ -75,8 +75,10 @@ pub struct Outcome {
     pub covered: bool,
     /// True when the gate gave no sources.
     pub gated: bool,
-    /// The gains of the returned chunks, best rank first.
+    /// The gains of a ten-deep ranking, best rank first. nDCG@10 reads it, so it has ten places.
     pub ranked: Vec<u8>,
+    /// The gains of the list that the API returns (`final_sources` long). Recall and MRR read it.
+    pub returned: Vec<u8>,
     /// The gain of every chunk of the corpus for this question.
     pub all: Vec<u8>,
 }
@@ -126,17 +128,25 @@ pub fn aggregate(outcomes: &[Outcome]) -> Metrics {
     let right = outcomes.len() - false_gated - missed;
     Metrics {
         recall_at_5: round4(mean(&|o| {
-            f64::from(u8::from(hit_at(&o.ranked, RECALL_SMALL)))
+            f64::from(u8::from(hit_at(&o.returned, RECALL_SMALL)))
         })),
         recall_at_8: round4(mean(&|o| {
-            f64::from(u8::from(hit_at(&o.ranked, RECALL_LARGE)))
+            f64::from(u8::from(hit_at(&o.returned, RECALL_LARGE)))
         })),
         ndcg_at_10: round4(mean(&|o| ndcg_at(&o.ranked, &o.all, NDCG_DEPTH))),
-        mrr: round4(mean(&|o| reciprocal_rank(&o.ranked))),
+        mrr: round4(mean(&|o| reciprocal_rank(&o.returned))),
         gate_accuracy: round4(share(right, outcomes.len())),
         false_gate_rate: round4(share(false_gated, covered.len())),
         missed_gate_rate: round4(share(missed, not_covered)),
     }
+}
+
+/// The share of covered questions that have a relevant chunk anywhere in the returned list (the
+/// recall of the whole list that the model gets, whatever its length).
+pub fn recall_of_returned(outcomes: &[Outcome]) -> f64 {
+    let covered: Vec<&Outcome> = outcomes.iter().filter(|o| o.covered).collect();
+    let hits = covered.iter().filter(|o| o.returned.contains(&2)).count();
+    round4(share(hits, covered.len()))
 }
 
 #[cfg(test)]
@@ -217,6 +227,7 @@ mod tests {
             covered,
             gated,
             ranked: ranked.to_vec(),
+            returned: ranked.to_vec(),
             all: vec![2, 1, 0, 0],
         }
     }
@@ -263,6 +274,17 @@ mod tests {
         assert_eq!(only_uncovered.recall_at_8, 0.0);
         assert_eq!(only_uncovered.gate_accuracy, 1.0);
         assert_eq!(only_uncovered.false_gate_rate, 0.0);
+    }
+
+    #[test]
+    fn the_recall_of_the_returned_list_ignores_its_length() {
+        let outcomes = [
+            outcome(true, false, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 2]),
+            outcome(true, false, &[0, 0]),
+            outcome(false, false, &[2]),
+        ];
+        assert_eq!(recall_of_returned(&outcomes), 0.5);
+        assert_eq!(recall_of_returned(&[]), 0.0);
     }
 
     #[test]

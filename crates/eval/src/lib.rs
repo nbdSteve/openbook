@@ -6,6 +6,7 @@
 
 pub mod cache;
 pub mod data;
+pub mod grid;
 pub mod metrics;
 pub mod offline;
 pub mod refresh;
