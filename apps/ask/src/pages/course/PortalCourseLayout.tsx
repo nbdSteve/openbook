@@ -3,8 +3,10 @@ import { ArrowLeft, MessageSquare } from 'lucide-react';
 import { AppHeader } from '@/components/layout/AppHeader';
 import { NotFoundScreen } from '@/components/layout/NotFoundScreen';
 import { ShellSkeleton } from '@/components/layout/ShellSkeleton';
+import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { buttonStyles } from '@/components/ui/buttonStyles';
+import { styleName } from '@/lib/constants';
 import { useDocumentTitle } from '@/lib/useDocumentTitle';
 import { useResource } from '@/lib/useResource';
 import { ApiError } from '@/services/api/client';
@@ -54,7 +56,13 @@ export function PortalCourseLayout() {
           All courses
         </Link>
         <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
-          <h1 className="min-w-0 break-words font-serif text-title font-medium text-text-primary">{course.data.name}</h1>
+          <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+            <h1 className="min-w-0 break-words font-serif text-title font-medium text-text-primary">{course.data.name}</h1>
+            <Badge tone="accent">
+              <span className="sr-only">Tutoring style: </span>
+              {styleName(course.data.tutoringStyle)}
+            </Badge>
+          </div>
           <Link to={`/ask/courses/${course.data.id}`} className={buttonStyles('secondary', 'sm')}>
             <MessageSquare className="h-4 w-4" aria-hidden="true" />
             Open in Ask

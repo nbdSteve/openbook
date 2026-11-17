@@ -141,7 +141,7 @@ export async function provisionUser(page: Page, email: string): Promise<void> {
 export async function createSignedInUser(page: Page, email: string): Promise<void> {
   await provisionUser(page, email);
   await signIn(page, email);
-  await expect(page).toHaveURL(/\/portal$/);
+  await expect(page).toHaveURL(/\/ask$/);
 }
 
 /**
@@ -209,7 +209,7 @@ export async function newUserPage(browser: Browser, label: string): Promise<{ pa
 }
 
 export function courseIdFromUrl(url: string): string {
-  const match = url.match(/\/ask\/courses\/([0-9A-Z]{26})/);
+  const match = url.match(/\/(?:ask|portal)\/courses\/([0-9A-Z]{26})/);
   if (!match) throw new Error(`No course ID in ${url}`);
   return match[1];
 }

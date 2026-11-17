@@ -416,7 +416,7 @@ test('signing out returns to the landing page and locks the app', async ({ brows
 
   await page.goto(url);
   await page.getByRole('button', { name: 'Sign out' }).click();
-  await expect(page.getByRole('heading', { name: /answers from your course materials/i })).toBeVisible();
+  await expect(page.getByRole('heading', { name: /answers from it/i })).toBeVisible();
   await expect(page).toHaveURL(/\/$/);
   await page.goto(url);
   await expect(page).toHaveURL(/\/signin\?next=/);

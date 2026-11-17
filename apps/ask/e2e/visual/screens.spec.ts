@@ -437,7 +437,7 @@ for (const theme of ['light', 'dark'] as Theme[]) {
           expect(await page.evaluate(() => document.documentElement.classList.contains('dark'))).toBe(theme === 'dark');
           await page.screenshot({
             path: path.join(OUT, `${theme}-${viewport.name}`, `${screen.name}.png`),
-            fullPage: screen.fullPage ?? false,
+            fullPage: screen.fullPage ?? screen.name.startsWith('landing'),
           });
           expect(errors).toEqual([]);
         });
