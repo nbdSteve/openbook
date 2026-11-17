@@ -97,7 +97,7 @@
         "concurrency": 2
       },
       "prod": {
-        "enabled": false,
+        "enabled": true,
         "budgetUsdPerDay": 2,
         "visitorBudgetUsdPerDay": 0.3,
         "maxOutputTokens": 1000,
