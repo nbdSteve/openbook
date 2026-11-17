@@ -25,9 +25,9 @@ export const ME = {
 };
 
 export const MODELS: ModelInfo[] = [
-  { id: 'claude-sonnet', label: 'Claude Sonnet 5.5', vendor: 'anthropic', residency: 'au', isDefault: true },
-  { id: 'claude-opus', label: 'Claude Opus 5.5', vendor: 'anthropic', residency: 'au', isDefault: false },
-  { id: 'gpt-6-1-sol', label: 'GPT-6.1 Sol', vendor: 'openai', residency: 'global', isDefault: false },
+  { id: 'claude-sonnet', label: 'Claude Sonnet 4.6', vendor: 'anthropic', residency: 'au', isDefault: true },
+  { id: 'claude-haiku', label: 'Claude Haiku 4.5', vendor: 'anthropic', residency: 'au', isDefault: false },
+  { id: 'gpt-oss-120b', label: 'gpt-oss-120b', vendor: 'openai', residency: 'global', isDefault: false },
 ];
 
 const T = '2026-11-15T09:30:00.000Z';
@@ -64,7 +64,7 @@ export const COURSES: Course[] = [OWNER_COURSE, STUDENT_COURSE];
 
 export const CONVERSATIONS: Conversation[] = [
   { id: '01JCONV000000000000000000A', courseId: COURSE_ID, title: 'How does photosynthesis work?', model: 'claude-sonnet', createdAt: T, updatedAt: '2026-11-16T01:00:00.000Z' },
-  { id: '01JCONV000000000000000000B', courseId: COURSE_ID, title: 'Explain the difference between mitosis and meiosis in detail with examples', model: 'claude-opus', createdAt: T, updatedAt: '2026-11-15T10:00:00.000Z' },
+  { id: '01JCONV000000000000000000B', courseId: COURSE_ID, title: 'Explain the difference between mitosis and meiosis in detail with examples', model: 'claude-haiku', createdAt: T, updatedAt: '2026-11-15T10:00:00.000Z' },
   { id: '01JCONV000000000000000000C', courseId: COURSE_ID, title: 'What is ATP?', model: 'claude-sonnet', createdAt: T, updatedAt: '2026-11-14T10:00:00.000Z' },
 ];
 
@@ -86,7 +86,7 @@ export const MESSAGES: Message[] = [
   {
     id: '01JMSG0000000000000000000D',
     role: 'assistant',
-    model: 'gpt-6-1-sol',
+    model: 'gpt-oss-120b',
     createdAt: T,
     content: 'Good question. What do you think each turn of the cycle must *do* to a molecule of CO₂ before it can become part of a sugar?',
   },

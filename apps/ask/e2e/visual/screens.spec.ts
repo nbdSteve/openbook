@@ -378,7 +378,7 @@ const SCREENS: Screen[] = [
       await expect(page.getByLabel('Model for your next message')).toBeVisible();
     },
     act: async (page) => {
-      await page.getByLabel('Model for your next message').selectOption('gpt-6-1-sol');
+      await page.getByLabel('Model for your next message').selectOption('gpt-oss-120b');
       await expect(page.getByTestId('global-note')).toBeVisible();
     },
   },
