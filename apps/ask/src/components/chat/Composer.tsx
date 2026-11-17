@@ -14,7 +14,6 @@ interface ComposerProps {
   onModelChange: (id: string) => void;
   style: TutoringStyle;
   onStyleChange: (style: TutoringStyle) => void;
-  /** The course owner fixed the style. */
   styleLocked?: boolean;
   styleLockedReason?: string;
   disabledReason?: string;

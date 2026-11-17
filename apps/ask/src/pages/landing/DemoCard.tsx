@@ -198,7 +198,6 @@ export function DemoCard({ demo }: { demo: DemoConfig | undefined }) {
                 <li key={example} className="shrink-0">
                   <button
                     type="button"
-                    // Not `disabled`: a scroll area on a phone needs a focusable child, and the chips are it.
                     aria-disabled={streaming || undefined}
                     onClick={() => !streaming && void submit(example)}
                     className="min-h-9 whitespace-nowrap rounded-full border border-border bg-bg-primary px-3.5 py-1.5 text-left text-sm text-text-secondary transition-colors hover:border-border-strong hover:text-text-primary aria-disabled:opacity-50"

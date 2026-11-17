@@ -620,13 +620,11 @@ async fn a_visitor_can_pick_the_style_and_the_course_style_is_the_default() {
         async move { send_anonymous(&router, "/api/demo/chat", Some(body), Some(PEER), &[]).await }
     };
 
-    // No style: the style of the demo course (Direct in the test manifest).
     let reply = ask_with(json!({"message": "What does the Pythagorean theorem say?"})).await;
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.text);
     assert_eq!(reply.sse()[0].1["style"], "direct");
     assert!(text_of(&reply).contains("Tutoring style in use: `direct`."));
 
-    // A style from the enum reaches the model as the server's own prompt text.
     for style in ["socratic", "hints", "step_by_step", "concepts", "direct"] {
         let reply = ask_with(json!({"message": "What is a right triangle?", "style": style})).await;
         assert_eq!(reply.status, StatusCode::OK, "{style}: {}", reply.text);
@@ -642,12 +640,10 @@ async fn a_visitor_can_pick_the_style_and_the_course_style_is_the_default() {
             ))
     );
 
-    // A null style is the same as none.
     let reply = ask_with(json!({"message": "What is photosynthesis?", "style": null})).await;
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.text);
     assert_eq!(reply.sse()[0].1["style"], "direct");
 
-    // Anything outside the enum is invalid, and nothing is counted or sent to a model.
     let calls = env.recorder.requests.lock().unwrap().len();
     for style in [
         json!("rude"),

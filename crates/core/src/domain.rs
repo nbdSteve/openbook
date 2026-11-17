@@ -32,7 +32,6 @@ pub enum TutoringStyle {
 }
 
 impl TutoringStyle {
-    /// Every style, in display order.
     pub const ALL: [TutoringStyle; 5] = [
         TutoringStyle::Socratic,
         TutoringStyle::Hints,
@@ -41,7 +40,6 @@ impl TutoringStyle {
         TutoringStyle::Direct,
     ];
 
-    /// The ID of the style in the API.
     pub fn id(self) -> &'static str {
         match self {
             TutoringStyle::Socratic => "socratic",
@@ -53,9 +51,6 @@ impl TutoringStyle {
     }
 }
 
-/// The style that one answer uses. The course owner can lock the course style. A locked course
-/// always uses its own style. An unlocked course uses the style of the request, else the style of
-/// the conversation, else the course default.
 pub fn effective_style(
     course: &CourseRecord,
     requested: Option<TutoringStyle>,
@@ -117,9 +112,7 @@ pub struct Course {
     pub id: String,
     pub name: String,
     pub description: String,
-    /// The default style. It is the only style when `allow_style_choice` is false.
     pub tutoring_style: TutoringStyle,
-    /// Learners can pick another style for a conversation.
     pub allow_style_choice: bool,
     /// The course default model (a catalog ID).
     pub model: String,
@@ -137,7 +130,6 @@ pub struct CourseRecord {
     pub name: String,
     pub description: String,
     pub tutoring_style: TutoringStyle,
-    /// Learners can pick another style for a conversation. Courses from before this setting allow it.
     pub allow_style_choice: bool,
     /// The stored catalog ID. It may no longer be in the catalog.
     pub model: String,
@@ -235,7 +227,6 @@ pub struct Conversation {
     pub title: String,
     /// Catalog ID of the last answer.
     pub model: String,
-    /// The style of the last answer. Older conversations have none, and use the course default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub style: Option<TutoringStyle>,
     pub created_at: String,
@@ -266,7 +257,6 @@ pub struct Message {
     /// Assistant messages only: the catalog ID that wrote it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// Assistant messages only: the style that the answer used.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub style: Option<TutoringStyle>,
 }

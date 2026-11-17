@@ -107,7 +107,6 @@ impl FakeChat {
         Self::answer_with(model, question, "")
     }
 
-    /// The answer to a question in a course without sources, as a chat in that style gets it.
     pub fn answer_styled(
         model: &str,
         question: &str,
@@ -178,8 +177,6 @@ impl FakeChat {
                 .trim()
                 .to_owned();
         }
-        // The fake model says which style reached it, so tests can check the style end to end.
-        // Real models never do this: the line is in the fake provider only.
         let style = style_in_prompt(&request.system)
             .map(|style| format!("Tutoring style in use: `{}`.\n\n", style.id()))
             .unwrap_or_default();

@@ -74,7 +74,6 @@ export interface MockOptions {
   demo?: 'on' | 'off';
   demoMode?: DemoMode;
   courses?: typeof COURSES;
-  /** The SSE body for POST /api/courses/{id}/chat. The default is a short answer. */
   chatStream?: string;
   /** Return a response to replace the default fixture for a request. */
   override?: (path: string, method: string) => { status: number; body?: unknown } | undefined;

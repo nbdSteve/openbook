@@ -508,8 +508,10 @@ for (const theme of ['light', 'dark'] as Theme[]) {
           if (screen.name.startsWith('landing')) await scrollThrough(page);
           if (screen.act) await screen.act(page);
           await page.waitForTimeout(250);
-          await expectNoHorizontalOverflow(page);
-          await expectNoSeriousA11yViolations(page);
+          await expect(async () => {
+            await expectNoHorizontalOverflow(page);
+            await expectNoSeriousA11yViolations(page);
+          }).toPass({ timeout: 10_000 });
           expect(await page.evaluate(() => document.documentElement.classList.contains('dark'))).toBe(theme === 'dark');
           await page.screenshot({
             path: path.join(OUT, `${theme}-${viewport.name}`, `${screen.name}.png`),

@@ -21,7 +21,6 @@ pub enum ChatEvent {
         assistant_message_id: String,
         title: String,
         model: String,
-        /// The tutoring style of the answer (the effective style).
         style: TutoringStyle,
     },
     /// The `meta` event of a demo answer: no conversation exists, so it has the ID of the demo conversation, the model, and the credits.

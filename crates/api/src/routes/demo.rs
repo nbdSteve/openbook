@@ -65,7 +65,6 @@ const SOURCE_WRAPPER_CHARS: usize = 200;
 struct DemoBody {
     message: String,
     conversation_id: Option<String>,
-    /// The style for this answer. Without it, the demo course style. A locked course ignores it.
     style: Option<TutoringStyle>,
 }
 
@@ -151,7 +150,6 @@ struct DemoRun {
     retrieval: Arc<Retrieval>,
     message: String,
     max_output: u32,
-    /// The style of this answer: see `effective_style`.
     style: TutoringStyle,
     conversation_id: String,
     expires_at: i64,
@@ -247,7 +245,6 @@ pub async fn chat(State(state): State<AppState>, request: Request) -> Result<Res
     // From here on, a failure must give the visitor's question back.
     let prepared = async {
         let resumed = demo::resume(&state.store, body.conversation_id.as_deref(), now).await?;
-        // The visitor can pick any style, so reserve for the longest prompt.
         let system_tokens = TutoringStyle::ALL
             .into_iter()
             .map(|style| {

@@ -71,7 +71,6 @@ async function toDemoError(response: Response): Promise<DemoError> {
 export async function* askDemo(options: {
   message: string;
   conversationId?: string;
-  /** Only when the visitor picked a style. Without it the server uses the style of the demo course. */
   style?: TutoringStyle;
   signal?: AbortSignal;
 }): AsyncGenerator<ChatEvent> {

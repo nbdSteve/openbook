@@ -159,7 +159,6 @@ describe('useChatController', () => {
       await act(async () => {
         await result.current.send('first');
       });
-      // The server confirmed it, so the conversation holds it, and the pick is not needed any more.
       expect(result.current.style).toBe('direct');
       await act(async () => {
         await result.current.send('second');

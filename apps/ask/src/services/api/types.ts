@@ -37,9 +37,7 @@ export interface Course {
   id: string;
   name: string;
   description: string;
-  /** The default style. It is the only style when `allowStyleChoice` is false. */
   tutoringStyle: TutoringStyle;
-  /** Learners can pick another style for a conversation. */
   allowStyleChoice: boolean;
   /** The course default model, a ModelInfo.id. */
   model: string;
@@ -86,7 +84,6 @@ export interface Conversation {
   title: string;
   /** Catalog ID of the last answer. */
   model: string;
-  /** The style of the last answer. Older conversations have none. */
   style?: TutoringStyle;
   createdAt: string;
   updatedAt: string;
@@ -108,7 +105,6 @@ export interface Message {
   sources?: Source[];
   /** Assistant messages only: the catalog ID that wrote it. */
   model?: string;
-  /** Assistant messages only: the style that the answer used. */
   style?: TutoringStyle;
 }
 
@@ -148,7 +144,6 @@ export type ChatEvent =
       type: 'meta';
       conversationId: string;
       model: string;
-      /** The style of the answer: the one the server used. */
       style?: TutoringStyle;
       /** The course chat sends these three. The demo does not. */
       userMessageId?: string;

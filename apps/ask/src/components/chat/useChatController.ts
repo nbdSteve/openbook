@@ -21,13 +21,8 @@ export interface ChatController {
   /** The catalog ID the next message uses: the picked model, else the conversation's, else the course default. */
   model: string;
   setModel: (id: string) => void;
-  /**
-   * The style the next message uses. A locked course always uses its own style. Otherwise it is the picked style,
-   * else the conversation's, else the course default.
-   */
   style: TutoringStyle;
   setStyle: (style: TutoringStyle) => void;
-  /** The course owner fixed the style, so learners cannot change it. */
   styleLocked: boolean;
   /** Returns false when the server refused the message before the stream began. */
   send: (text: string) => Promise<boolean>;
@@ -41,9 +36,7 @@ interface Options {
   conversationId: string | undefined;
   /** The course default model. */
   courseModel: string;
-  /** The course default style. */
   courseStyle: TutoringStyle;
-  /** False when the course owner locked the style. */
   allowStyleChoice: boolean;
   limits: Limits;
   onConversationCreated: (conversationId: string) => void;
@@ -130,7 +123,6 @@ export function useChatController({
       // Always send the model that the picker shows. After a failed answer the server may still hold the
       // conversation's old model, so leaving it out could use a different model than the one on screen.
       const currentModel = picked ?? conversationModel ?? courseModel;
-      // The same for the style. A locked course sends none: the server uses the course style.
       const currentStyle = allowStyleChoice ? (pickedStyle ?? conversationStyle ?? courseStyle) : undefined;
 
       streamAbort.current?.abort();

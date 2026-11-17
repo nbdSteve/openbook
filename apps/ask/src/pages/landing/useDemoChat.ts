@@ -18,7 +18,6 @@ export interface DemoChat {
   notice: string | null;
   /** The credit lines of the books, from the last answer. */
   attribution: Attribution[];
-  /** The style of the next question: the visitor's pick, else the style of the demo course. */
   style: TutoringStyle;
   setStyle: (style: TutoringStyle) => void;
   ask: (text: string) => Promise<boolean>;

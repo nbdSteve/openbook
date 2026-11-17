@@ -44,8 +44,6 @@ pub fn style_instructions(style: TutoringStyle) -> &'static str {
     }
 }
 
-/// The style whose instructions a system prompt holds. The local fake model uses it to show which
-/// style reached the model. It is `None` for a prompt that was not built by `build_system_prompt_for`.
 pub fn style_in_prompt(system: &str) -> Option<TutoringStyle> {
     TutoringStyle::ALL
         .into_iter()

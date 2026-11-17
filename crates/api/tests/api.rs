@@ -1551,13 +1551,11 @@ async fn chat_style_follows_request_then_conversation_then_course() {
         "learners can choose by default"
     );
 
-    // A new conversation starts with the course default. The meta event and the prompt agree.
     let events = ask(&app, &student, &id, json!({"message": "one"})).await;
     assert_eq!(events[0].1["style"], "socratic");
     assert!(answer_text(&events).contains("Tutoring style in use: `socratic`."));
     let conv = conversation_id(&events);
 
-    // A choice applies from the next message, and the conversation keeps it.
     let events = ask(
         &app,
         &student,
@@ -1579,7 +1577,6 @@ async fn chat_style_follows_request_then_conversation_then_course() {
         "a follow-up keeps the style of the conversation"
     );
     assert!(answer_text(&events).contains("Tutoring style in use: `hints`."));
-    // An explicit null is the same as no style.
     let events = ask(
         &app,
         &student,
@@ -1589,7 +1586,6 @@ async fn chat_style_follows_request_then_conversation_then_course() {
     .await;
     assert_eq!(events[0].1["style"], "hints");
 
-    // The conversation and each answer store their style, for insights.
     let body = app
         .get(&format!("/api/conversations/{conv}"), &student)
         .await
@@ -1615,10 +1611,8 @@ async fn chat_style_follows_request_then_conversation_then_course() {
         ]
     );
 
-    // Another conversation starts from the course default again.
     let events = ask(&app, &student, &id, json!({"message": "new"})).await;
     assert_eq!(events[0].1["style"], "socratic");
-    // A request can set the style at the start of a conversation.
     let events = ask(
         &app,
         &student,
@@ -1634,7 +1628,6 @@ async fn chat_style_follows_request_then_conversation_then_course() {
     assert_eq!(listed["conversations"][0]["style"], "direct");
     assert_eq!(listed["conversations"][1]["style"], "socratic");
 
-    // Every style maps to a prompt on the server: all five are accepted.
     for style in ["socratic", "hints", "step_by_step", "concepts", "direct"] {
         let events = ask(&app, &student, &id, json!({"message": "x", "style": style})).await;
         assert_eq!(events[0].1["style"], style);
@@ -1683,7 +1676,6 @@ async fn a_locked_course_always_uses_its_own_style() {
     let id = text(&course, "id");
     let path = format!("/api/courses/{id}");
 
-    // A conversation that chose Direct before the lock.
     let events = ask(
         &app,
         &student,
@@ -1694,7 +1686,6 @@ async fn a_locked_course_always_uses_its_own_style() {
     assert_eq!(events[0].1["style"], "direct");
     let conv = conversation_id(&events);
 
-    // Only the owner can lock the course, and the setting must be a boolean.
     let reply = app
         .patch(&path, &student, json!({"allowStyleChoice": false}))
         .await;
@@ -1708,14 +1699,12 @@ async fn a_locked_course_always_uses_its_own_style() {
         .await;
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.text);
     assert_eq!(reply.json()["course"]["allowStyleChoice"], false);
-    // Students see the lock too, and it survives a patch of another field.
     let reply = app.patch(&path, &owner, json!({"name": "Renamed"})).await;
     assert_eq!(reply.json()["course"]["allowStyleChoice"], false);
     let seen = app.get(&path, &student).await.json();
     assert_eq!(seen["course"]["allowStyleChoice"], false);
     assert_eq!(seen["course"]["tutoringStyle"], "socratic");
 
-    // The request style and the style of the conversation are both ignored.
     let events = ask(
         &app,
         &student,
@@ -1734,7 +1723,6 @@ async fn a_locked_course_always_uses_its_own_style() {
     .await;
     assert_eq!(events[0].1["style"], "socratic");
 
-    // The owner changes the default, and a locked course follows it.
     app.patch(&path, &owner, json!({"tutoringStyle": "concepts"}))
         .await;
     let events = ask(
@@ -1746,7 +1734,6 @@ async fn a_locked_course_always_uses_its_own_style() {
     .await;
     assert_eq!(events[0].1["style"], "concepts");
 
-    // Unlocked, the choice works again.
     app.patch(&path, &owner, json!({"allowStyleChoice": true}))
         .await;
     let events = ask(

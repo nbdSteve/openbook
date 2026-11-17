@@ -45,7 +45,6 @@ pub struct ChatBody {
     conversation_id: Option<String>,
     message: String,
     model: Option<String>,
-    /// The tutoring style for this message (`TutoringStyle` IDs only). A locked course ignores it.
     style: Option<TutoringStyle>,
 }
 
@@ -59,7 +58,6 @@ struct ChatRun {
     assistant_message_id: String,
     title: String,
     model_id: String,
-    /// The style of this answer: see `effective_style`.
     style: TutoringStyle,
     /// The conversation so far, ending with the new student message.
     history: Vec<(MessageRole, String)>,

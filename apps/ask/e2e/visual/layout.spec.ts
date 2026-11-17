@@ -2,8 +2,6 @@ import { expect, test, type Page } from '@playwright/test';
 import { COURSE_ID, LONG_CHAT_STREAM, STUDENT_COURSE_ID } from './data';
 import { prepare } from './fixtures';
 
-// The app shell must fill the window and the document must never scroll. A screen that scrolls
-// the whole shell up leaves an empty band under the composer and the sidebar footer.
 
 const DESKTOP = { name: '1628', width: 1628, height: 891 };
 
@@ -40,7 +38,6 @@ test('the chat shell fills the window after two long answers and wheel scrolling
   }
   await expectFilled(page, 'after the answers');
 
-  // The chat, the sidebar, the header, and the page edges: no wheel may move the window.
   for (const [x, y] of [
     [800, 450],
     [60, 400],
@@ -55,13 +52,11 @@ test('the chat shell fills the window after two long answers and wheel scrolling
     }
     await expectFilled(page, `wheel at ${x},${y}`);
   }
-  // The keyboard scrolls the window too, when the window can scroll.
   await page.keyboard.press('End');
   await page.keyboard.press('PageDown');
   await expectFilled(page, 'after the keyboard');
 });
 
-/** Nothing may stick out below the content: an absolute element with no positioned parent can. */
 async function expectNoEscapingContent(page: Page, label: string) {
   const m = await page.evaluate(() => ({
     scrollHeight: document.scrollingElement?.scrollHeight ?? 0,

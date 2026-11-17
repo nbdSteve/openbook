@@ -123,7 +123,6 @@ struct CourseItem {
     name: String,
     description: String,
     tutoring_style: TutoringStyle,
-    /// Learners can pick another style. Items from before the setting have no value, and allow it.
     #[serde(default = "default_true")]
     allow_style_choice: bool,
     model: String,
@@ -385,7 +384,6 @@ struct MessageItem {
     trace: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     model: Option<String>,
-    /// The tutoring style that the answer used. Assistant messages only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     style: Option<TutoringStyle>,
     #[serde(default)]
@@ -467,7 +465,6 @@ pub struct NewMessage {
     pub trace: Option<String>,
     /// Assistant messages only.
     pub model: Option<String>,
-    /// The tutoring style of the answer. Assistant messages only.
     pub style: Option<TutoringStyle>,
     pub usage: TokenUsage,
 }
@@ -1315,7 +1312,6 @@ impl Store {
             .collect()
     }
 
-    /// Sets `model`, `style`, `updatedAt`, and `gsi1sk` after a chat message.
     /// Returns false when the conversation was deleted in the meantime.
     pub async fn touch_conversation(
         &self,

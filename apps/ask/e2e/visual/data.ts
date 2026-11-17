@@ -203,10 +203,6 @@ export const CHAT_STREAM = [
   'event: done\ndata: {"usage":{"inputTokens":10,"outputTokens":8},"stopReason":"end_turn"}\n\n',
 ].join('');
 
-/**
- * A long streamed answer: headings, lists, inline and display math, and a table. Two of them in one
- * conversation made the chat column taller than the window (see layout.spec.ts).
- */
 export const LONG_CHAT_STREAM = [
   'event: meta\ndata: {"conversationId":"01JCONV000000000000000000N","userMessageId":"01JMSG0000000000000000000U","assistantMessageId":"01JMSG0000000000000000000V","title":"Top-p sampling","model":"claude-sonnet"}\n\n',
   ...[

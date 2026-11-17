@@ -9,10 +9,6 @@ export const TUTORING_STYLES: { id: TutoringStyle; name: string; description: st
   { id: 'direct', name: 'Direct', description: 'Explains clearly and directly, then checks understanding.' },
 ];
 
-/**
- * The style that the public demo starts in. It is the `tutoringStyle` of `demo/course.json`, the course that
- * the demo answers from. A test checks that the two agree. The demo sends a style only after the visitor picks one.
- */
 export const DEMO_DEFAULT_STYLE: TutoringStyle = 'direct';
 
 export function styleName(id: TutoringStyle): string {
