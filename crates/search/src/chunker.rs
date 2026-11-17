@@ -478,9 +478,9 @@ mod tests {
     fn running_headers_do_not_reach_the_heading_path() {
         let pages = pages(&[
             "# BOOK SECTION ONE\n\n## Rules\n\nFirst rule text.",
-            "# BOOK CHAPTER ONE\n\nMore about the rules.",
-            "# BOOK SECTION ONE\n\nEven more about the rules.",
-            "# BOOK CHAPTER ONE\n\nThe last words about the rules.",
+            "# BOOK CHAPTER ONE\n\nMore about the rules of grammar.",
+            "# BOOK SECTION ONE\n\nEven more about the laws of motion.",
+            "# BOOK CHAPTER ONE\n\nThe last words about the rules of chess.",
             "# BOOK SECTION ONE\n\nAn extra page.",
             "# BOOK CHAPTER ONE\n\nAnd one more page.",
         ]);
@@ -493,7 +493,7 @@ mod tests {
             "{paths:?}"
         );
         let text: String = clean.iter().map(|c| c.text.as_str()).collect();
-        assert!(text.contains("The last words about the rules."));
+        assert!(text.contains("The last words about the rules of chess."));
         // Without the removal, the later copies of the header are headings of their own.
         let raw = chunk_stripped_pages(&pages, TARGET_CHARS);
         assert!(
