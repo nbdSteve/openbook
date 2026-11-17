@@ -86,6 +86,12 @@ Phase 2 and 3 add deterministic fake embeddings (hashed bag of words, 1024 dimen
 The emulator sends no email. Local end-to-end tests sign up through the UI, then confirm the user with `AdminConfirmSignUp` through the emulator (a Playwright helper), then sign in.
 For manual use, sign in with a seed user.
 
+## Deploy from a laptop
+
+`AWS_PROFILE=<profile> make deploy STAGE=dev` deploys `Openbook-dev`, which has no custom domain and no stack parameter.
+Prod has a custom domain, so a recovery deploy needs two variables, which `make deploy` passes as the stack parameters `CertificateArn` and `HostedZoneId`: `ALLOW_PROD=1 AWS_PROFILE=<profile> OPENBOOK_CERTIFICATE_ARN=<ACM certificate ARN in us-east-1> OPENBOOK_HOSTED_ZONE_ID=<Route 53 zone ID> make deploy STAGE=prod`.
+See `infra/README.md`.
+
 ## Run the browser flows against a deployed stack
 
 The same flows in `apps/ask/e2e/flows` can run against a deployed stack, for example `Openbook-dev`.

@@ -1,6 +1,6 @@
 # Openbook infrastructure
 
-The AWS CDK app (TypeScript) for Openbook. It creates the `Openbook-<stage>` stack in `ap-southeast-2` (`dev` or `prod`), and an optional certificate stack in `us-east-1` for a custom domain. Everything is pay per use (see `docs/architecture.md`).
+The AWS CDK app (TypeScript) for Openbook. It creates the `Openbook-<stage>` stack in `ap-southeast-2` (`dev` or `prod`). Prod is served at a custom domain. Everything is pay per use (see `docs/architecture.md`).
 
 ## Commands
 
@@ -29,7 +29,21 @@ The CDK app reads all settings from context (`cdk.json` or `-c key=value`). Noth
 | `models`, `defaultChatModel`, `fastModel` | in `cdk.json` | The model catalog (`docs/architecture.md`, "Model catalog"). Synth fails if it breaks a rule, including the model ID allowlist. The Bedrock IAM policy comes from it. |
 | `limitPagesPerDocument`, `limitDailyTranscribedPagesPerUser`, `limitDailyTranscribedPagesGlobal` | `stageLimits.<stage>`, then the API default | The page and transcription limits. Until the public launch, `cdk.json` caps the global transcription at 300 pages a day in prod and 100 in dev. |
 | `limitDailyMessagesPerUser`, `limitDailyMessagesGlobal`, `limitDailyTokensGlobal`, `limitFailedJoinsPerDay`, `limitCoursesOwned`, `limitDocumentsPerCourse`, `limitUploadBytes` | `stageLimits.<stage>` in `cdk.json`, then the API default | The `OPENBOOK_LIMIT_*` values. Until the public launch, `cdk.json` caps the global spend: prod 300 messages and 1,500,000 tokens a day, dev 100 and 500,000 (the API defaults of 500 and 3,000,000 allow more than the US$20 budget). With retrieval, a chat turn sends about 5,000 input tokens (the sources) plus the answer, so the message cap, not the token cap, is the binding limit. For the launch, delete `stageLimits` or override with `-c limitDailyMessagesGlobal=...`. |
-| `domainName`, `hostedZoneName`, `hostedZoneId` | unset | A custom domain. All three are needed. The hosted zone ID avoids a lookup at synth time. |
+| `stageDomains.<stage>`, or `domainName` and `hostedZoneName` | prod: `ask.steve.gg` in `steve.gg` (`cdk.json`); dev: none | The custom domain of a stage. Both names are public and static, so they are committed. A stage with a domain needs both names (synth fails with half of them), and `domainName` must be the zone name or a subdomain of it. The context keys override `stageDomains`. |
+
+## The custom domain
+
+A stage that has a domain gets, in the one `Openbook-<stage>` stack:
+
+- two CloudFormation parameters with no default: `CertificateArn` (an existing ACM certificate in `us-east-1` that covers the domain) and `HostedZoneId` (the Route 53 zone of `hostedZoneName`). Both have an `AllowedPattern`. They are parameters, not context, so the synthesized template has no account and no resource ID, and the CI build job needs no secret. The deploy supplies them with `--parameters`.
+- the alias on the CloudFront distribution, the certificate (SNI, minimum protocol `TLSv1.2_2021`), and Route 53 `A` and `AAAA` alias records in the zone.
+- the domain in the `SiteUrl` output and in the CORS rule of the docs bucket (the `*.cloudfront.net` origin stays allowed). The CSP uses `'self'`, so it needs no domain. The web `config.json` and the Cognito emails name no URL. The response headers policy sends `Strict-Transport-Security` (one year, `includeSubDomains`) and the other security headers.
+
+A stage without a domain (dev, and local) has none of these and no parameter.
+
+The certificate is not created by this stack. Request it once in the ACM console in `us-east-1` with DNS validation and keep it. CloudFront reads certificates only from `us-east-1`, and a stack in another Region cannot create one without a second stack and cross-Region references, which this design avoids.
+
+If `ask.steve.gg` is still an alias of another CloudFront distribution, the first deploy fails: CloudFront refuses a second distribution with the same alias (`CNAMEAlreadyExists`) and CloudFormation rolls the stack back. Remove the alias from the old distribution first. If an `A` or `AAAA` record for the name already exists in the zone, the first deploy fails too: CloudFormation does not take over a record it did not create (the change set fails with "already exists"). Delete the old records first, or point them at the new distribution by hand. Either failure is a rollback, not a half-deployed stack. Do the clean-up and deploy again.
 
 ## The ingest worker
 
@@ -48,9 +62,9 @@ The CDK app reads all settings from context (`cdk.json` or `-c key=value`). Noth
 1. Bootstrap the account and Region once with `cdk bootstrap` (qualifier `hnb659fds`).
 2. Apply the IAM documents in `iam/` once, out of band (`iam/README.md`).
 3. Dev: `AWS_PROFILE=<profile> make deploy STAGE=dev`.
-4. Prod: push to `main`. `.github/workflows/deploy.yml` deploys it.
+4. Prod: push to `main`. `.github/workflows/deploy.yml` deploys it. For a recovery deploy from a laptop: `ALLOW_PROD=1 AWS_PROFILE=<profile> OPENBOOK_CERTIFICATE_ARN=<arn> OPENBOOK_HOSTED_ZONE_ID=<id> make deploy STAGE=prod`. `make deploy` passes the two variables as the stack parameters, and refuses to start without them.
 
-The deploy workflow has three jobs. `checks` runs `checks.yml` on the exact commit. `build` has no OIDC token: it builds the Lambda and the web app, runs the tests, runs `cdk synth -c stage=prod` with no AWS identity, packs `infra/cdk.out` into one tar file (the artifact actions save every file as mode 644, which would remove the execute bit of the Lambda `bootstrap`), and records the tar's SHA-256 as a job output. `deploy` is the only job with `id-token: write` and the `production` environment. It runs no build and no test. It downloads the tar, compares the SHA-256, checks the tar entries (only plain files and directories under `cdk.out/`), unpacks it, checks that `bootstrap` is executable, and validates the assembly with `scripts/validate-assembly.js` (from the checked-out commit) before it asks for the token. Then it runs `npm ci --ignore-scripts` for the pinned CDK CLI and `cdk deploy Openbook-prod --app cdk.out --role-arn <execution role>`.
+The deploy workflow has three jobs. `checks` runs `checks.yml` on the exact commit. `build` has no OIDC token: it builds the Lambda and the web app, runs the tests, runs `cdk synth -c stage=prod` with no AWS identity, packs `infra/cdk.out` into one tar file (the artifact actions save every file as mode 644, which would remove the execute bit of the Lambda `bootstrap`), and records the tar's SHA-256 as a job output. `deploy` is the only job with `id-token: write` and the `production` environment. It runs no build and no test. It downloads the tar, compares the SHA-256, checks the tar entries (only plain files and directories under `cdk.out/`), unpacks it, checks that `bootstrap` is executable, and validates the assembly with `scripts/validate-assembly.js` (from the checked-out commit) before it asks for the token. Then it runs `npm ci --ignore-scripts` for the pinned CDK CLI and `cdk deploy Openbook-prod --app cdk.out --role-arn <execution role> --parameters Openbook-prod:CertificateArn=<arn> --parameters Openbook-prod:HostedZoneId=<id>`. The smoke tests then run against the custom domain, through DNS and the certificate.
 
 The hash protects the transport only. The assembly is build-controlled input, and the CDK CLI runs the `source.executable` of an asset, if the asset manifest has one, with the full environment. So the deploy job does read output of code that the build job ran. `validate-assembly.js` is the control for that: it accepts only the exact shape of the stack (the four artifacts, an account-agnostic environment, no role or lookup field, no docker image, file and zip sources with a `path` and nothing else, no path that leaves the assembly, no symbolic link, the bootstrap bucket and the `openbook-prod/` prefix, and a template asset that is the hashed template file) and refuses everything else. A CDK upgrade that adds an artifact or a field fails there until you review the change and extend the allowlist. The job does not run the build's pip, npm, cargo, or Vite code itself.
 
@@ -59,7 +73,7 @@ The hash protects the transport only. The assembly is build-controlled input, an
 ## GitHub settings
 
 - Environment `production`, with a deployment branch policy that allows `main` only.
-- Environment secrets (not variables, because this repository and its logs are public): `AWS_ACCOUNT_ID` (the twelve digits), `AWS_DEPLOY_ROLE_ARN` (the full ARN of the deploy role), and `AWS_CLOUDFORMATION_EXECUTION_ROLE_ARN` (the full ARN of the execution role). There are no variables. The workflow masks the account ID and sends the `cdk deploy` output to a file, and only a filtered summary reaches the log.
+- Environment secrets (not variables, because this repository and its logs are public): `AWS_ACCOUNT_ID` (the twelve digits), `AWS_DEPLOY_ROLE_ARN` (the full ARN of the deploy role), `AWS_CLOUDFORMATION_EXECUTION_ROLE_ARN` (the full ARN of the execution role), `OPENBOOK_CERTIFICATE_ARN` (an ACM certificate ARN in `us-east-1` of that account, shaped `arn:aws:acm:us-east-1:<account>:certificate/<uuid>`), and `OPENBOOK_HOSTED_ZONE_ID` (a Route 53 hosted zone ID, `Z` and up to 32 capital letters or digits). The first step of the deploy job checks that all five are set and well formed, and prints only names. There are no variables. The workflow masks the account ID and the zone ID, and sends the `cdk deploy` output to a file, and only a filtered summary reaches the log.
 - Branch protection on `main` that requires a pull request and the `checks` jobs. The deploy workflow runs the checks again on the commit it deploys, so a direct push cannot skip them.
 - No AWS access key anywhere. The OIDC token is the only credential.
 
