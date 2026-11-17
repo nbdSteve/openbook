@@ -4,7 +4,6 @@ import * as path from 'path';
 import * as cdk from 'aws-cdk-lib';
 import { Template } from 'aws-cdk-lib/assertions';
 import { afterAll } from 'vitest';
-import { CertificateStack } from '../lib/certificate-stack';
 import { resolveConfig } from '../lib/config';
 import { deploymentSynthesizer } from '../lib/deployment';
 import { OpenbookStack } from '../lib/openbook-stack';
@@ -23,7 +22,6 @@ export type Json = Record<string, unknown>;
 export interface Synth {
   app: cdk.App;
   stack: OpenbookStack;
-  certStack?: CertificateStack;
   template: Template;
   json: { Resources: Record<string, { Type: string; Properties?: Json; DeletionPolicy?: string; UpdateReplacePolicy?: string }> };
 }
@@ -48,20 +46,11 @@ export function newApp(context: Record<string, unknown>): cdk.App {
 export function synth(context: Record<string, unknown> = {}): Synth {
   const app = newApp({ ...cdkJsonContext, apiAssetDir: fixtures.api, ingestAssetDir: fixtures.ingest, webAssetDir: fixtures.web, ...context });
   const config = resolveConfig(app.node);
-  let certStack: CertificateStack | undefined;
-  if (config.domain) {
-    certStack = new CertificateStack(app, `OpenbookCert-${config.stage}`, {
-      domain: config.domain,
-      env: { account: fakeAccount, region: 'us-east-1' },
-      synthesizer: deploymentSynthesizer(config.stage),
-    });
-  }
   const stack = new OpenbookStack(app, `Openbook-${config.stage}`, {
     config,
     env: { account: fakeAccount, region: 'ap-southeast-2' },
     synthesizer: deploymentSynthesizer(config.stage),
     terminationProtection: config.stage === 'prod',
-    ...(certStack ? { certificate: certStack.certificate, crossRegionReferences: true } : {}),
   });
   const template = Template.fromStack(stack);
   // Drop the big layer zip. No test reads a zip, and it adds up to gigabytes over a run.
@@ -69,7 +58,7 @@ export function synth(context: Record<string, unknown> = {}): Synth {
   for (const file of fs.readdirSync(outdir)) {
     if (file.endsWith('.zip')) fs.rmSync(path.join(outdir, file), { force: true });
   }
-  return { app, stack, certStack, template, json: template.toJSON() as unknown as Synth['json'] };
+  return { app, stack, template, json: template.toJSON() as unknown as Synth['json'] };
 }
 
 /** All statements of every IAM policy in the template, with the role they attach to. */

@@ -24,9 +24,17 @@ import { assertNoInlineScripts } from './web-assets';
 
 export interface OpenbookStackProps extends cdk.StackProps {
   config: OpenbookConfig;
-  /** The us-east-1 certificate, when a custom domain is configured. */
-  certificate?: acm.ICertificate;
 }
+
+/**
+ * The CloudFormation parameters of a stack with a custom domain. They have no default, so the
+ * deployment must supply them, and the template holds no resource ID.
+ */
+export const certificateArnParameter = 'CertificateArn';
+export const hostedZoneIdParameter = 'HostedZoneId';
+/** An ACM certificate in us-east-1 (CloudFront reads certificates only there). */
+export const certificateArnPattern = '^arn:aws:acm:us-east-1:[0-9]{12}:certificate/[0-9a-f-]{36}$';
+export const hostedZoneIdPattern = '^Z[A-Z0-9]{1,32}$';
 
 /** The one-year cache for hashed, immutable build assets. */
 export const immutableCacheControl = 'public, max-age=31536000, immutable';
@@ -60,8 +68,25 @@ export class OpenbookStack extends cdk.Stack {
     const isProd = config.stage === 'prod';
     const removalPolicy = isProd ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY;
 
-    if (config.domain && !props.certificate) {
-      throw new Error('a custom domain needs a certificate');
+
+    // A stage with a custom domain gets its certificate and its hosted zone at deploy time.
+    let certificate: acm.ICertificate | undefined;
+    let hostedZoneId: string | undefined;
+    if (config.domain) {
+      const certificateArn = new cdk.CfnParameter(this, certificateArnParameter, {
+        type: 'String',
+        description: 'ARN of an ACM certificate in us-east-1 that covers the custom domain.',
+        allowedPattern: certificateArnPattern,
+        constraintDescription: 'must be an ACM certificate ARN in us-east-1',
+      });
+      const zoneId = new cdk.CfnParameter(this, hostedZoneIdParameter, {
+        type: 'String',
+        description: 'ID of the Route 53 hosted zone that holds the custom domain.',
+        allowedPattern: hostedZoneIdPattern,
+        constraintDescription: 'must be a Route 53 hosted zone ID',
+      });
+      certificate = acm.Certificate.fromCertificateArn(this, 'DomainCertificate', certificateArn.valueAsString);
+      hostedZoneId = zoneId.valueAsString;
     }
     // The CSP forbids inline scripts, so refuse a web build that has one.
     assertNoInlineScripts(config.webAssetDir);
@@ -370,7 +395,7 @@ export class OpenbookStack extends cdk.Stack {
       securityHeadersBehavior: {
         strictTransportSecurity: {
           accessControlMaxAge: cdk.Duration.days(365),
-          includeSubdomains: false,
+          includeSubdomains: true,
           preload: false,
           override: true,
         },
@@ -393,10 +418,10 @@ export class OpenbookStack extends cdk.Stack {
     const distribution = new cloudfront.Distribution(this, 'Distribution', {
       priceClass: cloudfront.PriceClass.PRICE_CLASS_ALL,
       httpVersion: cloudfront.HttpVersion.HTTP2_AND_3,
-      ...(config.domain && props.certificate
+      ...(config.domain && certificate
         ? {
             domainNames: [config.domain.domainName],
-            certificate: props.certificate,
+            certificate,
             minimumProtocolVersion: cloudfront.SecurityPolicyProtocol.TLS_V1_2_2021,
           }
         : {}),
@@ -457,9 +482,9 @@ export class OpenbookStack extends cdk.Stack {
     });
 
     // ---- DNS -----------------------------------------------------------------------
-    if (config.domain) {
+    if (config.domain && hostedZoneId) {
       const zone = route53.HostedZone.fromHostedZoneAttributes(this, 'Zone', {
-        hostedZoneId: config.domain.hostedZoneId,
+        hostedZoneId,
         zoneName: config.domain.hostedZoneName,
       });
       const target = route53.RecordTarget.fromAlias(new targets.CloudFrontTarget(distribution));

@@ -54,6 +54,17 @@ describe('the assembly validator', () => {
     expect(result.stdout).toContain('expected shape');
   });
 
+  test('the prod template of the assembly has the custom domain, its two parameters, and no ID or account', () => {
+    const text = fs.readFileSync(path.join(base, 'Openbook-prod.template.json'), 'utf8');
+    const template = JSON.parse(text) as { Parameters: Record<string, Json>; Resources: Record<string, { Type: string }> };
+    expect(Object.keys(template.Parameters).sort()).toEqual(['CertificateArn', 'HostedZoneId']);
+    for (const name of ['CertificateArn', 'HostedZoneId']) expect(template.Parameters[name]).not.toHaveProperty('Default');
+    expect(text).toContain('ask.steve.gg');
+    expect(text).not.toMatch(/\b\d{12}\b/);
+    expect(JSON.stringify(template.Resources)).not.toMatch(/arn:aws:acm/);
+    expect(Object.values(template.Resources).filter((r) => r.Type === 'AWS::Route53::RecordSet')).toHaveLength(2);
+  });
+
   test('refuses an asset that has an executable, the way the CDK CLI would run it', () => {
     const result = tampered((_dir, _m, assets) => {
       firstFile(assets).source = { executable: ['sh', '-c', 'echo pwned'], packaging: 'file' };
