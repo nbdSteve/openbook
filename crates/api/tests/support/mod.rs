@@ -479,6 +479,13 @@ impl Reply {
             .to_owned()
     }
 
+    /// The `error.code` of an error body, or `None` for a reply that is not an error.
+    pub fn error_code_or_none(&self) -> Option<String> {
+        serde_json::from_str::<Value>(&self.text)
+            .ok()
+            .and_then(|v| v["error"]["code"].as_str().map(str::to_owned))
+    }
+
     /// Server-sent events as `(name, data)` pairs. Comment lines are skipped.
     pub fn sse(&self) -> Vec<(String, Value)> {
         let mut events = Vec::new();
@@ -553,6 +560,15 @@ impl TestApp {
     /// A router over the same resources with another set of variables.
     pub fn router_with_vars(&self, vars: &HashMap<String, String>) -> Router {
         build_router(build_state(vars, &self.sdk, Duration::ZERO, None, None))
+    }
+
+    /// The state behind `router_with_fast`, for a test that changes one field of the config.
+    pub fn state_with_fast(
+        &self,
+        vars: &HashMap<String, String>,
+        fast: (String, std::sync::Arc<dyn openbook_core::model::ChatModel>),
+    ) -> AppState {
+        build_state(vars, &self.sdk, Duration::ZERO, None, Some(fast))
     }
 
     /// A router over the same resources with another set of variables and a scripted fast model.

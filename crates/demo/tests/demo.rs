@@ -15,7 +15,7 @@ use aws_sdk_dynamodb::types::AttributeValue;
 use axum::Router;
 use axum::http::{Method, StatusCode};
 use openbook_core::config::{Config, Service};
-use openbook_core::demo::{self, DemoConversations};
+use openbook_core::demo::{self, DemoBudgets, DemoConversations, TurnReservation};
 use openbook_core::files::Files;
 use openbook_core::model::{ChatModel, ChatRequest, FakeChat, ModelError, ModelStream};
 use openbook_core::prompt::{NOT_COVERED_NOTICE, REWRITE_SYSTEM_PROMPT};
@@ -206,6 +206,16 @@ impl Demo {
             .provision(&self.loaded(), false)
             .await
             .expect("provision")
+    }
+
+    /// The state of a router with the priced catalog and the recorder, to change a config field.
+    fn state(&self, extra: &[(&str, &str)]) -> openbook_api::AppState {
+        let mut vars = self.vars.clone();
+        for (k, v) in extra {
+            vars.insert((*k).into(), (*v).into());
+        }
+        self.app
+            .state_with_fast(&vars, ("fake-a".into(), self.recorder.clone()))
     }
 
     fn router(&self, extra: &[(&str, &str)]) -> Router {
@@ -568,7 +578,7 @@ async fn a_demo_question_streams_an_answer_with_sources_and_credits() {
         requests[0].turns[0].text,
         "What does the Pythagorean theorem say?"
     );
-    assert_eq!(requests[0].max_tokens, Some(2000));
+    assert_eq!(requests[0].max_tokens, Some(1000), "the demo output limit");
     assert!(requests[0].system.contains("<source n=\"1\""));
 }
 
@@ -844,51 +854,94 @@ async fn the_daily_budget_refunds_what_a_turn_did_not_spend_and_then_returns_dem
 
 #[tokio::test]
 #[ignore = "needs AWS Emulator; run make test-integration"]
-async fn budget_reservations_in_the_table_are_atomic_and_start_again_each_utc_day() {
+async fn budget_reservations_in_the_table_are_atomic_idempotent_and_start_again_each_utc_day() {
     let env = demo_env().await;
     let store = env.provisioner.store.clone();
+    let limits = openbook_core::config::DemoConfig {
+        enabled: true,
+        visitor_per_window: 10,
+        visitor_per_day: 40,
+        budget_micro_usd_per_day: 1000,
+        visitor_budget_micro_usd_per_day: 800,
+        max_output_tokens: 1000,
+    };
     let now = chrono::DateTime::parse_from_rfc3339("2026-11-17T23:59:58Z")
         .unwrap()
         .with_timezone(&chrono::Utc);
-    // Eight turns at once try to reserve 600 of 1000. Only one can fit.
-    let attempts =
-        futures::future::join_all((0..8).map(|_| demo::reserve_budget(&store, now, 600, 1000)))
-            .await;
-    let held: Vec<_> = attempts.into_iter().map(|r| r.unwrap()).collect();
-    assert_eq!(
-        held.iter().filter(|h| h.is_some()).count(),
-        1,
-        "no overspend"
-    );
+    // Eight visitors at once try to reserve 600 of 1000. Only one can fit.
+    let visitors: Vec<String> = (0..8).map(|i| format!("v{i}")).collect();
+    let attempts = futures::future::join_all(
+        visitors
+            .iter()
+            .map(|v| demo::reserve_budget(&store, v, now, 600, &limits)),
+    )
+    .await;
+    let mut held = Vec::new();
+    for attempt in attempts {
+        match attempt.unwrap() {
+            Ok(reservation) => held.push(reservation),
+            Err(hit) => assert_eq!(hit, demo::BudgetHit::Global),
+        }
+    }
+    assert_eq!(held.len(), 1, "no overspend");
     assert_eq!(counter(&env, "DEMO#GLOBAL").await, 600);
-    // Settling with the real cost gives the rest back, so two more of 400 fit and a third does not.
-    let held = held.into_iter().flatten().next().unwrap();
-    held.settle(&store, 100).await;
-    assert_eq!(counter(&env, "DEMO#GLOBAL").await, 100);
-    let more =
-        futures::future::join_all((0..3).map(|_| demo::reserve_budget(&store, now, 450, 1000)))
-            .await;
+    // One visitor cap of 800: the same visitor cannot reserve 500 more, though the day has 400 left.
+    let holder = held.remove(0);
     assert_eq!(
-        more.iter()
-            .filter(|r| r.as_ref().unwrap().is_some())
-            .count(),
-        2
+        demo::reserve_budget(&store, "w", now, 500, &limits)
+            .await
+            .unwrap()
+            .unwrap_err(),
+        demo::BudgetHit::Global
     );
-    assert_eq!(counter(&env, "DEMO#GLOBAL").await, 1000);
-    // A refund never goes below zero, and an overrun is charged.
-    let counter_item = demo::budget_counter(now);
+    // Settling with the real cost gives the rest back, once.
+    holder.settle(&store, 100).await;
+    assert_eq!(counter(&env, "DEMO#GLOBAL").await, 100);
+
+    // The same turn settled twice gives back only once (a retry, or two tasks of one turn).
+    let turn_id = openbook_core::ids::new_id().to_lowercase();
+    let turn = TurnReservation {
+        turn_id: turn_id.clone(),
+        global: demo::budget_counter(now),
+        visitor: demo::visitor_budget_counter("z", now),
+        amount: 300,
+        global_limit: 1000,
+        visitor_limit: 800,
+        item: openbook_core::demo::Counter {
+            pk: format!("DEMO#RES#{}", turn_id),
+            sk: "R".into(),
+            expires_at: chrono::Utc::now().timestamp() + 3600,
+        },
+    };
+    assert_eq!(store.reserve_turn(&turn).await.unwrap(), Ok(()));
+    assert_eq!(counter(&env, "DEMO#GLOBAL").await, 400);
+    assert!(store.settle_turn(&turn, 250).await.unwrap());
+    assert_eq!(counter(&env, "DEMO#GLOBAL").await, 150);
+    // A second settlement (a retry with the same token, or another task of the same turn, with the
+    // same amount or another one) never gives back twice: the item of the turn is gone.
+    let _ = store.settle_turn(&turn, 250).await;
+    let _ = store.settle_turn(&turn, 100).await;
+    assert_eq!(counter(&env, "DEMO#GLOBAL").await, 150, "no double refund");
+    assert_eq!(counter(&env, "DEMO#V#z").await, 50);
+    assert!(env.app.get_item_sk_prefixes(&turn.item.pk).await.is_empty());
+
+    // A refund that the counter cannot hold is an error that changes nothing (no fallback).
     use openbook_core::demo::DemoCounters;
-    store.release(&counter_item, 5000).await.unwrap();
-    assert_eq!(counter(&env, "DEMO#GLOBAL").await, 0);
-    store.charge(&counter_item, 7).await.unwrap();
-    assert_eq!(counter(&env, "DEMO#GLOBAL").await, 7);
+    assert!(
+        store
+            .release(&demo::budget_counter(now), 5000)
+            .await
+            .is_err()
+    );
+    assert_eq!(counter(&env, "DEMO#GLOBAL").await, 150);
+
     // Two seconds later it is the next UTC day, and the budget is whole again.
     let next = now + chrono::Duration::seconds(2);
     assert!(
-        demo::reserve_budget(&store, next, 1000, 1000)
+        demo::reserve_budget(&store, "w", next, 800, &limits)
             .await
             .unwrap()
-            .is_some()
+            .is_ok()
     );
     assert_eq!(
         env.app.get_item_sk_prefixes("DEMO#GLOBAL").await,
@@ -1512,4 +1565,240 @@ async fn nothing_else_became_anonymous() {
     )
     .await;
     assert_eq!(reply.status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+#[ignore = "needs AWS Emulator; run make test-integration"]
+async fn one_visitor_cannot_spend_the_day_and_gets_demo_rate_limited() {
+    let env = demo_env().await;
+    env.provision().await;
+    // The cap of one visitor is 0.06 USD: about one worst-case reservation and a few real turns.
+    let router = env.router(&[
+        ("OPENBOOK_DEMO_VISITOR_BUDGET_USD_PER_DAY", "0.06"),
+        ("OPENBOOK_DEMO_LIMIT_VISITOR_PER_10_MIN", "50"),
+        ("OPENBOOK_DEMO_LIMIT_VISITOR_PER_DAY", "50"),
+    ]);
+    let mut refused = None;
+    for _ in 0..40 {
+        let reply = ask(&router, "What is photosynthesis?", "192.0.2.50:1").await;
+        if reply.status == StatusCode::TOO_MANY_REQUESTS {
+            refused = Some(reply);
+            break;
+        }
+        assert_eq!(reply.status, StatusCode::OK);
+    }
+    let refused = refused.expect("the visitor cap stopped the visitor before 40 questions");
+    assert_eq!(refused.error_code(), "demo_rate_limited");
+    assert!(
+        refused.json()["error"]["retryAfterSeconds"]
+            .as_u64()
+            .unwrap()
+            >= 1
+    );
+    // The day still has room for everybody else.
+    let other = ask(&router, "What is photosynthesis?", "192.0.2.51:1").await;
+    assert_eq!(other.status, StatusCode::OK, "{}", other.text);
+}
+
+#[tokio::test]
+#[ignore = "needs AWS Emulator; run make test-integration"]
+async fn a_stream_that_fails_keeps_the_whole_reservation() {
+    let env = demo_env().await;
+    env.provision().await;
+    let router = env.router(&[]);
+    let reply = ask(
+        &router,
+        "What does the Pythagorean theorem say? [fake:fail-after-delta]",
+        PEER,
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::OK);
+    assert_eq!(reply.sse().pop().unwrap().0, "error");
+    // The usage of a failed stream is not known, so the money is not given back: the counter holds the
+    // reservation, which is far above a real turn (about 4,000 millionths of a dollar).
+    let kept = counter(&env, "DEMO#GLOBAL").await;
+    assert!(kept > 20_000, "the whole reservation is kept: {kept}");
+    // The item of the turn is gone, so the settlement is final.
+    let (items, _) = env.snapshot().await;
+    assert!(items.keys().all(|(pk, _)| !pk.starts_with("DEMO#RES#")));
+    // A failed turn is not saved as a conversation.
+    assert!(items.keys().all(|(pk, _)| !pk.starts_with("DEMO#CONV#")));
+}
+
+#[tokio::test]
+#[ignore = "needs AWS Emulator; run make test-integration"]
+async fn a_client_that_leaves_still_settles_the_turn() {
+    let env = demo_env().await;
+    env.provision().await;
+    let router = env.router(&[]);
+    let request = axum::http::Request::builder()
+        .method(Method::POST)
+        .uri("/api/demo/chat")
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(
+            json!({"message": "What does the Pythagorean theorem say?"}).to_string(),
+        ))
+        .unwrap();
+    let mut request = request;
+    request.extensions_mut().insert(axum::extract::ConnectInfo(
+        PEER.parse::<std::net::SocketAddr>().unwrap(),
+    ));
+    let response = tower::ServiceExt::oneshot(router.clone(), request)
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    // The client leaves: the body is dropped before one event is read.
+    drop(response);
+    let mut settled = false;
+    for _ in 0..100 {
+        let (items, _) = env.snapshot().await;
+        let open = items.keys().any(|(pk, _)| pk.starts_with("DEMO#RES#"));
+        let spent = counter(&env, "DEMO#GLOBAL").await;
+        if !open && (1..20_000).contains(&spent) {
+            settled = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        settled,
+        "the turn settled to its real cost after the client left"
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs AWS Emulator; run make test-integration"]
+async fn in_lambda_the_header_is_the_visitor_and_a_missing_header_fails_closed() {
+    let _ = log_capture();
+    let env = demo_env().await;
+    env.provision().await;
+    // The same state with `in_lambda` on: the address is the CloudFront header and nothing else.
+    let router = {
+        let mut state = env.state(&[]);
+        let mut config = (*state.config).clone();
+        config.in_lambda = true;
+        state.config = Arc::new(config);
+        openbook_api::build_router(state)
+    };
+    let body = json!({"message": "What does the Pythagorean theorem say?"});
+    // No header: 503, nothing counted, even with a socket address.
+    let reply = send_anonymous(
+        &router,
+        "/api/demo/chat",
+        Some(body.clone()),
+        Some(PEER),
+        &[],
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(reply.error_code(), "demo_unavailable");
+    // A header that is not an address: the same.
+    for bad in ["", "unknown", "not-an-address:80"] {
+        let reply = send_anonymous(
+            &router,
+            "/api/demo/chat",
+            Some(body.clone()),
+            Some(PEER),
+            &[("cloudfront-viewer-address", bad)],
+        )
+        .await;
+        assert_eq!(reply.error_code(), "demo_unavailable", "{bad:?}");
+    }
+    assert_eq!(env.app.items_under("DEMO#GLOBAL").await, 0);
+    // A good header works without a socket address, and two addresses are two visitors.
+    let one = send_anonymous(
+        &router,
+        "/api/demo/chat",
+        Some(body.clone()),
+        None,
+        &[("cloudfront-viewer-address", "198.51.100.1:4000")],
+    )
+    .await;
+    let logs = String::from_utf8(log_capture().0.lock().unwrap().clone()).unwrap();
+    assert_eq!(one.status, StatusCode::OK, "{} {logs}", one.text);
+    assert!(
+        one.error_code_or_none().is_none(),
+        "answered: {}",
+        one.text.chars().take(80).collect::<String>()
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs AWS Emulator; run make test-integration"]
+async fn the_api_modes_mount_the_demo_alone_or_everything_but_the_demo() {
+    let env = demo_env().await;
+    env.provision().await;
+    let with_mode = |mode: openbook_core::config::ApiMode| {
+        let mut state = env.state(&[]);
+        let mut config = (*state.config).clone();
+        config.api_mode = mode;
+        state.config = Arc::new(config);
+        openbook_api::build_router(state)
+    };
+    let teacher = env.app.user("teacher").await;
+    let body = || Some(json!({"message": "What is photosynthesis?"}));
+    // The main function does not serve the demo: the route does not exist there.
+    let full = with_mode(openbook_core::config::ApiMode::Full);
+    let reply = send_anonymous(&full, "/api/demo/chat", body(), Some(PEER), &[]).await;
+    assert_eq!(reply.status, StatusCode::NOT_FOUND);
+    assert_eq!(reply.error_code(), "not_found");
+    assert_eq!(
+        send_to(&full, Method::GET, "/api/me", Some(&teacher.token), None)
+            .await
+            .status,
+        StatusCode::OK
+    );
+    // The demo function serves health and the demo, and no other route, signed in or not.
+    let demo = with_mode(openbook_core::config::ApiMode::Demo);
+    assert_eq!(
+        send_to(&demo, Method::GET, "/api/health", None, None)
+            .await
+            .status,
+        StatusCode::OK
+    );
+    for path in ["/api/me", "/api/courses", "/api/models"] {
+        assert_eq!(
+            send_to(&demo, Method::GET, path, Some(&teacher.token), None)
+                .await
+                .status,
+            StatusCode::NOT_FOUND,
+            "{path}"
+        );
+    }
+    let reply = send_anonymous(&demo, "/api/demo/chat", body(), Some(PEER), &[]).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.text);
+}
+
+#[tokio::test]
+#[ignore = "needs AWS Emulator; run make test-integration"]
+async fn provisioning_never_retires_the_active_course_that_a_pending_note_names() {
+    let env = demo_env().await;
+    let Outcome::Provisioned { course_id, .. } = env.provision().await else {
+        panic!("provisions");
+    };
+    // A run that switched the demo and stopped before it cleared its note.
+    let store = &env.provisioner.store;
+    store.put_pending_demo_course(&course_id).await.unwrap();
+    assert_eq!(
+        env.provision().await,
+        Outcome::UpToDate {
+            course_id: course_id.clone()
+        }
+    );
+    assert!(store.get_pending_demo_course().await.unwrap().is_none());
+    assert!(
+        store.course_is_live(&course_id).await.unwrap(),
+        "the active course is not retired"
+    );
+    // The same with new content: the note is cleared and the course stays until the switch.
+    store.put_pending_demo_course(&course_id).await.unwrap();
+    write_manifest(
+        env.dir.path(),
+        &[BIOLOGY, &["Mitochondria make most of the ATP of a cell."]],
+    );
+    let Outcome::Provisioned { replaced, .. } = env.provision().await else {
+        panic!("new content provisions");
+    };
+    assert_eq!(replaced.as_deref(), Some(course_id.as_str()));
+    assert!(store.get_pending_demo_course().await.unwrap().is_none());
 }

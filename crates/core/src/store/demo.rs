@@ -5,15 +5,15 @@ use async_trait::async_trait;
 use aws_sdk_dynamodb::primitives::Blob;
 use aws_sdk_dynamodb::types::AttributeValue;
 
-use aws_sdk_dynamodb::types::{Put, TransactWriteItem, Update};
+use aws_sdk_dynamodb::types::{Delete, Put, TransactWriteItem, Update};
 
 use super::{
     CourseItem, Item, META_SK, Query, Store, StoreError, cancel_is, course_pk, from_item, internal,
     is_conditional_failure, n, s, to_item,
 };
 use crate::demo::{
-    Counter, DemoConversations, DemoCounters, DemoCourse, MAX_TURNS, OWNER_ID, SALT_BYTES,
-    SaltStore, StoredConversation,
+    BudgetHit, Counter, DemoBudgets, DemoConversations, DemoCounters, DemoCourse, MAX_TURNS,
+    OWNER_ID, SALT_BYTES, SaltStore, StoredConversation, StoredMessage, TurnReservation,
 };
 use crate::domain::{CourseRecord, MessageRole, TutoringStyle};
 use crate::ids;
@@ -207,8 +207,8 @@ impl DemoCounters for Store {
         if amount == 0 {
             return Ok(());
         }
-        // Never below zero: when less than `amount` is left, set it to zero.
-        let first = self
+        // No fallback: a counter that holds less than `amount` is an error for the caller to log.
+        let result = self
             .client
             .update_item()
             .table_name(&self.table)
@@ -220,49 +220,130 @@ impl DemoCounters for Store {
             .expression_attribute_values(":amount", n(amount))
             .send()
             .await;
-        match first {
+        match result {
             Ok(_) => Ok(()),
-            Err(e) if is_conditional_failure(&e) => {
-                let zero = self
-                    .client
-                    .update_item()
-                    .table_name(&self.table)
-                    .key("pk", s(&counter.pk))
-                    .key("sk", s(&counter.sk))
-                    .update_expression("SET #c = :zero")
-                    .condition_expression("attribute_exists(#c)")
-                    .expression_attribute_names("#c", "count")
-                    .expression_attribute_values(":zero", n(0))
-                    .send()
-                    .await;
-                match zero {
-                    Ok(_) => Ok(()),
-                    // The counter is gone: nothing to give back.
-                    Err(e) if is_conditional_failure(&e) => Ok(()),
-                    Err(e) => Err(internal(e)),
-                }
-            }
+            Err(e) if is_conditional_failure(&e) => Err(StoreError::Internal(
+                "a demo counter holds less than the amount to give back".into(),
+            )),
+            Err(e) => Err(internal(e)),
+        }
+    }
+}
+
+/// One counter of a turn: `ADD count :amount` when the sum stays within the limit.
+fn reserve_update(
+    table: &str,
+    counter: &Counter,
+    amount: u64,
+    limit: u64,
+) -> Result<TransactWriteItem, StoreError> {
+    // `amount <= limit` is checked by the caller, so the room cannot underflow.
+    let room = limit.saturating_sub(amount);
+    let update = Update::builder()
+        .table_name(table)
+        .key("pk", s(&counter.pk))
+        .key("sk", s(&counter.sk))
+        .update_expression("SET #type = :type, #ttl = if_not_exists(#ttl, :ttl) ADD #c :amount")
+        .condition_expression("attribute_not_exists(#c) OR #c <= :room")
+        .expression_attribute_names("#type", "type")
+        .expression_attribute_names("#ttl", "ttl")
+        .expression_attribute_names("#c", "count")
+        .expression_attribute_values(":type", s("demo_counter"))
+        .expression_attribute_values(":ttl", n(counter.expires_at))
+        .expression_attribute_values(":amount", n(amount))
+        .expression_attribute_values(":room", n(room))
+        .build()
+        .map_err(internal)?;
+    Ok(TransactWriteItem::builder().update(update).build())
+}
+
+/// One counter of a turn: gives `refund` back when the counter holds at least that much.
+fn refund_update(
+    table: &str,
+    counter: &Counter,
+    refund: u64,
+) -> Result<TransactWriteItem, StoreError> {
+    let update = Update::builder()
+        .table_name(table)
+        .key("pk", s(&counter.pk))
+        .key("sk", s(&counter.sk))
+        .update_expression("SET #c = #c - :refund")
+        .condition_expression("#c >= :refund")
+        .expression_attribute_names("#c", "count")
+        .expression_attribute_values(":refund", n(refund))
+        .build()
+        .map_err(internal)?;
+    Ok(TransactWriteItem::builder().update(update).build())
+}
+
+#[async_trait]
+impl DemoBudgets for Store {
+    async fn reserve_turn(
+        &self,
+        turn: &TurnReservation,
+    ) -> Result<Result<(), BudgetHit>, StoreError> {
+        let item = Put::builder()
+            .table_name(&self.table)
+            .item("pk", s(&turn.item.pk))
+            .item("sk", s(&turn.item.sk))
+            .item("type", s("demo_reservation"))
+            .item("amount", n(turn.amount))
+            .item("ttl", n(turn.item.expires_at))
+            .condition_expression("attribute_not_exists(pk)")
+            .build()
+            .map_err(internal)?;
+        let result = self
+            .client
+            .transact_write_items()
+            // The turn ID makes a retry of this call safe: DynamoDB answers it once.
+            .client_request_token(&turn.turn_id)
+            .transact_items(reserve_update(
+                &self.table,
+                &turn.global,
+                turn.amount,
+                turn.global_limit,
+            )?)
+            .transact_items(reserve_update(
+                &self.table,
+                &turn.visitor,
+                turn.amount,
+                turn.visitor_limit,
+            )?)
+            .transact_items(TransactWriteItem::builder().put(item).build())
+            .send()
+            .await;
+        match result {
+            Ok(_) => Ok(Ok(())),
+            Err(e) if cancel_is(&e, 0, "ConditionalCheckFailed") => Ok(Err(BudgetHit::Global)),
+            Err(e) if cancel_is(&e, 1, "ConditionalCheckFailed") => Ok(Err(BudgetHit::Visitor)),
             Err(e) => Err(internal(e)),
         }
     }
 
-    async fn charge(&self, counter: &Counter, amount: u64) -> Result<(), StoreError> {
-        self.client
-            .update_item()
+    async fn settle_turn(&self, turn: &TurnReservation, refund: u64) -> Result<bool, StoreError> {
+        let delete = Delete::builder()
             .table_name(&self.table)
-            .key("pk", s(&counter.pk))
-            .key("sk", s(&counter.sk))
-            .update_expression("SET #type = :type, #ttl = if_not_exists(#ttl, :ttl) ADD #c :amount")
-            .expression_attribute_names("#type", "type")
-            .expression_attribute_names("#ttl", "ttl")
-            .expression_attribute_names("#c", "count")
-            .expression_attribute_values(":type", s("demo_counter"))
-            .expression_attribute_values(":ttl", n(counter.expires_at))
-            .expression_attribute_values(":amount", n(amount))
-            .send()
-            .await
+            .key("pk", s(&turn.item.pk))
+            .key("sk", s(&turn.item.sk))
+            .condition_expression("attribute_exists(pk)")
+            .build()
             .map_err(internal)?;
-        Ok(())
+        let mut request = self
+            .client
+            .transact_write_items()
+            .client_request_token(format!("{}s", turn.turn_id))
+            .transact_items(TransactWriteItem::builder().delete(delete).build());
+        if refund > 0 {
+            request = request
+                .transact_items(refund_update(&self.table, &turn.global, refund)?)
+                .transact_items(refund_update(&self.table, &turn.visitor, refund)?);
+        }
+        match request.send().await {
+            Ok(_) => Ok(true),
+            // The item is gone: this turn was settled before, so there is nothing to give back.
+            Err(e) if cancel_is(&e, 0, "ConditionalCheckFailed") => Ok(false),
+            Err(e) => Err(internal(e)),
+        }
     }
 }
 
@@ -290,7 +371,7 @@ impl DemoConversations for Store {
         else {
             return Ok(None);
         };
-        let mut messages: Vec<(String, MessageRole, String)> = items
+        let mut messages: Vec<(String, StoredMessage)> = items
             .iter()
             .filter_map(|i| {
                 let sk = text(i, "sk")?;
@@ -300,7 +381,15 @@ impl DemoConversations for Store {
                     "assistant" => MessageRole::Assistant,
                     _ => return None,
                 };
-                Some((sk, role, text(i, "content")?))
+                Some((
+                    sk,
+                    StoredMessage {
+                        role,
+                        text: text(i, "content")?,
+                        output_tokens: number(i, "outputTokens")
+                            .and_then(|v| u64::try_from(v).ok()),
+                    },
+                ))
             })
             .collect();
         messages.sort_by(|a, b| a.0.cmp(&b.0));
@@ -308,11 +397,7 @@ impl DemoConversations for Store {
         Ok(Some(StoredConversation {
             turns: u32::try_from(number(meta, "turns").unwrap_or(0)).unwrap_or(0),
             expires_at: number(meta, "ttl").unwrap_or(0),
-            messages: messages
-                .into_iter()
-                .skip(keep)
-                .map(|(_, role, content)| (role, content))
-                .collect(),
+            messages: messages.into_iter().skip(keep).map(|(_, m)| m).collect(),
         }))
     }
 
@@ -321,6 +406,7 @@ impl DemoConversations for Store {
         id: &str,
         question: &str,
         answer: &str,
+        answer_tokens: u64,
         expires_at: i64,
     ) -> Result<bool, StoreError> {
         let pk = conversation_pk(id);
@@ -338,8 +424,11 @@ impl DemoConversations for Store {
             .expression_attribute_values(":max", n(MAX_TURNS))
             .build()
             .map_err(internal)?;
-        let message = |role: &str, content: &str| -> Result<TransactWriteItem, StoreError> {
-            let put = Put::builder()
+        let message = |role: &str,
+                       content: &str,
+                       tokens: Option<u64>|
+         -> Result<TransactWriteItem, StoreError> {
+            let mut put = Put::builder()
                 .table_name(&self.table)
                 .item("pk", s(&pk))
                 // IDs from one process increase, so the question sorts before the answer.
@@ -347,17 +436,20 @@ impl DemoConversations for Store {
                 .item("type", s("demo_message"))
                 .item("role", s(role))
                 .item("content", s(content))
-                .item("ttl", n(expires_at))
-                .build()
-                .map_err(internal)?;
-            Ok(TransactWriteItem::builder().put(put).build())
+                .item("ttl", n(expires_at));
+            if let Some(tokens) = tokens {
+                put = put.item("outputTokens", n(tokens));
+            }
+            Ok(TransactWriteItem::builder()
+                .put(put.build().map_err(internal)?)
+                .build())
         };
         let result = self
             .client
             .transact_write_items()
             .transact_items(TransactWriteItem::builder().update(meta).build())
-            .transact_items(message("user", question)?)
-            .transact_items(message("assistant", answer)?)
+            .transact_items(message("user", question, None)?)
+            .transact_items(message("assistant", answer, Some(answer_tokens))?)
             .send()
             .await;
         match result {

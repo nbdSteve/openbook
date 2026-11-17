@@ -216,6 +216,7 @@ impl Provisioner {
         let fingerprint = loaded.fingerprint();
         let active = self.store.get_demo_course().await?;
 
+        let pending = self.store.get_pending_demo_course().await?;
         if let Some(active) = &active
             && !force
             && active.fingerprint == fingerprint
@@ -223,15 +224,23 @@ impl Provisioner {
                 .is_current(&active.course_id, loaded.pdfs.len())
                 .await?
         {
+            // A run that stopped after it switched the demo left its note. The course is the active one.
+            if pending.as_deref() == Some(active.course_id.as_str()) {
+                self.store.delete_pending_demo_course().await?;
+            }
             return Ok(Outcome::UpToDate {
                 course_id: active.course_id.clone(),
             });
         }
 
-        // An earlier run that stopped half way left a course behind. Remove it first.
-        if let Some(stale) = self.store.get_pending_demo_course().await? {
-            tracing::info!(course_id = %stale, "removing the course of an unfinished run");
-            self.retire(&stale).await?;
+        // An earlier run that stopped half way left a course behind. Remove it first, but never the
+        // active course: a run that switched the demo and stopped before it cleared its note left the
+        // active ID here, and that course serves the visitors.
+        if let Some(stale) = pending {
+            if active.as_ref().is_none_or(|a| a.course_id != stale) {
+                tracing::info!(course_id = %stale, "removing the course of an unfinished run");
+                self.retire(&stale).await?;
+            }
             self.store.delete_pending_demo_course().await?;
         }
 

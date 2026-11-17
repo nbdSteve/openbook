@@ -21,13 +21,13 @@ use axum::response::{IntoResponse, Response};
 use chrono::Utc;
 use openbook_core::catalog::ModelEntry;
 use openbook_core::demo::{
-    self, BudgetReservation, DemoConversations, DemoCourse, LimitHit, VisitorReservation,
-    parse_viewer_address, worst_case_tokens,
+    self, BudgetHit, BudgetReservation, DemoConversations, DemoCourse, LimitHit,
+    VisitorReservation, parse_viewer_address, source_token_bound, token_bound,
 };
 use openbook_core::domain::{CourseRecord, Document, DocumentStatus, MessageRole};
-use openbook_core::model::{ChatModel, ChatRequest, ModelEvent, TokenUsage, estimate_tokens};
+use openbook_core::model::{ChatModel, ChatRequest, ModelEvent, TokenUsage};
 use openbook_core::prompt::{
-    HISTORY_WINDOW, NOT_COVERED_NOTICE, REWRITE_SYSTEM_PROMPT, SourceMode, build_system_prompt_for,
+    NOT_COVERED_NOTICE, REWRITE_SYSTEM_PROMPT, SourceMode, build_system_prompt_for,
     normalize_turns, rewrite_user_text,
 };
 use openbook_core::store::Store;
@@ -41,7 +41,8 @@ use super::chat::{ChatTimeouts, EVENT_BUFFER, Failure, emit, error_event, next_e
 use crate::error::{ApiError, MODEL_UNAVAILABLE_MESSAGE};
 use crate::extract::ApiJson;
 use crate::retrieval::{
-    FINAL_SOURCES, REWRITE_HISTORY, REWRITE_MAX_TOKENS, Retrieval, SNIPPET_CHARS, run_turn,
+    FINAL_SOURCES, MAX_QUERY_CHARS, REWRITE_HISTORY, REWRITE_MAX_TOKENS, Retrieval, SNIPPET_CHARS,
+    run_turn,
 };
 use crate::sse::{ChatEvent, sse_response};
 use crate::{AppState, validate};
@@ -80,40 +81,35 @@ pub fn client_ip(
     }
 }
 
-/// The most that one turn can cost, in millionths of a US dollar: the answer (the whole prompt with
-/// the most sources that retrieval can return, and the full output limit) and, for a follow-up, the
-/// rewrite. `system_chars` is the length of the course prompt with the longest notice.
+/// The most that one turn can cost, in millionths of a US dollar. It is an upper bound:
+/// - the answer: the course prompt (`system_tokens`), the most sources that retrieval can return,
+///   the history (`history_tokens`: the real output tokens of the stored answers and a safe bound for
+///   the questions), the question, and the full demo output limit (`max_output`);
+/// - for a follow-up, the rewrite by the fast model;
+/// - the embedding of the query, at the price of the fast model (far above the real price).
 pub fn worst_case_cost(
     chat: &ModelEntry,
     fast: &ModelEntry,
-    system_chars: usize,
+    system_tokens: u64,
     history: &[(MessageRole, String)],
+    history_tokens: u64,
     message: &str,
+    max_output: u64,
 ) -> Option<u64> {
-    let window = history.len().saturating_sub(HISTORY_WINDOW);
-    let history_chars: usize = history[window..]
-        .iter()
-        .map(|(_, text)| text.chars().count())
-        .sum();
-    let sources_chars = FINAL_SOURCES * (SNIPPET_CHARS + SOURCE_WRAPPER_CHARS);
-    let answer_input =
-        worst_case_tokens(system_chars + sources_chars + history_chars + message.chars().count());
-    let answer =
-        chat.cost_micro_usd(answer_input, u64::try_from(chat.max_tokens()).unwrap_or(0))?;
+    let sources_tokens = source_token_bound(FINAL_SOURCES * (SNIPPET_CHARS + SOURCE_WRAPPER_CHARS));
+    let answer_input = system_tokens + sources_tokens + history_tokens + token_bound(message);
+    let answer = chat.cost_micro_usd(answer_input, max_output)?;
     let rewrite = if history.is_empty() {
         0
     } else {
         let start = history.len().saturating_sub(REWRITE_HISTORY);
-        let chars = REWRITE_SYSTEM_PROMPT.chars().count()
-            + rewrite_user_text(&history[start..], message)
-                .chars()
-                .count();
-        fast.cost_micro_usd(
-            worst_case_tokens(chars),
-            u64::try_from(REWRITE_MAX_TOKENS).unwrap_or(0),
-        )?
+        let input = token_bound(REWRITE_SYSTEM_PROMPT)
+            + token_bound(&rewrite_user_text(&history[start..], message));
+        fast.cost_micro_usd(input, u64::try_from(REWRITE_MAX_TOKENS).unwrap_or(0))?
     };
-    Some(answer.saturating_add(rewrite))
+    // One token for each character of the longest query.
+    let embedding = fast.cost_micro_usd(MAX_QUERY_CHARS as u64, 0)?;
+    Some(answer.saturating_add(rewrite).saturating_add(embedding))
 }
 
 /// One structured line per demo turn. It never has the address, the hash, or the question.
@@ -150,6 +146,7 @@ struct DemoRun {
     documents: Vec<Document>,
     retrieval: Arc<Retrieval>,
     message: String,
+    max_output: u32,
     conversation_id: String,
     expires_at: i64,
     /// The conversation before this question.
@@ -221,6 +218,12 @@ pub async fn chat(State(state): State<AppState>, request: Request) -> Result<Res
         )));
     };
     let rewriter = state.models.provider(catalog.fast_id());
+    // The output limit of the demo: from the context, and never above the limit of the model.
+    let max_output = state
+        .config
+        .demo
+        .max_output_tokens
+        .min(u32::try_from(chat_entry.max_tokens()).unwrap_or(0));
 
     let now = Utc::now();
     let visitor_id = state.demo_visitors.id(&state.store, now, address).await?;
@@ -238,41 +241,52 @@ pub async fn chat(State(state): State<AppState>, request: Request) -> Result<Res
     // From here on, a failure must give the visitor's question back.
     let prepared = async {
         let resumed = demo::resume(&state.store, body.conversation_id.as_deref(), now).await?;
-        let system_chars = build_system_prompt_for(
+        let system_tokens = token_bound(&build_system_prompt_for(
             &course.name,
             &course.description,
             course.tutoring_style,
             SourceMode::NotUsed,
-        )
-        .chars()
-        .count()
-            + NOT_COVERED_NOTICE.chars().count()
-            + DEMO_PROMPT_NOTE.chars().count();
+        )) + token_bound(NOT_COVERED_NOTICE)
+            + token_bound(DEMO_PROMPT_NOTE);
         let cost = worst_case_cost(
             &chat_entry,
             &fast_entry,
-            system_chars,
+            system_tokens,
             &resumed.history,
+            resumed.history_tokens,
             &message,
+            u64::from(max_output),
         )
         .ok_or_else(|| ApiError::internal("the demo models have no prices"))?;
-        let budget = demo::reserve_budget(
-            &state.store,
-            now,
-            cost,
-            state.config.demo.budget_micro_usd_per_day,
-        )
-        .await?;
+        let budget =
+            demo::reserve_budget(&state.store, &visitor_id, now, cost, &state.config.demo).await?;
         Ok::<_, ApiError>((resumed, budget))
     }
     .await;
     let (resumed, budget) = match prepared {
-        Ok((resumed, Some(budget))) => (resumed, budget),
-        Ok((_, None)) => {
-            // The day's budget has no room for this turn.
+        Ok((resumed, Ok(budget))) => (resumed, budget),
+        Ok((_, Err(hit))) => {
+            // The day's budget, or the visitor's cap, has no room for this turn.
             visitor.release(&state.store).await;
-            log_turn("budget_full", &chat_id, nothing, 0, started, None);
-            return Err(ApiError::DemoBusy);
+            return Err(match hit {
+                BudgetHit::Global => {
+                    log_turn("budget_full", &chat_id, nothing, 0, started, None);
+                    ApiError::DemoBusy
+                }
+                BudgetHit::Visitor => {
+                    log_turn(
+                        "limit",
+                        &chat_id,
+                        nothing,
+                        0,
+                        started,
+                        Some(LimitHit::VisitorBudget),
+                    );
+                    ApiError::DemoRateLimited {
+                        retry_after_seconds: LimitHit::VisitorBudget.retry_after_seconds(now),
+                    }
+                }
+            });
         }
         Err(error) => {
             visitor.release(&state.store).await;
@@ -291,6 +305,7 @@ pub async fn chat(State(state): State<AppState>, request: Request) -> Result<Res
         documents,
         retrieval: state.retrieval.clone(),
         message,
+        max_output,
         conversation_id: resumed.id,
         expires_at: resumed.expires_at,
         earlier: resumed.history,
@@ -316,6 +331,7 @@ async fn run_demo(run: DemoRun, tx: mpsc::Sender<ChatEvent>) {
         documents,
         retrieval,
         message,
+        max_output,
         conversation_id,
         expires_at,
         earlier,
@@ -372,17 +388,10 @@ async fn run_demo(run: DemoRun, tx: mpsc::Sender<ChatEvent>) {
     let request = ChatRequest {
         system,
         turns: normalize_turns(&history),
-        // The catalog limit of the model, as in the course chat.
-        max_tokens: Some(chat_entry.max_tokens()),
+        // The demo limit, which is at most the catalog limit of the model.
+        max_tokens: Some(i32::try_from(max_output).unwrap_or(i32::MAX)),
         temperature: None,
     };
-    let input_chars = request.system.chars().count()
-        + request
-            .turns
-            .iter()
-            .map(|t| t.text.chars().count())
-            .sum::<usize>();
-
     let first_wait = timeouts.first_delta.min(timeouts.overall);
     let mut stream = match tokio::time::timeout(first_wait, provider.stream(request)).await {
         Ok(Ok(stream)) => stream,
@@ -390,7 +399,7 @@ async fn run_demo(run: DemoRun, tx: mpsc::Sender<ChatEvent>) {
             if let Ok(Err(error)) = &outcome {
                 tracing::error!(%error, model = %model_id, "demo model call failed to start");
             }
-            // Nothing reached the visitor: the question does not count, and only retrieval cost money.
+            // The model never started, so only retrieval cost money (the usage is known, not estimated).
             budget.settle(&store, retrieval_cost).await;
             visitor.release(&store).await;
             log_turn(
@@ -447,10 +456,23 @@ async fn run_demo(run: DemoRun, tx: mpsc::Sender<ChatEvent>) {
                 .cost_micro_usd(usage.input_tokens, usage.output_tokens)
                 .unwrap_or(0)
                 .saturating_add(retrieval_cost);
-            budget.settle(&store, cost).await;
+            if usage == TokenUsage::default() {
+                // The model reported no usage. Never refund on a guess: keep the whole reservation.
+                tracing::warn!(model = %model_id, "the demo model reported no usage");
+                budget.keep(&store).await;
+            } else {
+                budget.settle(&store, cost).await;
+            }
             // Keep the turn before `done`: in Lambda the invocation can end when the stream closes.
-            match DemoConversations::append(&store, &conversation_id, &message, &text, expires_at)
-                .await
+            match DemoConversations::append(
+                &store,
+                &conversation_id,
+                &message,
+                &text,
+                usage.output_tokens,
+                expires_at,
+            )
+            .await
             {
                 Ok(true) => {}
                 Ok(false) => tracing::warn!("the demo conversation is full; the turn was not kept"),
@@ -464,23 +486,22 @@ async fn run_demo(run: DemoRun, tx: mpsc::Sender<ChatEvent>) {
                 Some(Failure::TimedOut) => "timed_out",
                 _ => "model_failed",
             };
-            let usage = if text.is_empty() {
+            if text.is_empty() {
                 // Nothing reached the visitor, so the question does not count.
                 visitor.release(&store).await;
-                TokenUsage::default()
-            } else {
-                // The model produced text and cost money: charge the estimate.
-                TokenUsage {
-                    input_tokens: estimate_tokens(input_chars),
-                    output_tokens: estimate_tokens(text.chars().count()),
-                }
-            };
-            let cost = chat_entry
-                .cost_micro_usd(usage.input_tokens, usage.output_tokens)
-                .unwrap_or(0)
-                .saturating_add(retrieval_cost);
-            budget.settle(&store, cost).await;
-            log_turn(outcome, &model_id, usage, cost, started, None);
+            }
+            // A stream that failed may have used any number of tokens. The usage is not known, so
+            // the money is not given back on an estimate: the turn keeps its whole reservation.
+            let cost = budget.reserved_micro_usd();
+            budget.keep(&store).await;
+            log_turn(
+                outcome,
+                &model_id,
+                TokenUsage::default(),
+                cost,
+                started,
+                None,
+            );
             emit(
                 &tx,
                 error_event("model_unavailable", MODEL_UNAVAILABLE_MESSAGE),
@@ -529,25 +550,40 @@ mod tests {
     }
 
     #[test]
-    fn the_worst_case_covers_the_prompt_the_sources_and_the_full_output_limit() {
-        let sonnet = entry(3.0, 15.0, 2000);
-        let haiku = entry(1.0, 5.0, 2000);
-        let first = worst_case_cost(&sonnet, &haiku, 3000, &[], "What is a function?").unwrap();
-        let input_tokens = (3000 + 8 * 2600 + 19_u64).div_ceil(3);
-        assert_eq!(first, 3 * input_tokens + 15 * 2000);
-        assert!(first < 100_000, "about 10 US cents at most: {first}");
-        // A follow-up also reserves the rewrite and the longer prompt.
+    fn the_worst_case_covers_the_prompt_the_sources_the_history_and_the_full_output_limit() {
+        let sonnet = entry(3.3, 16.5, 2000);
+        let haiku = entry(1.1, 5.5, 2000);
+        let first =
+            worst_case_cost(&sonnet, &haiku, 800, &[], 0, "What is a function?", 1000).unwrap();
+        // The sources: 8 passages of 2,600 characters at 2 characters per token.
+        let input = 800 + 8 * 2600_u64.div_ceil(2) + token_bound("What is a function?");
+        let embedding = (1.1 * 500.0_f64).ceil() as u64;
+        assert_eq!(
+            first,
+            (3.3 * input as f64).ceil() as u64 + 16_500 * 1000 / 1000 + embedding
+        );
+        assert!(first < 60_000, "about 5 US cents: {first}");
+        // The output limit counts in full: a bigger limit costs more.
+        let longer =
+            worst_case_cost(&sonnet, &haiku, 800, &[], 0, "What is a function?", 2000).unwrap();
+        assert_eq!(longer - first, 16_500);
+        // A follow-up reserves the rewrite, and the stored history with its real output tokens.
         let history = vec![
             (MessageRole::User, "x".repeat(300)),
             (MessageRole::Assistant, "y".repeat(3000)),
         ];
-        let second = worst_case_cost(&sonnet, &haiku, 3000, &history, "And then?").unwrap();
-        assert!(second > first);
+        let second =
+            worst_case_cost(&sonnet, &haiku, 800, &history, 640, "And then?", 1000).unwrap();
+        assert!(second > first + 640 * 3);
         // Without prices there is no estimate, and the demo refuses to run.
         let free: ModelEntry = serde_json::from_value(serde_json::json!({
             "id": "m", "label": "M", "vendor": "v", "provider": "fake", "modelId": "m", "residency": "au"
         }))
         .unwrap();
-        assert_eq!(worst_case_cost(&free, &haiku, 3000, &[], "q"), None);
+        assert_eq!(worst_case_cost(&free, &haiku, 800, &[], 0, "q", 1000), None);
+        assert_eq!(
+            worst_case_cost(&sonnet, &free, 800, &[], 0, "q", 1000),
+            None
+        );
     }
 }
