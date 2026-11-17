@@ -28,6 +28,8 @@ export const placeholderRules: Record<string, RegExp> = {
   CLOUDFORMATION_EXECUTION_ROLE_NAME: /^[\w+=,.@-]{1,64}$/,
   // GitHub's immutable subject form: both identities are canonical positive integers.
   GITHUB_REPOSITORY_IDENTITY: /^nbdSteve@[1-9][0-9]*\/openbook@[1-9][0-9]*$/,
+  // A Route 53 hosted zone ID (the same pattern as the HostedZoneId parameter of the stack).
+  HOSTED_ZONE_ID: /^Z[A-Z0-9]{1,32}$/,
 };
 
 /**
@@ -129,7 +131,7 @@ const usage = [
   '  npm run render:iam -- --example [--out-dir <dir>]',
   '  npm run render:iam -- --account-id <twelve digits>',
   '      --repository-identity <owner@owner-id/repository@repository-id>',
-  '      --execution-role-name <name> [--out-dir <dir>]',
+  '      --execution-role-name <name> --hosted-zone-id <Z...> [--out-dir <dir>]',
 ].join('\n');
 
 export interface Options {
@@ -144,6 +146,7 @@ export function parseArgv(argv: string[]): Options {
     ['--account-id', 'ACCOUNT_ID'],
     ['--execution-role-name', 'CLOUDFORMATION_EXECUTION_ROLE_NAME'],
     ['--repository-identity', 'GITHUB_REPOSITORY_IDENTITY'],
+    ['--hosted-zone-id', 'HOSTED_ZONE_ID'],
   ]);
   for (let i = 0; i < argv.length; i += 1) {
     const argument = argv[i];
