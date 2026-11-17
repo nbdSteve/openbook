@@ -28,8 +28,27 @@ export interface Limits {
  * are CloudFormation parameters that the deployment supplies, so the template has no resource ID.
  */
 export interface DomainConfig {
+  /** The site: the distribution serves it, and the CORS rule of the docs bucket allows it. */
   domainName: string;
   hostedZoneName: string;
+  /**
+   * Old host names that redirect (301) to an area of the site. The distribution has them as
+   * aliases too, so the certificate must cover them.
+   */
+  redirects: DomainRedirect[];
+}
+
+export interface DomainRedirect {
+  host: string;
+  /** The area of the site that it goes to, for example `/ask`. Every old path maps to it. */
+  path: string;
+  /**
+   * The start of the logical IDs of its two DNS records (`<prefix>A`, `<prefix>Aaaa`). The default
+   * comes from the first label (`portal.steve.gg` gives `PortalAlias`). A name that the stack
+   * already owns keeps its old ID here, so CloudFormation updates the record and does not create
+   * a second one before it deletes the first.
+   */
+  recordIdPrefix?: string;
 }
 
 /** One credit line of the demo, as the public web config shows it. */
@@ -51,6 +70,12 @@ export interface DemoConfig {
   visitorPerDay: number;
   /** What the whole demo may spend in a day (UTC), in US dollars. */
   budgetUsdPerDay: number;
+  /** What one visitor may spend in a day (UTC), in US dollars. */
+  visitorBudgetUsdPerDay: number;
+  /** The output limit of a demo answer (at most the limit of the default chat model). */
+  maxOutputTokens: number;
+  /** The reserved concurrency of the demo function. It is small, so visitors cannot starve users. */
+  concurrency: number;
   /** The label of the default chat model, which answers the demo. */
   modelLabel: string;
   sources: DemoSource[];
@@ -113,6 +138,31 @@ function limit(node: Node, stage: Stage, key: string, fallback: number): number 
  */
 export const defaultDemoLimits = { visitorPer10Min: 10, visitorPerDay: 40, budgetUsdPerDay: 2 };
 
+/** Defaults of the demo: 1,000 output tokens, 0.30 US dollars a visitor a day, 3 executions in prod and 2 in dev. */
+export const defaultDemoExtras = { maxOutputTokens: 1000, visitorBudgetUsdPerDay: 0.3 };
+
+/**
+ * A number from the context key, or `stageDemo.<stage>.<stageKey>` in cdk.json, or the fallback.
+ */
+function demoNumber(
+  node: Node,
+  stage: Stage,
+  key: string,
+  stageKey: string,
+  fallback: number,
+  integer: boolean,
+  max: number,
+): number {
+  const stageDemo = node.tryGetContext('stageDemo') as Record<string, Record<string, unknown>> | undefined;
+  const value: unknown = node.tryGetContext(key) ?? stageDemo?.[stage]?.[stageKey];
+  if (value === undefined || value === null || value === '') return fallback;
+  const n = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(n) || n <= 0 || n > max || (integer && !Number.isInteger(n))) {
+    throw new Error(`context ${key} must be a positive ${integer ? 'integer' : 'number'} up to ${max}`);
+  }
+  return n;
+}
+
 /**
  * The daily budget comes from, in order: the context key `demoBudgetUsdPerDay`, the stage defaults in
  * cdk.json (`stageDemo.<stage>.budgetUsdPerDay`), and the default. It is a positive number of dollars.
@@ -161,6 +211,10 @@ function demoManifest(node: Node): { sources: DemoSource[]; examples: string[] }
   if (examples.length < 4 || examples.length > 6 || examples.some((e) => typeof e !== 'string' || e.trim() === '')) {
     throw new Error('the demo manifest needs 4 to 6 example questions');
   }
+  // The landing page shows them as chips with a tight word budget.
+  if (examples.some((e) => (e as string).trim().split(/\s+/).length > 5)) {
+    throw new Error('an example question of the demo manifest has more than 5 words');
+  }
   return { sources, examples: examples as string[] };
 }
 
@@ -170,6 +224,39 @@ const dnsName = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63
  * The domain comes from the context keys `domainName` and `hostedZoneName`, or else from
  * `stageDomains.<stage>` in cdk.json. A stage with no domain has none. Half a domain is an error.
  */
+function resolveRedirects(
+  stage: Stage,
+  fromStage: Record<string, unknown> | undefined,
+  domainName: string,
+  hostedZoneName: string,
+): DomainRedirect[] {
+  const raw = fromStage?.redirects;
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) throw new Error(`context stageDomains.${stage}.redirects must be a list`);
+  const seen = new Set<string>([domainName]);
+  const prefixes = new Set<string>();
+  return raw.map((entry: unknown) => {
+    const { host, path: area, recordIdPrefix } = (entry ?? {}) as Record<string, unknown>;
+    if (typeof host !== 'string' || !dnsName.test(host)) throw new Error('a redirect needs a lower case DNS name as host');
+    if (host !== hostedZoneName && !host.endsWith(`.${hostedZoneName}`)) {
+      throw new Error(`redirect host ${host} must be in the hosted zone ${hostedZoneName}`);
+    }
+    if (seen.has(host)) throw new Error(`redirect host ${host} is used twice or is the site itself`);
+    seen.add(host);
+    if (typeof area !== 'string' || !/^\/[a-z0-9-]+$/.test(area)) {
+      throw new Error(`redirect ${host} needs a path like /ask (one lower case segment)`);
+    }
+    if (recordIdPrefix !== undefined) {
+      if (typeof recordIdPrefix !== 'string' || !/^[A-Za-z][A-Za-z0-9]*$/.test(recordIdPrefix)) {
+        throw new Error(`redirect ${host} has a bad recordIdPrefix`);
+      }
+      if (prefixes.has(recordIdPrefix)) throw new Error(`recordIdPrefix ${recordIdPrefix} is used twice`);
+      prefixes.add(recordIdPrefix);
+    }
+    return { host, path: area, ...(recordIdPrefix !== undefined ? { recordIdPrefix } : {}) };
+  });
+}
+
 function resolveDomain(node: Node, stage: Stage): DomainConfig | undefined {
   const stageDomains = node.tryGetContext('stageDomains') as Record<string, Record<string, unknown>> | undefined;
   const fromStage = stageDomains?.[stage];
@@ -193,7 +280,13 @@ function resolveDomain(node: Node, stage: Stage): DomainConfig | undefined {
   if (domainName !== hostedZoneName && !domainName.endsWith(`.${hostedZoneName}`)) {
     throw new Error('domainName must be the hosted zone name or a subdomain of it');
   }
-  return { domainName, hostedZoneName };
+  // A domain from the context (`-c domainName=...`) replaces the one of cdk.json, redirects included.
+  const overridden = str(node, 'domainName') !== undefined || str(node, 'hostedZoneName') !== undefined;
+  return {
+    domainName,
+    hostedZoneName,
+    redirects: overridden ? [] : resolveRedirects(stage, fromStage, domainName, hostedZoneName),
+  };
 }
 
 export function resolveConfig(node: Node): OpenbookConfig {
@@ -241,6 +334,9 @@ export function resolveConfig(node: Node): OpenbookConfig {
       visitorPer10Min: limit(node, stage, 'limitDemoVisitorPer10Min', defaultDemoLimits.visitorPer10Min),
       visitorPerDay: limit(node, stage, 'limitDemoVisitorPerDay', defaultDemoLimits.visitorPerDay),
       budgetUsdPerDay: demoBudget(node, stage),
+      visitorBudgetUsdPerDay: demoNumber(node, stage, 'demoVisitorBudgetUsdPerDay', 'visitorBudgetUsdPerDay', defaultDemoExtras.visitorBudgetUsdPerDay, false, 1000),
+      maxOutputTokens: demoNumber(node, stage, 'demoMaxOutputTokens', 'maxOutputTokens', defaultDemoExtras.maxOutputTokens, true, 64_000),
+      concurrency: demoNumber(node, stage, 'demoConcurrency', 'concurrency', stage === 'prod' ? 3 : 2, true, 100),
       modelLabel: catalog.models.find((m) => m.id === catalog.defaultChatModel)?.label ?? catalog.defaultChatModel,
       ...demoManifest(node),
     },

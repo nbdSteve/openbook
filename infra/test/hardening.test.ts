@@ -222,11 +222,16 @@ describe('exact policy lists', () => {
 
 describe('the CloudFront Function', () => {
   test('has the fixed name that the execution role is scoped to', () => {
-    const fn = Object.values(prod.json.Resources).find((r) => r.Type === 'AWS::CloudFront::Function');
-    expect(fn?.Properties?.Name).toBe(spaRewriteFunctionName('prod'));
+    const names = Object.values(prod.json.Resources)
+      .filter((r) => r.Type === 'AWS::CloudFront::Function')
+      .map((r) => r.Properties?.Name);
+    expect(names).toContain(spaRewriteFunctionName('prod'));
     const exec = rendered('cloudformation-execution-role-policy').Statement;
     const st = exec.find((x) => x.Sid === 'CloudFrontSpaRewriteFunction');
-    expect(st?.Resource).toBe(`arn:aws:cloudfront::${fakeAccount}:function/${spaRewriteFunctionName('prod')}`);
+    // The role may manage exactly the three functions of the stack, and no other.
+    expect([...(st?.Resource as string[])].sort()).toEqual(
+      names.map((n) => `arn:aws:cloudfront::${fakeAccount}:function/${String(n)}`).sort(),
+    );
   });
 });
 

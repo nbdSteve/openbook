@@ -296,7 +296,8 @@ describe('the deploy workflow', () => {
     expect(step?.run).toContain('.context.stageDomains.prod.domainName');
     expect(step?.run).toContain('"https://$domain"');
     const cdkJson = JSON.parse(read('infra/cdk.json')) as { context: { stageDomains: { prod: { domainName: string } } } };
-    expect(cdkJson.context.stageDomains.prod.domainName).toBe('ask.steve.gg');
+    // The workflow reads the domain from cdk.json, so a change of the domain needs no change of the workflow.
+    expect(cdkJson.context.stageDomains.prod.domainName).toBe('openbook.steve.gg');
   });
 
   test('sends the cdk deploy output to a file and prints only a filtered summary', () => {
@@ -537,7 +538,7 @@ describe('make deploy and the custom domain', () => {
     for (const env of [{}, { OPENBOOK_CERTIFICATE_ARN: 'x' }, { OPENBOOK_HOSTED_ZONE_ID: 'x' }]) {
       const result = make(prod, { ...profile, ...env });
       expect(result.status).not.toBe(0);
-      expect(result.output).toContain('ask.steve.gg');
+      expect(result.output).toContain('openbook.steve.gg');
       expect(result.output).toContain('OPENBOOK_CERTIFICATE_ARN');
     }
   });

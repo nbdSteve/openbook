@@ -59,10 +59,11 @@ describe('the assembly validator', () => {
     const template = JSON.parse(text) as { Parameters: Record<string, Json>; Resources: Record<string, { Type: string }> };
     expect(Object.keys(template.Parameters).sort()).toEqual(['CertificateArn', 'HostedZoneId']);
     for (const name of ['CertificateArn', 'HostedZoneId']) expect(template.Parameters[name]).not.toHaveProperty('Default');
-    expect(text).toContain('ask.steve.gg');
+    for (const host of ['openbook.steve.gg', 'ask.steve.gg', 'portal.steve.gg']) expect(text).toContain(host);
     expect(text).not.toMatch(/\b\d{12}\b/);
     expect(JSON.stringify(template.Resources)).not.toMatch(/arn:aws:acm/);
-    expect(Object.values(template.Resources).filter((r) => r.Type === 'AWS::Route53::RecordSet')).toHaveLength(2);
+    // An A and an AAAA record for each of the three names.
+    expect(Object.values(template.Resources).filter((r) => r.Type === 'AWS::Route53::RecordSet')).toHaveLength(6);
   });
 
   test('refuses an asset that has an executable, the way the CDK CLI would run it', () => {

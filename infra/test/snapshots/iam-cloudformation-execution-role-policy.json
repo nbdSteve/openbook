@@ -323,23 +323,19 @@
         "cloudfront:CreateDistributionWithTags",
         "cloudfront:CreateFunction",
         "cloudfront:CreateOriginAccessControl",
-        "cloudfront:CreateOriginRequestPolicy",
         "cloudfront:CreateResponseHeadersPolicy",
         "cloudfront:DeleteDistribution",
         "cloudfront:DeleteOriginAccessControl",
-        "cloudfront:DeleteOriginRequestPolicy",
         "cloudfront:DeleteResponseHeadersPolicy",
         "cloudfront:GetDistribution",
         "cloudfront:GetDistributionConfig",
         "cloudfront:GetOriginAccessControl",
-        "cloudfront:GetOriginRequestPolicy",
         "cloudfront:GetResponseHeadersPolicy",
         "cloudfront:ListTagsForResource",
         "cloudfront:TagResource",
         "cloudfront:UntagResource",
         "cloudfront:UpdateDistribution",
         "cloudfront:UpdateOriginAccessControl",
-        "cloudfront:UpdateOriginRequestPolicy",
         "cloudfront:UpdateResponseHeadersPolicy"
       ],
       "Resource": "*"
@@ -363,7 +359,11 @@
       "Resource": "arn:aws:route53:::hostedzone/Z0000000000EXAMPLE",
       "Condition": {
         "ForAllValues:StringEquals": {
-          "route53:ChangeResourceRecordSetsNormalizedRecordNames": "ask.steve.gg",
+          "route53:ChangeResourceRecordSetsNormalizedRecordNames": [
+            "openbook.steve.gg",
+            "ask.steve.gg",
+            "portal.steve.gg"
+          ],
           "route53:ChangeResourceRecordSetsRecordTypes": [
             "A",
             "AAAA"
@@ -400,7 +400,11 @@
         "cloudfront:PublishFunction",
         "cloudfront:UpdateFunction"
       ],
-      "Resource": "arn:aws:cloudfront::111111111111:function/Openbook-prod-SpaRewrite"
+      "Resource": [
+        "arn:aws:cloudfront::111111111111:function/Openbook-prod-SpaRewrite",
+        "arn:aws:cloudfront::111111111111:function/Openbook-prod-HostRedirect",
+        "arn:aws:cloudfront::111111111111:function/Openbook-prod-DemoResponse"
+      ]
     },
     {
       "Sid": "ReadTheStackAssets",

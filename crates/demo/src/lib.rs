@@ -24,6 +24,8 @@ use sha2::{Digest, Sha256};
 const MAX_NAME_CHARS: usize = 80;
 const MAX_DESCRIPTION_CHARS: usize = 500;
 const MAX_PDF_BYTES: usize = 25 * 1024 * 1024;
+/// The longest example question, in words.
+const MAX_EXAMPLE_WORDS: usize = 5;
 /// The manifest changes the fingerprint when this changes, for a change of the pipeline.
 const FINGERPRINT_VERSION: &str = "openbook-demo-v1";
 
@@ -130,6 +132,13 @@ impl Loaded {
         }
         if !(4..=6).contains(&m.examples.len()) || m.examples.iter().any(|e| e.trim().is_empty()) {
             return bad("examples must be 4 to 6 questions");
+        }
+        // The landing page shows them as chips with a tight word budget.
+        if m.examples
+            .iter()
+            .any(|e| e.split_whitespace().count() > MAX_EXAMPLE_WORDS)
+        {
+            return bad("an example question has more than 5 words");
         }
         if m.sources.is_empty() || self.pdfs.len() != m.sources.len() {
             return bad("the manifest needs at least one source with a file");
@@ -425,6 +434,12 @@ mod tests {
         let breaks: Vec<(&str, Change)> = vec![
             ("name", Box::new(|l| l.manifest.name = " ".into())),
             (
+                "a long example",
+                Box::new(|l| {
+                    l.manifest.examples[0] = "What is the product rule of exponents?".into()
+                }),
+            ),
+            (
                 "three examples",
                 Box::new(|l| l.manifest.examples.truncate(3)),
             ),
@@ -456,6 +471,9 @@ mod tests {
         let loaded = Loaded::load(&path).expect("the committed manifest loads");
         assert_eq!(loaded.pdfs.len(), 2, "two OpenStax excerpts");
         assert!((4..=6).contains(&loaded.manifest.examples.len()));
+        // Alternating books: the even ones are from the first book (College Algebra), the odd ones
+        // from the second (American Government).
+        assert_eq!(loaded.manifest.examples.len() % 2, 0, "half from each book");
         for source in &loaded.manifest.sources {
             assert_eq!(source.attribution.license, "CC BY 4.0");
             assert!(source.attribution.source_url.contains("openstax.org"));

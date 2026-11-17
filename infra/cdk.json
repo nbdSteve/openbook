@@ -28,8 +28,8 @@
         "residency": "au",
         "maxOutputTokens": 2000,
         "vision": true,
-        "inputUsdPerMillion": 3,
-        "outputUsdPerMillion": 15
+        "inputUsdPerMillion": 3.3,
+        "outputUsdPerMillion": 16.5
       },
       {
         "id": "claude-haiku",
@@ -40,8 +40,8 @@
         "residency": "au",
         "maxOutputTokens": 2000,
         "vision": true,
-        "inputUsdPerMillion": 1,
-        "outputUsdPerMillion": 5
+        "inputUsdPerMillion": 1.1,
+        "outputUsdPerMillion": 5.5
       },
       {
         "id": "gpt-oss-120b",
@@ -52,16 +52,27 @@
         "residency": "au",
         "maxOutputTokens": 2000,
         "vision": false,
-        "inputUsdPerMillion": 0.15,
-        "outputUsdPerMillion": 0.6
+        "inputUsdPerMillion": 0.1545,
+        "outputUsdPerMillion": 0.618
       }
     ],
     "defaultChatModel": "claude-sonnet",
     "fastModel": "claude-haiku",
     "stageDomains": {
       "prod": {
-        "domainName": "ask.steve.gg",
-        "hostedZoneName": "steve.gg"
+        "domainName": "openbook.steve.gg",
+        "hostedZoneName": "steve.gg",
+        "redirects": [
+          {
+            "host": "ask.steve.gg",
+            "path": "/ask",
+            "recordIdPrefix": "Alias"
+          },
+          {
+            "host": "portal.steve.gg",
+            "path": "/portal"
+          }
+        ]
       }
     },
     "stageLimits": {
@@ -79,11 +90,17 @@
     "stageDemo": {
       "dev": {
         "enabled": true,
-        "budgetUsdPerDay": 2
+        "budgetUsdPerDay": 2,
+        "visitorBudgetUsdPerDay": 0.3,
+        "maxOutputTokens": 1000,
+        "concurrency": 2
       },
       "prod": {
         "enabled": false,
-        "budgetUsdPerDay": 2
+        "budgetUsdPerDay": 2,
+        "visitorBudgetUsdPerDay": 0.3,
+        "maxOutputTokens": 1000,
+        "concurrency": 3
       }
     },
     "embeddingModelId": "amazon.titan-embed-text-v2:0"

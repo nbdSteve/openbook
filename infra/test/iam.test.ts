@@ -386,7 +386,9 @@ const byAction2 = (list: Statement[], action: string): Statement => list.find((s
 
 describe('the custom domain permissions of the execution role', () => {
   const zoneArn = `arn:aws:route53:::hostedzone/${values.HOSTED_ZONE_ID}`;
-  const domain = (cdkJsonContext.stageDomains as { prod: { domainName: string } }).prod.domainName;
+  const prodDomain = (cdkJsonContext.stageDomains as { prod: { domainName: string; redirects: { host: string }[] } }).prod;
+  // The record names of the role are the names in cdk.json: the site, then the old hosts.
+  const domains = [prodDomain.domainName, ...prodDomain.redirects.map((r) => r.host)];
   const route53 = execPolicy.Statement.filter((s) => actions(s).some((a) => a.startsWith('route53:')));
   const byAction = (action: string): Statement[] => route53.filter((s) => actions(s).includes(action));
 
@@ -405,7 +407,7 @@ describe('the custom domain permissions of the execution role', () => {
     expect(resources(change)).toEqual([zoneArn]);
     expect(change.Condition).toEqual({
       'ForAllValues:StringEquals': {
-        'route53:ChangeResourceRecordSetsNormalizedRecordNames': domain,
+        'route53:ChangeResourceRecordSetsNormalizedRecordNames': domains,
         'route53:ChangeResourceRecordSetsRecordTypes': ['A', 'AAAA'],
       },
       // A request without these keys must not match the ForAllValues conditions.
@@ -418,8 +420,9 @@ describe('the custom domain permissions of the execution role', () => {
 
   test('the record types and the name are the ones that the prod stack creates', () => {
     const records = Object.values(prod.json.Resources).filter((r) => r.Type === 'AWS::Route53::RecordSet');
-    expect(records.map((r) => r.Properties?.Type).sort()).toEqual(['A', 'AAAA']);
-    for (const r of records) expect(r.Properties?.Name).toBe(`${domain}.`);
+    expect(records.map((r) => r.Properties?.Type).sort()).toEqual(['A', 'A', 'A', 'AAAA', 'AAAA', 'AAAA']);
+    // Each name of the role has an A and an AAAA record, and the stack has no other name.
+    expect(records.map((r) => r.Properties?.Name).sort()).toEqual(domains.flatMap((d) => [`${d}.`, `${d}.`]).sort());
   });
 
   test('read the zone and its records in the same zone, and a change by ID (AWS has no narrower resource)', () => {

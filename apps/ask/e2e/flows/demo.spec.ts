@@ -43,6 +43,7 @@ test('the config says that the demo is on, with credits and examples', async ({ 
   }
   expect(config.demo.examples.length).toBeGreaterThanOrEqual(4);
   expect(config.demo.examples.length).toBeLessThanOrEqual(6);
+  for (const example of config.demo.examples) expect(example.trim().split(/\s+/).length).toBeLessThanOrEqual(5);
 });
 
 test('a visitor without an account gets a streamed answer with sources, then a follow-up', async ({ request }) => {

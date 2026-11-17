@@ -39,9 +39,19 @@ export const certificateIdPattern = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 /** An ACM certificate in us-east-1 (CloudFront reads certificates only there). */
 export const certificateArnPattern = `^arn:aws:acm:us-east-1:[0-9]{12}:certificate/${certificateIdPattern}$`;
 
-/** The name of the CloudFront Function. The execution role is scoped to it. */
+/** The names of the CloudFront Functions. The execution role is scoped to them. */
 export function spaRewriteFunctionName(stage: Stage): string {
   return `Openbook-${stage}-SpaRewrite`;
+}
+
+/** The viewer-request function of the API behaviors: only the host redirect. */
+export function hostRedirectFunctionName(stage: Stage): string {
+  return `Openbook-${stage}-HostRedirect`;
+}
+
+/** The viewer-response function of the demo behavior: throttles and timeouts become `demo_busy`. */
+export function demoResponseFunctionName(stage: Stage): string {
+  return `Openbook-${stage}-DemoResponse`;
 }
 
 /**
