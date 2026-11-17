@@ -30,7 +30,12 @@ const allActions = (doc: { Statement: Statement[] }): string[] => doc.Statement.
 const trust = render('github-deploy-role-trust');
 const deployPolicy = render('github-deploy-role-policy');
 const execTrust = render('cloudformation-execution-role-trust');
-const execPolicy = render('cloudformation-execution-role-policy');
+// The execution role has two documents: an inline policy and a customer managed policy (the site:
+// CloudFront, Route 53, and ACM). The permission checks below look at both together, and the size
+// checks at each one.
+const execInline = render('cloudformation-execution-role-policy');
+const execSite = render('cloudformation-execution-role-site-policy');
+const execPolicy = { ...execInline, Statement: [...execInline.Statement, ...execSite.Statement] };
 
 const prod = synth({ stage: 'prod' });
 const region = 'ap-southeast-2';
@@ -173,6 +178,7 @@ describe('the CloudFormation execution role', () => {
     'AWS::CloudFront::Distribution': 'cloudfront',
     'AWS::CloudFront::Function': 'cloudfront',
     'AWS::CloudFront::OriginAccessControl': 'cloudfront',
+    'AWS::CloudFront::OriginRequestPolicy': 'cloudfront',
     'AWS::CloudFront::ResponseHeadersPolicy': 'cloudfront',
     'AWS::Route53::RecordSet': 'route53',
     'AWS::CDK::Metadata': null,
@@ -345,9 +351,10 @@ describe('synthesis under the deployment synthesizer', () => {
 });
 
 describe('the committed IAM templates', () => {
-  test('are the five documents applied to the two roles and the boundary policy', () => {
+  test('are the six documents applied to the two roles, the managed policy of the site, and the boundary policy', () => {
     expect(templateNames()).toEqual([
       'cloudformation-execution-role-policy',
+      'cloudformation-execution-role-site-policy',
       'cloudformation-execution-role-trust',
       'github-deploy-role-policy',
       'github-deploy-role-trust',
@@ -385,7 +392,9 @@ const byAction2 = (list: Statement[], action: string): Statement => list.find((s
 
 describe('the custom domain permissions of the execution role', () => {
   const zoneArn = `arn:aws:route53:::hostedzone/${values.HOSTED_ZONE_ID}`;
-  const domain = (cdkJsonContext.stageDomains as { prod: { domainName: string } }).prod.domainName;
+  const prodDomain = (cdkJsonContext.stageDomains as { prod: { domainName: string; redirects: { host: string }[] } }).prod;
+  // The record names of the role are the names in cdk.json: the site, then the old hosts.
+  const domains = [prodDomain.domainName, ...prodDomain.redirects.map((r) => r.host)];
   const route53 = execPolicy.Statement.filter((s) => actions(s).some((a) => a.startsWith('route53:')));
   const byAction = (action: string): Statement[] => route53.filter((s) => actions(s).includes(action));
 
@@ -404,7 +413,7 @@ describe('the custom domain permissions of the execution role', () => {
     expect(resources(change)).toEqual([zoneArn]);
     expect(change.Condition).toEqual({
       'ForAllValues:StringEquals': {
-        'route53:ChangeResourceRecordSetsNormalizedRecordNames': domain,
+        'route53:ChangeResourceRecordSetsNormalizedRecordNames': domains,
         'route53:ChangeResourceRecordSetsRecordTypes': ['A', 'AAAA'],
       },
       // A request without these keys must not match the ForAllValues conditions.
@@ -417,8 +426,9 @@ describe('the custom domain permissions of the execution role', () => {
 
   test('the record types and the name are the ones that the prod stack creates', () => {
     const records = Object.values(prod.json.Resources).filter((r) => r.Type === 'AWS::Route53::RecordSet');
-    expect(records.map((r) => r.Properties?.Type).sort()).toEqual(['A', 'AAAA']);
-    for (const r of records) expect(r.Properties?.Name).toBe(`${domain}.`);
+    expect(records.map((r) => r.Properties?.Type).sort()).toEqual(['A', 'A', 'A', 'AAAA', 'AAAA', 'AAAA']);
+    // Each name of the role has an A and an AAAA record, and the stack has no other name.
+    expect(records.map((r) => r.Properties?.Name).sort()).toEqual(domains.flatMap((d) => [`${d}.`, `${d}.`]).sort());
   });
 
   test('read the zone and its records in the same zone, and a change by ID (AWS has no narrower resource)', () => {
@@ -430,7 +440,7 @@ describe('the custom domain permissions of the execution role', () => {
   });
 
   test('never name a zone or use a wildcard zone', () => {
-    const text = readTemplate('cloudformation-execution-role-policy');
+    const text = readTemplate('cloudformation-execution-role-site-policy');
     expect(text).toContain('hostedzone/${HOSTED_ZONE_ID}');
     expect(text).not.toMatch(/hostedzone\/(\*|Z[A-Z0-9]+)/);
     expect(text).not.toContain('route53:*');
@@ -453,5 +463,35 @@ describe('the custom domain permissions of the execution role', () => {
     for (const name of ['github-deploy-role-policy', 'permissions-boundary-policy']) {
       expect(readTemplate(name), name).not.toMatch(/route53|acm:/);
     }
+  });
+});
+
+describe('the size of each IAM document', () => {
+  // IAM counts the characters without whitespace. An inline role policy may have 10,240, a customer
+  // managed policy 6,144, and a trust policy 2,048.
+  const compact = (name: string): number => JSON.stringify(JSON.parse(renderIamDocument(readTemplate(name), values))).length;
+
+  test('the inline execution policy stays under 10,240 characters, with room to grow', () => {
+    expect(compact('cloudformation-execution-role-policy')).toBeLessThan(9_000);
+  });
+
+  test('the managed policy of the site stays under 6,144 characters', () => {
+    expect(compact('cloudformation-execution-role-site-policy')).toBeLessThan(6_144);
+  });
+
+  test('every other document is under its limit too', () => {
+    expect(compact('github-deploy-role-policy')).toBeLessThan(10_240);
+    expect(compact('permissions-boundary-policy')).toBeLessThan(6_144);
+    expect(compact('cloudformation-execution-role-trust')).toBeLessThan(2_048);
+    expect(compact('github-deploy-role-trust')).toBeLessThan(2_048);
+  });
+
+  test('the site policy holds the CloudFront, Route 53, and ACM statements, and the inline policy none of them', () => {
+    const services = (doc: { Statement: Statement[] }): string[] =>
+      [...new Set(allActions(doc).map((a) => a.split(':')[0]))].sort();
+    expect(services(execSite)).toEqual(['acm', 'cloudfront', 'route53']);
+    expect(services(execInline)).not.toContain('route53');
+    expect(services(execInline)).not.toContain('acm');
+    expect(services(execInline)).not.toContain('cloudfront');
   });
 });

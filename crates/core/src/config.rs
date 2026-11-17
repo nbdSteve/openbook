@@ -67,6 +67,38 @@ pub struct LimitsConfig {
     pub daily_tokens_global: u64,
 }
 
+/// The public demo (`docs/api.md`, "Demo"). It is off unless `OPENBOOK_DEMO_ENABLED` says so.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DemoConfig {
+    /// The kill switch. Off means `POST /api/demo/chat` returns `404`.
+    pub enabled: bool,
+    /// Questions per visitor in a fixed 10-minute window.
+    pub visitor_per_window: u32,
+    /// Questions per visitor per day (UTC).
+    pub visitor_per_day: u32,
+    /// What the whole demo may spend in a day (UTC), in millionths of a US dollar. The turns reserve
+    /// their worst-case cost against it (`demo::reserve_budget`).
+    pub budget_micro_usd_per_day: u64,
+    /// What one visitor may spend in a day (UTC), in millionths of a US dollar. Reserved and settled
+    /// like the global budget, so one visitor cannot use up the day.
+    pub visitor_budget_micro_usd_per_day: u64,
+    /// The output limit of a demo answer, at most the limit of the default chat model.
+    pub max_output_tokens: u32,
+}
+
+/// Which routes this process mounts. The deployed stack runs the same binary twice: the main API
+/// without the demo route, and a small function with only the demo route (its own reserved
+/// concurrency, so that visitors cannot use the executions of signed-in users).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApiMode {
+    /// Every route, the demo included. Local runs and tests only: Lambda refuses it.
+    All,
+    /// Every route except `/api/demo/*`.
+    Full,
+    /// Only `GET /api/health` and `POST /api/demo/chat`.
+    Demo,
+}
+
 /// The full API configuration.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -97,6 +129,8 @@ pub struct Config {
     pub aws_endpoint_url: Option<String>,
     pub aws_region: Option<String>,
     pub limits: LimitsConfig,
+    pub demo: DemoConfig,
+    pub api_mode: ApiMode,
     pub listen_addr: SocketAddr,
 }
 
@@ -280,6 +314,100 @@ impl Config {
             ),
         };
 
+        let demo_enabled = match get("OPENBOOK_DEMO_ENABLED").as_deref() {
+            None | Some("false" | "0") => false,
+            Some("true" | "1") => true,
+            Some(other) => {
+                problems.push(format!(
+                    "OPENBOOK_DEMO_ENABLED must be true or false (got {other:?})"
+                ));
+                false
+            }
+        };
+        let demo = DemoConfig {
+            enabled: demo_enabled,
+            visitor_per_window: to_u32(number(
+                &mut problems,
+                "OPENBOOK_DEMO_LIMIT_VISITOR_PER_10_MIN",
+                10,
+            )),
+            visitor_per_day: to_u32(number(
+                &mut problems,
+                "OPENBOOK_DEMO_LIMIT_VISITOR_PER_DAY",
+                40,
+            )),
+            budget_micro_usd_per_day: match get("OPENBOOK_DEMO_BUDGET_USD_PER_DAY") {
+                None => 2_000_000,
+                Some(raw) => raw
+                    .parse::<f64>()
+                    .ok()
+                    .and_then(crate::demo::usd_to_micro)
+                    .unwrap_or_else(|| {
+                        problems.push(format!(
+                            "OPENBOOK_DEMO_BUDGET_USD_PER_DAY must be a positive number of US dollars (got {raw:?})"
+                        ));
+                        2_000_000
+                    }),
+            },
+            visitor_budget_micro_usd_per_day: match get("OPENBOOK_DEMO_VISITOR_BUDGET_USD_PER_DAY") {
+                None => 300_000,
+                Some(raw) => raw
+                    .parse::<f64>()
+                    .ok()
+                    .and_then(crate::demo::usd_to_micro)
+                    .unwrap_or_else(|| {
+                        problems.push(format!(
+                            "OPENBOOK_DEMO_VISITOR_BUDGET_USD_PER_DAY must be a positive number of US dollars (got {raw:?})"
+                        ));
+                        300_000
+                    }),
+            },
+            max_output_tokens: to_u32(number(
+                &mut problems,
+                "OPENBOOK_DEMO_MAX_OUTPUT_TOKENS",
+                1000,
+            )),
+        };
+        // The demo answers with the default chat model, rewrites follow-ups with the fast model, and
+        // prices every call, so both models need prices.
+        if demo.enabled
+            && let Some(catalog) = &catalog
+            && [catalog.default_chat_id(), catalog.fast_id()]
+                .iter()
+                .any(|id| {
+                    catalog
+                        .get(id)
+                        .is_some_and(|e| e.cost_micro_usd(1, 1).is_none())
+                })
+        {
+            problems.push(
+                "OPENBOOK_DEMO_ENABLED needs prices (inputUsdPerMillion and outputUsdPerMillion) on the default chat model and on the fast model"
+                    .into(),
+            );
+        }
+        if let Some(catalog) = &catalog
+            && let Some(entry) = catalog.get(catalog.default_chat_id())
+            && i64::from(demo.max_output_tokens) > i64::from(entry.max_tokens())
+        {
+            problems.push(format!(
+                "OPENBOOK_DEMO_MAX_OUTPUT_TOKENS {} is above the output limit of the default chat model ({})",
+                demo.max_output_tokens,
+                entry.max_tokens()
+            ));
+        }
+        let api_mode = match get("OPENBOOK_API_MODE").as_deref() {
+            None if vars.contains_key("AWS_LAMBDA_RUNTIME_API") => ApiMode::Full,
+            None | Some("all") => ApiMode::All,
+            Some("full") => ApiMode::Full,
+            Some("demo") => ApiMode::Demo,
+            Some(other) => {
+                problems.push(format!(
+                    "OPENBOOK_API_MODE must be all, full, or demo (got {other:?})"
+                ));
+                ApiMode::All
+            }
+        };
+
         let listen_raw = get("OPENBOOK_LISTEN_ADDR").unwrap_or_else(|| "127.0.0.1:8787".into());
         let listen_addr = listen_raw.parse::<SocketAddr>().unwrap_or_else(|_| {
             problems.push(format!(
@@ -332,6 +460,8 @@ impl Config {
             aws_endpoint_url: get("AWS_ENDPOINT_URL"),
             aws_region,
             limits,
+            demo,
+            api_mode,
             listen_addr,
         })
     }
@@ -349,6 +479,9 @@ fn lambda_violations(
     }
     if has_fake_model {
         out.push("refusing to start in Lambda: the model catalog has a fake provider".into());
+    }
+    if vars.get("OPENBOOK_API_MODE").map(|v| v.trim()) == Some("all") {
+        out.push("refusing to start in Lambda: OPENBOOK_API_MODE is all".into());
     }
     let mut names: Vec<&String> = vars
         .iter()
@@ -388,6 +521,9 @@ mod tests {
     const REAL_CATALOG: &str = r#"[
         {"id":"claude","label":"Claude","vendor":"anthropic","provider":"bedrock","modelId":"au.anthropic.claude-x","residency":"au","vision":true}
     ]"#;
+    const PRICED_CATALOG: &str = r#"[
+        {"id":"claude","label":"Claude","vendor":"anthropic","provider":"bedrock","modelId":"au.anthropic.claude-x","residency":"au","vision":true,"inputUsdPerMillion":3,"outputUsdPerMillion":15}
+    ]"#;
     const FAKE_CATALOG: &str = r#"[
         {"id":"fake","label":"Fake","vendor":"openbook","provider":"fake","modelId":"fake","residency":"au","vision":true}
     ]"#;
@@ -418,6 +554,100 @@ mod tests {
         let mut v = base();
         v.insert("AWS_LAMBDA_RUNTIME_API".into(), "127.0.0.1:9001".into());
         v
+    }
+
+    #[test]
+    fn the_demo_is_off_unless_it_is_switched_on() {
+        let c = Config::from_vars(&base()).unwrap();
+        assert_eq!(
+            c.demo,
+            DemoConfig {
+                enabled: false,
+                visitor_per_window: 10,
+                visitor_per_day: 40,
+                budget_micro_usd_per_day: 2_000_000,
+                visitor_budget_micro_usd_per_day: 300_000,
+                max_output_tokens: 1000
+            }
+        );
+        let mut v = base();
+        v.insert("OPENBOOK_DEMO_ENABLED".into(), "true".into());
+        v.insert("OPENBOOK_DEMO_LIMIT_VISITOR_PER_10_MIN".into(), "2".into());
+        v.insert("OPENBOOK_DEMO_LIMIT_VISITOR_PER_DAY".into(), "3".into());
+        v.insert("OPENBOOK_DEMO_BUDGET_USD_PER_DAY".into(), "1.25".into());
+        v.insert(
+            "OPENBOOK_DEMO_VISITOR_BUDGET_USD_PER_DAY".into(),
+            "0.1".into(),
+        );
+        v.insert("OPENBOOK_DEMO_MAX_OUTPUT_TOKENS".into(), "500".into());
+        v.insert("OPENBOOK_MODELS".into(), PRICED_CATALOG.into());
+        let demo = Config::from_vars(&v).unwrap().demo;
+        assert_eq!(demo.visitor_budget_micro_usd_per_day, 100_000);
+        assert_eq!(demo.max_output_tokens, 500);
+        assert_eq!((demo.enabled, demo.visitor_per_window), (true, 2));
+        assert_eq!(
+            (demo.visitor_per_day, demo.budget_micro_usd_per_day),
+            (3, 1_250_000)
+        );
+        for bad in ["yes", "TRUE", "2"] {
+            let mut v = base();
+            v.insert("OPENBOOK_DEMO_ENABLED".into(), bad.into());
+            let error = Config::from_vars(&v).unwrap_err();
+            assert!(error.to_string().contains("OPENBOOK_DEMO_ENABLED"), "{bad}");
+        }
+        for bad in ["0", "-1", "free", "NaN"] {
+            let mut v = base();
+            v.insert("OPENBOOK_DEMO_BUDGET_USD_PER_DAY".into(), bad.into());
+            assert!(Config::from_vars(&v).is_err(), "{bad}");
+        }
+        // The demo needs prices on the default chat model and on the fast model.
+        let mut v = base();
+        v.insert("OPENBOOK_DEMO_ENABLED".into(), "true".into());
+        let error = Config::from_vars(&v).unwrap_err();
+        assert!(error.to_string().contains("prices"), "{error}");
+        let two = r#"[
+            {"id":"claude","label":"C","vendor":"anthropic","provider":"bedrock","modelId":"au.anthropic.claude-x","residency":"au","vision":true,"inputUsdPerMillion":3,"outputUsdPerMillion":15},
+            {"id":"fast","label":"F","vendor":"anthropic","provider":"bedrock","modelId":"au.anthropic.claude-y","residency":"au","vision":true}
+        ]"#;
+        let mut v = base();
+        v.insert("OPENBOOK_DEMO_ENABLED".into(), "true".into());
+        v.insert("OPENBOOK_MODELS".into(), two.into());
+        v.insert("OPENBOOK_FAST_MODEL".into(), "fast".into());
+        assert!(
+            Config::from_vars(&v)
+                .unwrap_err()
+                .to_string()
+                .contains("fast model")
+        );
+        // The demo output limit cannot go above the limit of the model.
+        let mut v = base();
+        v.insert("OPENBOOK_DEMO_MAX_OUTPUT_TOKENS".into(), "5000".into());
+        assert!(Config::from_vars(&v).is_err());
+    }
+
+    #[test]
+    fn the_api_mode_picks_the_routes_and_lambda_refuses_all() {
+        assert_eq!(Config::from_vars(&base()).unwrap().api_mode, ApiMode::All);
+        assert_eq!(
+            Config::from_vars(&lambda()).unwrap().api_mode,
+            ApiMode::Full
+        );
+        for (value, mode) in [("full", ApiMode::Full), ("demo", ApiMode::Demo)] {
+            let mut v = lambda();
+            v.insert("OPENBOOK_API_MODE".into(), value.into());
+            assert_eq!(Config::from_vars(&v).unwrap().api_mode, mode);
+        }
+        let mut v = lambda();
+        v.insert("OPENBOOK_API_MODE".into(), "all".into());
+        assert!(
+            Config::from_vars(&v)
+                .unwrap_err()
+                .to_string()
+                .contains("OPENBOOK_API_MODE is all")
+        );
+        let mut v = base();
+        v.insert("OPENBOOK_API_MODE".into(), "both".into());
+        assert!(Config::from_vars(&v).is_err());
     }
 
     #[test]

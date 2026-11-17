@@ -40,7 +40,8 @@ describe.each([
       AuthType: 'AWS_IAM',
       InvokeMode: 'RESPONSE_STREAM',
     });
-    s.template.resourceCountIs('AWS::Lambda::Url', 1);
+    // One for the main API and one for the demo function (edge.test.ts).
+    s.template.resourceCountIs('AWS::Lambda::Url', 2);
   });
 
   test('the table has the keys, index, and TTL of docs/architecture.md', () => {
@@ -141,7 +142,8 @@ describe.each([
       .filter((r) => r.Type === 'AWS::Lambda::Function' && r.Properties?.Handler === 'bootstrap')
       .map((r) => [r.Properties?.MemorySize, (r.Properties?.EphemeralStorage as { Size: number }).Size])
       .sort();
-    expect(sizes).toEqual([[1024, 2048], [3008, 4096]]);
+    // The main API and the demo function (the same binary) are the two small ones.
+    expect(sizes).toEqual([[1024, 2048], [1024, 2048], [3008, 4096]]);
   });
 
   test('the function environment has no local-only variable and uses Bedrock', () => {
@@ -177,6 +179,9 @@ describe.each([
     // The spend caps until the public launch (stageLimits in cdk.json), well below the API defaults.
     expect(env.OPENBOOK_LIMIT_DAILY_MESSAGES_GLOBAL).toBe(_stage === 'prod' ? '300' : '100');
     expect(env.OPENBOOK_LIMIT_DAILY_TOKENS_GLOBAL).toBe(_stage === 'prod' ? '1500000' : '500000');
+    // The demo settings are in the demo function only (edge.test.ts), and this one is the main API.
+    expect(env.OPENBOOK_API_MODE).toBe('full');
+    expect(Object.keys(env).filter((k) => k.startsWith('OPENBOOK_DEMO'))).toEqual([]);
     expect(env.OPENBOOK_LIMIT_FAILED_JOINS_PER_DAY).toBe('20');
     expect(env.OPENBOOK_LIMIT_COURSES_OWNED).toBe('10');
     expect(env.OPENBOOK_LIMIT_DOCUMENTS_PER_COURSE).toBe('50');
@@ -203,10 +208,13 @@ describe.each([
     };
     expect(config.PriceClass).toBe('PriceClass_All');
     expect(config.HttpVersion).toBe('http2and3');
-    expect(config.CacheBehaviors).toHaveLength(1);
-    const api = config.CacheBehaviors[0];
+    // `/api/demo/*` has its own function and comes first (edge.test.ts). `/api/*` is the main API.
+    expect(config.CacheBehaviors).toHaveLength(2);
+    expect(config.CacheBehaviors[0].PathPattern).toBe('/api/demo/*');
+    const api = config.CacheBehaviors[1];
     expect(api.PathPattern).toBe('/api/*');
-    // Managed policy IDs: CachingDisabled, and AllViewerExceptHostHeader.
+    // Managed policy IDs: CachingDisabled, and AllViewerExceptHostHeader. The second one forwards
+    // CloudFront-Viewer-Address (the demo visitor) and every other viewer header except Host.
     expect(api.CachePolicyId).toBe('4135ea2d-6df8-44a3-9df3-4b5a84be39ad');
     expect(api.OriginRequestPolicyId).toBe('b689b0a8-53d0-40ab-baf2-68738e2966ac');
     expect(api.ViewerProtocolPolicy).toBe('https-only');
@@ -224,7 +232,8 @@ describe.each([
       .filter((r) => r.Type === 'AWS::CloudFront::OriginAccessControl')
       .map((r) => (r.Properties?.OriginAccessControlConfig as Json).OriginAccessControlOriginType)
       .sort();
-    expect(oacs).toEqual(['lambda', 's3']);
+    // The web bucket, the main API, and the demo function.
+    expect(oacs).toEqual(['lambda', 'lambda', 's3']);
     for (const r of Object.values(s.json.Resources)) {
       if (r.Type !== 'AWS::CloudFront::OriginAccessControl') continue;
       expect(r.Properties?.OriginAccessControlConfig).toMatchObject({
@@ -250,7 +259,13 @@ describe.each([
     const permissions = Object.values(s.json.Resources)
       .filter((r) => r.Type === 'AWS::Lambda::Permission')
       .map((r) => r.Properties as Json);
-    expect(permissions.map((p) => p.Action).sort()).toEqual(['lambda:InvokeFunction', 'lambda:InvokeFunctionUrl']);
+    // Both permissions for each of the two function URLs (the main API and the demo function).
+    expect(permissions.map((p) => p.Action).sort()).toEqual([
+      'lambda:InvokeFunction',
+      'lambda:InvokeFunction',
+      'lambda:InvokeFunctionUrl',
+      'lambda:InvokeFunctionUrl',
+    ]);
     for (const p of permissions) {
       expect(p.Principal).toBe('cloudfront.amazonaws.com');
       expect(p.SourceArn).toBeDefined();
@@ -376,11 +391,30 @@ describe.each([
     const parsed = JSON.parse(
       (generated as string).replace(/<<marker:0xbaba:\d+>>/g, 'x'),
     ) as Json;
+    // The demo part comes from demo/course.json: the credits and 4 to 6 examples (half from each book).
+    const demo = parsed.demo as { enabled: boolean; model: Json; sources: Json[]; examples: string[] };
     expect(parsed).toEqual({
       stage: _stage,
       region: 'ap-southeast-2',
       cognito: { userPoolId: 'x', clientId: 'x', endpoint: null },
+      demo: {
+        // Dev has the demo on. Prod stays off until the demo course is provisioned (stageDemo in cdk.json).
+        enabled: _stage === 'dev',
+        model: { label: 'Claude Sonnet 4.6' },
+        sources: demo.sources,
+        examples: demo.examples,
+      },
     });
+    expect(demo.sources.map((x) => x.title)).toEqual(['College Algebra (first edition)', 'American Government 2e']);
+    for (const source of demo.sources) {
+      expect(source.license).toBe('CC BY 4.0');
+      expect(String(source.url)).toMatch(/^https:\/\/openstax\.org\//);
+      expect(Object.keys(source).sort()).toEqual(['license', 'title', 'url']);
+    }
+    expect(demo.examples.length).toBeGreaterThanOrEqual(4);
+    expect(demo.examples.length).toBeLessThanOrEqual(6);
+    // Chips with a tight word budget: at most 5 words each.
+    for (const example of demo.examples) expect(example.trim().split(/\s+/).length).toBeLessThanOrEqual(5);
   });
 
   test('the outputs are the documented set', () => {
@@ -480,6 +514,29 @@ describe('configuration', () => {
     const env = (fn?.Properties?.Environment as { Variables: Record<string, string> }).Variables;
     expect(env.OPENBOOK_LIMIT_DAILY_MESSAGES_PER_USER).toBe('7');
     expect(env.OPENBOOK_LIMIT_UPLOAD_BYTES).toBe('1000');
+  });
+
+  test('the demo switch, limits, and budget can be overridden by context', () => {
+    const s = synth({
+      stage: 'prod',
+      demoEnabled: 'true',
+      limitDemoVisitorPer10Min: '3',
+      limitDemoVisitorPerDay: '9',
+      demoBudgetUsdPerDay: '0.5',
+    });
+    const fn = Object.values(s.json.Resources).find(
+      (r) =>
+        r.Type === 'AWS::Lambda::Function' &&
+        (r.Properties?.Environment as { Variables: Record<string, string> } | undefined)?.Variables.OPENBOOK_API_MODE === 'demo',
+    );
+    const env = (fn?.Properties?.Environment as { Variables: Record<string, string> }).Variables;
+    expect(env.OPENBOOK_DEMO_ENABLED).toBe('true');
+    expect(env.OPENBOOK_DEMO_LIMIT_VISITOR_PER_10_MIN).toBe('3');
+    expect(env.OPENBOOK_DEMO_LIMIT_VISITOR_PER_DAY).toBe('9');
+    expect(env.OPENBOOK_DEMO_BUDGET_USD_PER_DAY).toBe('0.5');
+    expect(() => synth({ demoEnabled: 'maybe' })).toThrow(/demoEnabled/);
+    expect(() => synth({ demoBudgetUsdPerDay: '0' })).toThrow(/demoBudgetUsdPerDay/);
+    expect(() => synth({ demoBudgetUsdPerDay: 'free' })).toThrow(/demoBudgetUsdPerDay/);
   });
 
   test('refuses an unknown stage and bad limits', () => {
@@ -583,8 +640,8 @@ describe('custom domain', () => {
   });
 
   test('prod has the domain of cdk.json, and dev has none', () => {
-    expect(resolveConfig(newApp({ ...cdkJsonContext, stage: 'prod' }).node).domain).toEqual({
-      domainName: 'ask.steve.gg',
+    expect(resolveConfig(newApp({ ...cdkJsonContext, stage: 'prod' }).node).domain).toMatchObject({
+      domainName: 'openbook.steve.gg',
       hostedZoneName: 'steve.gg',
     });
     expect(resolveConfig(newApp({ ...cdkJsonContext, stage: 'dev' }).node).domain).toBeUndefined();

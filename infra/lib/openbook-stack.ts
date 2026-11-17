@@ -19,7 +19,7 @@ import { assertTranscribeModel, bedrockStatements, embeddingModelArn } from './c
 import { region, type OpenbookConfig } from './config';
 import { assertLambdaAssetDir } from './lambda-assets';
 import { certificateArnPattern, hostedZoneIdPattern, permissionsBoundaryName, spaRewriteFunctionName } from './deployment';
-import { spaRewriteCode } from './spa-rewrite';
+import { viewerRequestCode, type HostRedirect } from './spa-rewrite';
 import { assertNoInlineScripts } from './web-assets';
 
 export interface OpenbookStackProps extends cdk.StackProps {
@@ -211,6 +211,17 @@ export class OpenbookStack extends cdk.Stack {
       OPENBOOK_LIMIT_DAILY_TRANSCRIBED_PAGES_GLOBAL: String(config.limits.transcribedPagesGlobal),
       RUST_LOG: 'info',
     };
+    // The demo has its own function (below). The settings are only in its environment, so the main
+    // API has no demo route and no demo switch.
+    const demoSettings: Record<string, string> = {
+      OPENBOOK_API_MODE: 'demo',
+      OPENBOOK_DEMO_ENABLED: String(config.demo.enabled),
+      OPENBOOK_DEMO_LIMIT_VISITOR_PER_10_MIN: String(config.demo.visitorPer10Min),
+      OPENBOOK_DEMO_LIMIT_VISITOR_PER_DAY: String(config.demo.visitorPerDay),
+      OPENBOOK_DEMO_BUDGET_USD_PER_DAY: String(config.demo.budgetUsdPerDay),
+      OPENBOOK_DEMO_VISITOR_BUDGET_USD_PER_DAY: String(config.demo.visitorBudgetUsdPerDay),
+      OPENBOOK_DEMO_MAX_OUTPUT_TOKENS: String(config.demo.maxOutputTokens),
+    };
 
     // The item calls that the two functions make (crates/core/src/store.rs), and no more.
     // `grantReadWriteData` would add stream, export, scan, and describe actions. A transaction
@@ -267,7 +278,8 @@ export class OpenbookStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(120),
       reservedConcurrentExecutions: isProd ? 25 : 5,
       logGroup: apiLogGroup,
-      environment,
+      // Every route except the demo.
+      environment: { ...environment, OPENBOOK_API_MODE: 'full' },
     });
     apiFunction.addToRolePolicy(tableStatement());
     for (const statement of docsObjectsStatements(false)) apiFunction.addToRolePolicy(statement);
@@ -297,6 +309,77 @@ export class OpenbookStack extends cdk.Stack {
         resources: [`${vectorBucketArn}/index/${courseIndexPattern}`],
       }),
     );
+
+    // ---- Demo Lambda ---------------------------------------------------------------
+    // The same binary, started with `OPENBOOK_API_MODE=demo`: it mounts only `GET /api/health` and
+    // `POST /api/demo/chat`. It has its own reserved concurrency, so a visitor stream (up to 100 s)
+    // cannot take an execution from a signed-in user, and in dev one visitor cannot block the API.
+    // Its role is the least that the demo turn needs: it reads the demo course and the other items
+    // of the demo, and writes only the `DEMO#` partitions.
+    const demoLogGroup = new logs.LogGroup(this, 'DemoLogGroup', {
+      retention: isProd ? logs.RetentionDays.ONE_MONTH : logs.RetentionDays.ONE_WEEK,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+    const demoFunction = new lambda.Function(this, 'DemoFunction', {
+      runtime: lambda.Runtime.PROVIDED_AL2023,
+      architecture: lambda.Architecture.ARM_64,
+      handler: 'bootstrap',
+      code: lambda.Code.fromAsset(config.apiAssetDir),
+      memorySize: 1024,
+      ephemeralStorageSize: cdk.Size.mebibytes(2048),
+      timeout: cdk.Duration.seconds(120),
+      reservedConcurrentExecutions: config.demo.concurrency,
+      logGroup: demoLogGroup,
+      environment: { ...environment, ...demoSettings },
+    });
+    // Reads of the demo course and of the demo items. The ID of the demo course starts with `demo`
+    // (`ids::new_demo_course_id`), and no ID of a user's course can (a ULID has no `o`), so the
+    // role cannot read any course of a user.
+    demoFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        sid: 'DemoReadItems',
+        actions: ['dynamodb:GetItem', 'dynamodb:Query'],
+        resources: [table.tableArn],
+        conditions: {
+          'ForAllValues:StringLike': { 'dynamodb:LeadingKeys': ['DEMO#*', 'COURSE#demo*'] },
+        },
+      }),
+    );
+    // Writes: counters, reservations, the salt, and conversations. All are `DEMO#` partitions.
+    demoFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        sid: 'DemoWriteItems',
+        actions: ['dynamodb:DeleteItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem'],
+        resources: [table.tableArn],
+        conditions: {
+          'ForAllValues:StringLike': { 'dynamodb:LeadingKeys': ['DEMO#*'] },
+        },
+      }),
+    );
+    // The BM25 index of the demo course: a read of one object. No list, no write.
+    demoFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        sid: 'DemoReadBm25Indexes',
+        actions: ['s3:GetObject'],
+        resources: [`arn:${this.partition}:s3:::${docsBucketName}/courses/demo*/bm25/*`],
+      }),
+    );
+    // The index of the demo course is `c-demo<ulid>` (the worker lower-cases the course ID).
+    demoFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        sid: 'DemoQueryCourseVectors',
+        actions: ['s3vectors:GetVectors', 's3vectors:QueryVectors'],
+        resources: [`${vectorBucketArn}/index/c-demo*`],
+      }),
+    );
+    // The two models of a demo turn (the default chat model and the fast model) and the embedding model.
+    const demoModels = [config.catalog.defaultChatModel, config.catalog.fastModel]
+      .filter((id, i, all) => all.indexOf(id) === i)
+      .map((id) => config.catalog.models.find((m) => m.id === id) as (typeof config.catalog.models)[number]);
+    for (const statement of bedrockStatements(demoModels, this.partition, this.account)) {
+      demoFunction.addToRolePolicy(statement);
+    }
+    demoFunction.addToRolePolicy(embeddingStatement());
 
     // ---- Ingest Lambda -------------------------------------------------------------
     // The worker needs `libpdfium.so` next to its `bootstrap`.
@@ -362,6 +445,10 @@ export class OpenbookStack extends cdk.Stack {
       authType: lambda.FunctionUrlAuthType.AWS_IAM,
       invokeMode: lambda.InvokeMode.RESPONSE_STREAM,
     });
+    const demoFunctionUrl = demoFunction.addFunctionUrl({
+      authType: lambda.FunctionUrlAuthType.AWS_IAM,
+      invokeMode: lambda.InvokeMode.RESPONSE_STREAM,
+    });
 
     // ---- Web bucket ----------------------------------------------------------------
     const webBucket = new s3.Bucket(this, 'WebBucket', {
@@ -405,10 +492,18 @@ export class OpenbookStack extends cdk.Stack {
       },
     });
 
+    // Old host names redirect to the site (docs/architecture.md). The default behavior has one
+    // viewer-request function that does the redirect and the SPA rewrite. The API behaviors have none:
+    // the API is never redirected, and works on any host.
+    const redirects: HostRedirect[] = (config.domain?.redirects ?? []).map((r) => ({
+      host: r.host,
+      target: `https://${config.domain?.domainName ?? ''}${r.keepPath ? '' : r.path}`,
+      keepPath: r.keepPath === true,
+    }));
     const spaRewrite = new cloudfront.Function(this, 'SpaRewrite', {
       functionName: spaRewriteFunctionName(config.stage),
       runtime: cloudfront.FunctionRuntime.JS_2_0,
-      code: cloudfront.FunctionCode.fromInline(spaRewriteCode),
+      code: cloudfront.FunctionCode.fromInline(viewerRequestCode(redirects, true)),
     });
 
     const distribution = new cloudfront.Distribution(this, 'Distribution', {
@@ -416,7 +511,7 @@ export class OpenbookStack extends cdk.Stack {
       httpVersion: cloudfront.HttpVersion.HTTP2_AND_3,
       ...(config.domain && certificate
         ? {
-            domainNames: [config.domain.domainName],
+            domainNames: [config.domain.domainName, ...config.domain.redirects.map((r) => r.host)],
             certificate,
             minimumProtocolVersion: cloudfront.SecurityPolicyProtocol.TLS_V1_2_2021,
           }
@@ -432,6 +527,19 @@ export class OpenbookStack extends cdk.Stack {
         ],
       },
       additionalBehaviors: {
+        // The demo has its own function and its own concurrency. This behavior comes first, so it wins
+        // over `/api/*`. The main API does not serve `/api/demo/*` at all.
+        '/api/demo/*': {
+          origin: origins.FunctionUrlOrigin.withOriginAccessControl(demoFunctionUrl, {
+            readTimeout: cdk.Duration.seconds(60),
+          }),
+          viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.HTTPS_ONLY,
+          allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
+          cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
+          originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+          compress: false,
+          responseHeadersPolicy,
+        },
         '/api/*': {
           origin: origins.FunctionUrlOrigin.withOriginAccessControl(functionUrl, {
             readTimeout: cdk.Duration.seconds(60),
@@ -439,6 +547,9 @@ export class OpenbookStack extends cdk.Stack {
           viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.HTTPS_ONLY,
           allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
           cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
+          // The managed policy "all viewer except Host" also forwards the CloudFront viewer headers,
+          // among them `CloudFront-Viewer-Address`, which the demo reads for its visitor limits. The
+          // function URL needs its own Host, so Host is the one header that is not forwarded.
           originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
           // Server-sent events must not be buffered for compression.
           compress: false,
@@ -484,8 +595,19 @@ export class OpenbookStack extends cdk.Stack {
         zoneName: config.domain.hostedZoneName,
       });
       const target = route53.RecordTarget.fromAlias(new targets.CloudFrontTarget(distribution));
-      new route53.ARecord(this, 'AliasA', { zone, recordName: config.domain.domainName, target });
-      new route53.AaaaRecord(this, 'AliasAaaa', { zone, recordName: config.domain.domainName, target });
+      // The site and every old host name point at the same distribution. The logical IDs are stable:
+      // a record that the stack already owns keeps its ID (`recordIdPrefix`), and a new name gets a
+      // new ID, so CloudFormation never creates a second record for one name before it deletes the old.
+      const names = [
+        { host: config.domain.domainName, recordIdPrefix: undefined as string | undefined },
+        ...config.domain.redirects,
+      ];
+      for (const name of names) {
+        const label = name.host.split('.')[0];
+        const prefix = name.recordIdPrefix ?? `${label.charAt(0).toUpperCase()}${label.slice(1)}Alias`;
+        new route53.ARecord(this, `${prefix}A`, { zone, recordName: name.host, target });
+        new route53.AaaaRecord(this, `${prefix}Aaaa`, { zone, recordName: name.host, target });
+      }
     }
 
     // ---- Web deployment ------------------------------------------------------------
@@ -518,6 +640,12 @@ export class OpenbookStack extends cdk.Stack {
             userPoolId: userPool.userPoolId,
             clientId: userPoolClient.userPoolClientId,
             endpoint: null,
+          },
+          demo: {
+            enabled: config.demo.enabled,
+            model: { label: config.demo.modelLabel },
+            sources: config.demo.sources,
+            examples: config.demo.examples,
           },
         }),
       ],

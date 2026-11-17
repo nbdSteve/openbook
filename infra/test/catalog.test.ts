@@ -13,8 +13,44 @@ const model = (over: Model): Model => ({
   residency: 'au',
   maxOutputTokens: 2000,
   vision: true,
+  inputUsdPerMillion: 3,
+  outputUsdPerMillion: 15,
   ...over,
 });
+describe('model prices', () => {
+  const run = (over: Model) => () => validateCatalog([model(over)], 'm', 'm');
+
+  test('every deployed model has prices, and the default chat model is priced for the demo', () => {
+    for (const m of deployed) {
+      expect(typeof m.inputUsdPerMillion).toBe('number');
+      expect(typeof m.outputUsdPerMillion).toBe('number');
+      expect(m.outputUsdPerMillion as number).toBeGreaterThanOrEqual(m.inputUsdPerMillion as number);
+    }
+  });
+
+  test('refuses a missing, negative, huge, or non-numeric price', () => {
+    expect(run({})).not.toThrow();
+    expect(run({ inputUsdPerMillion: undefined })).toThrow(/inputUsdPerMillion/);
+    expect(run({ outputUsdPerMillion: undefined })).toThrow(/outputUsdPerMillion/);
+    expect(run({ inputUsdPerMillion: -1 })).toThrow(/inputUsdPerMillion/);
+    expect(run({ outputUsdPerMillion: 300000 })).toThrow(/outputUsdPerMillion/);
+    expect(run({ inputUsdPerMillion: '3' })).toThrow(/inputUsdPerMillion/);
+    expect(run({ outputUsdPerMillion: Number.NaN })).toThrow(/outputUsdPerMillion/);
+    expect(run({ inputUsdPerMillion: 0, outputUsdPerMillion: 0 })).not.toThrow();
+  });
+
+  test('the prices reach the Lambda catalog', () => {
+    const s = synth({ models: [model({})], defaultChatModel: 'm', fastModel: 'm' });
+    const fn = Object.values(s.json.Resources).find(
+      (r) => r.Type === 'AWS::Lambda::Function' && r.Properties?.Handler === 'bootstrap',
+    );
+    const env = (fn?.Properties?.Environment as { Variables: Record<string, string> }).Variables;
+    const catalog = JSON.parse(env.OPENBOOK_MODELS) as Model[];
+    expect(catalog[0].inputUsdPerMillion).toBe(3);
+    expect(catalog[0].outputUsdPerMillion).toBe(15);
+  });
+});
+
 const withCatalog = (models: Model[], defaultChatModel = 'm', fastModel = 'm') =>
   () => synth({ models, defaultChatModel, fastModel });
 

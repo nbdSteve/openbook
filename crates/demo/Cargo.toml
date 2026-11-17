@@ -1,0 +1,44 @@
+[package]
+name = "openbook-demo"
+description = "Openbook demo admin: creates or refreshes the public demo course through the normal ingestion path"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+openbook-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.11"
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+async-trait.workspace = true
+aws-config.workspace = true
+aws-credential-types.workspace = true
+aws-sdk-cognitoidentityprovider = { version = "1", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio"] }
+aws-sdk-dynamodb.workspace = true
+aws-sdk-s3.workspace = true
+aws-sdk-s3vectors.workspace = true
+aws-sdk-sqs.workspace = true
+axum.workspace = true
+base64 = "0.23"
+chrono.workspace = true
+futures.workspace = true
+http-body-util.workspace = true
+openbook-api.path = "../api"
+openbook-ingest.path = "../ingest"
+openbook-search = { workspace = true, features = ["bm25"] }
+pdfium-render = "0.9"
+reqwest.workspace = true
+tempfile = "3"
+tokio = { workspace = true, features = ["test-util"] }
+tower = { workspace = true, features = ["util"] }
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

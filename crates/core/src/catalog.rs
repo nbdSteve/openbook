@@ -53,12 +53,30 @@ pub struct ModelEntry {
     /// True when the model accepts images (page transcription needs it).
     #[serde(default)]
     pub vision: bool,
+    /// List price in US dollars per million input tokens. The demo budget and later billing use it.
+    #[serde(default)]
+    pub input_usd_per_million: Option<f64>,
+    /// List price in US dollars per million output tokens.
+    #[serde(default)]
+    pub output_usd_per_million: Option<f64>,
 }
+
+/// The largest price per million tokens that the catalog accepts. It catches a typo such as 300000.
+const MAX_USD_PER_MILLION: f64 = 1000.0;
 
 impl ModelEntry {
     /// The output token limit (server-fixed).
     pub fn max_tokens(&self) -> i32 {
         self.max_output_tokens.unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS)
+    }
+
+    /// The cost of a call in millionths of a US dollar, rounded up. `None` without prices.
+    /// One token at 1 US dollar per million tokens costs exactly 1 millionth of a dollar, so the
+    /// price per million is the cost per token in these units.
+    pub fn cost_micro_usd(&self, input_tokens: u64, output_tokens: u64) -> Option<u64> {
+        let (input, output) = (self.input_usd_per_million?, self.output_usd_per_million?);
+        let cost = input * input_tokens as f64 + output * output_tokens as f64;
+        Some(cost.ceil() as u64)
     }
 }
 
@@ -166,6 +184,23 @@ impl Catalog {
                 && !(0.0..=2.0).contains(&t)
             {
                 problems.push(format!("model {id:?}: temperature must be 0..=2"));
+            }
+            if entry.input_usd_per_million.is_some() != entry.output_usd_per_million.is_some() {
+                problems.push(format!(
+                    "model {id:?}: set both inputUsdPerMillion and outputUsdPerMillion, or neither"
+                ));
+            }
+            for (name, price) in [
+                ("inputUsdPerMillion", entry.input_usd_per_million),
+                ("outputUsdPerMillion", entry.output_usd_per_million),
+            ] {
+                if let Some(p) = price
+                    && !(p.is_finite() && (0.0..=MAX_USD_PER_MILLION).contains(&p))
+                {
+                    problems.push(format!(
+                        "model {id:?}: {name} must be 0..={MAX_USD_PER_MILLION}"
+                    ));
+                }
             }
         }
         for (name, id) in [

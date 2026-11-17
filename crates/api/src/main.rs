@@ -124,6 +124,7 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error + Send + Sy
         retrieval,
         queue,
         chat_timeouts: Default::default(),
+        demo_visitors: Default::default(),
     });
 
     if in_lambda {
@@ -132,11 +133,15 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error + Send + Sy
     } else {
         let listener = tokio::net::TcpListener::bind(listen_addr).await?;
         tracing::info!(addr = %listen_addr, "listening");
-        axum::serve(listener, router)
-            .with_graceful_shutdown(async {
-                let _ = tokio::signal::ctrl_c().await;
-            })
-            .await?;
+        // The socket address is the visitor of the demo when there is no CloudFront.
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .with_graceful_shutdown(async {
+            let _ = tokio::signal::ctrl_c().await;
+        })
+        .await?;
         Ok(())
     }
 }

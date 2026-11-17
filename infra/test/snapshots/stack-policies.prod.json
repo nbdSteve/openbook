@@ -100,6 +100,103 @@
     }
   },
   {
+    "policy": "DemoFunctionServiceRoleDefaultPolicy",
+    "statement": {
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:Query"
+      ],
+      "Resource": [
+        "arn:aws:dynamodb:ap-southeast-2:111111111111:table/Openbook-prod-Table"
+      ],
+      "Condition": {
+        "ForAllValues:StringLike": {
+          "dynamodb:LeadingKeys": [
+            "DEMO#*",
+            "COURSE#demo*"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "policy": "DemoFunctionServiceRoleDefaultPolicy",
+    "statement": {
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:DeleteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem"
+      ],
+      "Resource": [
+        "arn:aws:dynamodb:ap-southeast-2:111111111111:table/Openbook-prod-Table"
+      ],
+      "Condition": {
+        "ForAllValues:StringLike": {
+          "dynamodb:LeadingKeys": [
+            "DEMO#*"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "policy": "DemoFunctionServiceRoleDefaultPolicy",
+    "statement": {
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject"
+      ],
+      "Resource": [
+        "arn:aws:s3:::openbook-prod-docs-111111111111-ap-southeast-2/courses/demo*/bm25/*"
+      ]
+    }
+  },
+  {
+    "policy": "DemoFunctionServiceRoleDefaultPolicy",
+    "statement": {
+      "Effect": "Allow",
+      "Action": [
+        "s3vectors:GetVectors",
+        "s3vectors:QueryVectors"
+      ],
+      "Resource": [
+        "arn:aws:s3vectors:ap-southeast-2:111111111111:bucket/openbook-prod-vectors/index/c-demo*"
+      ]
+    }
+  },
+  {
+    "policy": "DemoFunctionServiceRoleDefaultPolicy",
+    "statement": {
+      "Effect": "Allow",
+      "Action": [
+        "bedrock:InvokeModel",
+        "bedrock:InvokeModelWithResponseStream"
+      ],
+      "Resource": [
+        "arn:aws:bedrock:ap-southeast-2:111111111111:inference-profile/au.anthropic.claude-haiku-4-5-20251001-v1:0",
+        "arn:aws:bedrock:ap-southeast-2:111111111111:inference-profile/au.anthropic.claude-sonnet-4-6",
+        "arn:aws:bedrock:ap-southeast-2::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0",
+        "arn:aws:bedrock:ap-southeast-2::foundation-model/anthropic.claude-sonnet-4-6",
+        "arn:aws:bedrock:ap-southeast-4::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0",
+        "arn:aws:bedrock:ap-southeast-4::foundation-model/anthropic.claude-sonnet-4-6"
+      ]
+    }
+  },
+  {
+    "policy": "DemoFunctionServiceRoleDefaultPolicy",
+    "statement": {
+      "Effect": "Allow",
+      "Action": [
+        "bedrock:InvokeModel"
+      ],
+      "Resource": [
+        "arn:aws:bedrock:ap-southeast-2::foundation-model/amazon.titan-embed-text-v2:0"
+      ]
+    }
+  },
+  {
     "policy": "IngestFunctionServiceRoleDefaultPolicy",
     "statement": {
       "Effect": "Allow",

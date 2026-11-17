@@ -21,6 +21,10 @@ export interface CatalogModel {
   temperature?: number;
   /** True when the model accepts images. The transcription model must have it. */
   vision?: boolean;
+  /** List price in US dollars per million input tokens (the demo budget and billing use it). */
+  inputUsdPerMillion: number;
+  /** List price in US dollars per million output tokens. */
+  outputUsdPerMillion: number;
 }
 
 export interface Catalog {
@@ -46,6 +50,9 @@ export const allowedVendors = ['anthropic', 'openai', 'amazon', 'meta', 'mistral
 
 /** The largest `maxOutputTokens` that the API accepts (MAX_OUTPUT_TOKENS_LIMIT in catalog.rs). */
 export const maxOutputTokensLimit = 64_000;
+
+/** The largest price per million tokens (MAX_USD_PER_MILLION in catalog.rs). It catches a typo. */
+export const maxUsdPerMillion = 1000;
 
 const idPattern = /^[a-z0-9-]{1,40}$/;
 const modelIdPattern = new RegExp(`^(?:(au|global)\\.)?(?:${allowedVendors.join('|')})\\.[A-Za-z0-9][A-Za-z0-9._:-]*$`);
@@ -94,6 +101,7 @@ export function validateCatalog(raw: unknown, defaultChatModel: unknown, fastMod
   for (const entry of models as Record<string, unknown>[]) {
     if (typeof entry !== 'object' || entry === null) fail('every entry must be an object');
     const { id, label, vendor, provider, modelId, residency, maxOutputTokens, temperature, vision } = entry;
+    const { inputUsdPerMillion, outputUsdPerMillion } = entry;
     if (typeof id !== 'string' || !idPattern.test(id)) fail(`id "${String(id)}" must match [a-z0-9-]{1,40}`);
     if (seen.has(id)) fail(`duplicate id "${id}"`);
     seen.add(id);
@@ -121,6 +129,15 @@ export function validateCatalog(raw: unknown, defaultChatModel: unknown, fastMod
       fail(`"${id}" temperature must be a number from 0 to 2`);
     }
     if (vision !== undefined && typeof vision !== 'boolean') fail(`"${id}" vision must be true or false`);
+    // A deployed model must have prices: the demo budget reserves cost before each call.
+    for (const [name, price] of [
+      ['inputUsdPerMillion', inputUsdPerMillion],
+      ['outputUsdPerMillion', outputUsdPerMillion],
+    ] as const) {
+      if (typeof price !== 'number' || !Number.isFinite(price) || price < 0 || price > maxUsdPerMillion) {
+        fail(`"${id}" ${name} must be a number from 0 to ${maxUsdPerMillion} (US dollars per million tokens)`);
+      }
+    }
     out.push({
       id,
       label,
@@ -131,6 +148,8 @@ export function validateCatalog(raw: unknown, defaultChatModel: unknown, fastMod
       ...(maxOutputTokens !== undefined ? { maxOutputTokens: maxOutputTokens as number } : {}),
       ...(temperature !== undefined ? { temperature } : {}),
       ...(vision !== undefined ? { vision } : {}),
+      inputUsdPerMillion: inputUsdPerMillion as number,
+      outputUsdPerMillion: outputUsdPerMillion as number,
     });
   }
 

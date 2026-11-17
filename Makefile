@@ -124,6 +124,13 @@ dev: ## Run the whole local stack (emulator, API, web); Ctrl-C stops it
 e2e-local: ## Run the Playwright flows against a fresh, isolated local stack
 	scripts/e2e-local.sh
 
+# The demo stage is local unless STAGE is set on the command line or in the environment.
+DEMO_STAGE := $(if $(filter command line environment,$(origin STAGE)),$(STAGE),local)
+
+.PHONY: demo-provision
+demo-provision: ## Create or refresh the public demo course (STAGE=local by default; dev or prod need AWS_PROFILE; prod needs ALLOW_PROD=1; FORCE=1 rebuilds)
+	ALLOW_PROD="$(ALLOW_PROD)" scripts/demo-provision.sh $(DEMO_STAGE) $(if $(FORCE),--force,)
+
 .PHONY: build-lambdas
 build-lambdas: ## Build the API and ingest Lambdas for arm64, with libpdfium.so next to the ingest bootstrap
 	scripts/build-lambdas.sh

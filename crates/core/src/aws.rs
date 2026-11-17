@@ -36,14 +36,28 @@ pub fn http_client_with_ca(
 
 /// Loads the shared `SdkConfig` for DynamoDB and S3.
 pub async fn load_sdk_config(config: &Config) -> Result<SdkConfig, String> {
+    load_sdk_config_with(
+        config.aws_region.as_deref(),
+        config.aws_endpoint_url.as_deref(),
+        config.ca_bundle.as_deref(),
+    )
+    .await
+}
+
+/// Like `load_sdk_config`, from the three settings. The demo provisioning command has no `Config`.
+pub async fn load_sdk_config_with(
+    region: Option<&str>,
+    endpoint_url: Option<&str>,
+    ca_bundle: Option<&Path>,
+) -> Result<SdkConfig, String> {
     let mut loader = aws_config::defaults(BehaviorVersion::latest());
-    if let Some(region) = &config.aws_region {
-        loader = loader.region(Region::new(region.clone()));
+    if let Some(region) = region {
+        loader = loader.region(Region::new(region.to_owned()));
     }
-    if let Some(url) = &config.aws_endpoint_url {
+    if let Some(url) = endpoint_url {
         loader = loader.endpoint_url(url);
     }
-    if let Some(ca) = &config.ca_bundle {
+    if let Some(ca) = ca_bundle {
         loader = loader.http_client(http_client_with_ca(ca)?);
     }
     Ok(loader.load().await)

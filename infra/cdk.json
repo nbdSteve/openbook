@@ -27,7 +27,9 @@
         "modelId": "au.anthropic.claude-sonnet-4-6",
         "residency": "au",
         "maxOutputTokens": 2000,
-        "vision": true
+        "vision": true,
+        "inputUsdPerMillion": 3.3,
+        "outputUsdPerMillion": 16.5
       },
       {
         "id": "claude-haiku",
@@ -37,7 +39,9 @@
         "modelId": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
         "residency": "au",
         "maxOutputTokens": 2000,
-        "vision": true
+        "vision": true,
+        "inputUsdPerMillion": 1.1,
+        "outputUsdPerMillion": 5.5
       },
       {
         "id": "gpt-oss-120b",
@@ -47,15 +51,29 @@
         "modelId": "openai.gpt-oss-120b-1:0",
         "residency": "au",
         "maxOutputTokens": 2000,
-        "vision": false
+        "vision": false,
+        "inputUsdPerMillion": 0.1545,
+        "outputUsdPerMillion": 0.618
       }
     ],
     "defaultChatModel": "claude-sonnet",
     "fastModel": "claude-haiku",
     "stageDomains": {
       "prod": {
-        "domainName": "ask.steve.gg",
-        "hostedZoneName": "steve.gg"
+        "domainName": "openbook.steve.gg",
+        "hostedZoneName": "steve.gg",
+        "redirects": [
+          {
+            "host": "ask.steve.gg",
+            "path": "/",
+            "keepPath": true,
+            "recordIdPrefix": "Alias"
+          },
+          {
+            "host": "portal.steve.gg",
+            "path": "/portal"
+          }
+        ]
       }
     },
     "stageLimits": {
@@ -68,6 +86,22 @@
         "limitDailyMessagesGlobal": 300,
         "limitDailyTokensGlobal": 1500000,
         "limitDailyTranscribedPagesGlobal": 300
+      }
+    },
+    "stageDemo": {
+      "dev": {
+        "enabled": true,
+        "budgetUsdPerDay": 2,
+        "visitorBudgetUsdPerDay": 0.3,
+        "maxOutputTokens": 1000,
+        "concurrency": 2
+      },
+      "prod": {
+        "enabled": false,
+        "budgetUsdPerDay": 2,
+        "visitorBudgetUsdPerDay": 0.3,
+        "maxOutputTokens": 1000,
+        "concurrency": 3
       }
     },
     "embeddingModelId": "amazon.titan-embed-text-v2:0"

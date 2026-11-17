@@ -375,6 +375,7 @@ fn build_state(
         verifier: std::sync::Arc::new(verifier),
         models,
         chat_timeouts: chat_timeouts.unwrap_or_default(),
+        demo_visitors: Default::default(),
     }
 }
 
@@ -478,6 +479,13 @@ impl Reply {
             .to_owned()
     }
 
+    /// The `error.code` of an error body, or `None` for a reply that is not an error.
+    pub fn error_code_or_none(&self) -> Option<String> {
+        serde_json::from_str::<Value>(&self.text)
+            .ok()
+            .and_then(|v| v["error"]["code"].as_str().map(str::to_owned))
+    }
+
     /// Server-sent events as `(name, data)` pairs. Comment lines are skipped.
     pub fn sse(&self) -> Vec<(String, Value)> {
         let mut events = Vec::new();
@@ -552,6 +560,30 @@ impl TestApp {
     /// A router over the same resources with another set of variables.
     pub fn router_with_vars(&self, vars: &HashMap<String, String>) -> Router {
         build_router(build_state(vars, &self.sdk, Duration::ZERO, None, None))
+    }
+
+    /// The state behind `router_with_fast`, for a test that changes one field of the config.
+    pub fn state_with_fast(
+        &self,
+        vars: &HashMap<String, String>,
+        fast: (String, std::sync::Arc<dyn openbook_core::model::ChatModel>),
+    ) -> AppState {
+        build_state(vars, &self.sdk, Duration::ZERO, None, Some(fast))
+    }
+
+    /// A router over the same resources with another set of variables and a scripted fast model.
+    pub fn router_with_fast(
+        &self,
+        vars: &HashMap<String, String>,
+        fast: (String, std::sync::Arc<dyn openbook_core::model::ChatModel>),
+    ) -> Router {
+        build_router(build_state(
+            vars,
+            &self.sdk,
+            Duration::ZERO,
+            None,
+            Some(fast),
+        ))
     }
 
     /// A router over the same resources with another ingest queue URL.
@@ -725,6 +757,49 @@ impl TestApp {
             .iter()
             .filter_map(|o| o.key().map(str::to_owned))
             .collect()
+    }
+}
+
+/// A request without sign-in, as the demo route gets it. `peer` is the socket address that the
+/// server sees (axum adds it as `ConnectInfo`); `None` leaves it out, as in a bad Lambda setup.
+pub async fn send_anonymous(
+    router: &Router,
+    path: &str,
+    body: Option<Value>,
+    peer: Option<&str>,
+    headers: &[(&str, &str)],
+) -> Reply {
+    let mut builder = Request::builder().method(Method::POST).uri(path);
+    for (name, value) in headers {
+        builder = builder.header(*name, *value);
+    }
+    let body = match body {
+        Some(value) => {
+            builder = builder.header("content-type", "application/json");
+            Body::from(value.to_string())
+        }
+        None => Body::empty(),
+    };
+    let mut request = builder.body(body).unwrap();
+    if let Some(peer) = peer {
+        let address: std::net::SocketAddr = peer.parse().expect("a socket address");
+        request
+            .extensions_mut()
+            .insert(axum::extract::ConnectInfo(address));
+    }
+    let response = router.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    Reply {
+        status,
+        content_type,
+        text: String::from_utf8_lossy(&bytes).into_owned(),
     }
 }
 

@@ -39,7 +39,7 @@ export const certificateIdPattern = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 /** An ACM certificate in us-east-1 (CloudFront reads certificates only there). */
 export const certificateArnPattern = `^arn:aws:acm:us-east-1:[0-9]{12}:certificate/${certificateIdPattern}$`;
 
-/** The name of the CloudFront Function. The execution role is scoped to it. */
+/** The name of the CloudFront Function (host redirect and SPA rewrite). The execution role is scoped to it. */
 export function spaRewriteFunctionName(stage: Stage): string {
   return `Openbook-${stage}-SpaRewrite`;
 }

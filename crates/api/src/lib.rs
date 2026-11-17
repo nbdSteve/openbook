@@ -36,6 +36,8 @@ pub struct AppState {
     pub queue: IngestQueue,
     /// Time limits for model calls.
     pub chat_timeouts: routes::chat::ChatTimeouts,
+    /// The daily salt of the demo visitor hash, kept in memory after the first read.
+    pub demo_visitors: Arc<openbook_core::demo::Visitors>,
 }
 
 impl AppState {
@@ -79,52 +81,79 @@ impl AppState {
     }
 }
 
-/// Builds the router with every route of `docs/api.md` under `/api`.
+/// The header that every response of the demo route has. A CloudFront Function on the demo behavior
+/// uses it to tell a response of this server from one that Lambda or CloudFront made (a throttle,
+/// a timeout), and turns the second kind into a clean `demo_busy` (`infra/lib/demo-response.ts`).
+pub const DEMO_MARKER_HEADER: &str = "x-openbook-demo";
+
+async fn mark_demo(mut response: axum::response::Response) -> axum::response::Response {
+    response.headers_mut().insert(
+        DEMO_MARKER_HEADER,
+        axum::http::HeaderValue::from_static("1"),
+    );
+    response
+}
+
+/// Builds the router with the routes of `docs/api.md` under `/api` that the mode of the process
+/// mounts (`OPENBOOK_API_MODE`): every route (local runs), every route except the demo (the main
+/// Lambda function), or only health and the demo (the demo Lambda function).
 pub fn build_router(state: AppState) -> Router {
-    use routes::{chat, conversations, courses, documents, health, insights, me, models};
-    Router::new()
-        .route("/api/health", get(health::health))
-        .route("/api/me", get(me::me))
-        .route("/api/models", get(models::list))
-        .route("/api/courses", get(courses::list).post(courses::create))
-        .route(
-            "/api/courses/{course_id}",
-            get(courses::get)
-                .patch(courses::update)
-                .delete(courses::delete),
-        )
-        .route(
-            "/api/courses/{course_id}/invite-code",
-            post(courses::rotate_invite_code),
-        )
-        .route("/api/join", post(courses::join))
-        .route("/api/courses/{course_id}/members", get(courses::members))
-        .route(
-            "/api/courses/{course_id}/members/{user_id}",
-            axum::routing::delete(courses::remove_member),
-        )
-        .route(
-            "/api/courses/{course_id}/documents",
-            get(documents::list).post(documents::create),
-        )
-        .route(
-            "/api/courses/{course_id}/documents/{document_id}/complete",
-            post(documents::complete),
-        )
-        .route(
-            "/api/courses/{course_id}/documents/{document_id}",
-            axum::routing::delete(documents::delete),
-        )
-        .route(
-            "/api/courses/{course_id}/conversations",
-            get(conversations::list),
-        )
-        .route(
-            "/api/conversations/{conversation_id}",
-            get(conversations::get).delete(conversations::delete),
-        )
-        .route("/api/courses/{course_id}/chat", post(chat::chat))
-        .route("/api/courses/{course_id}/insights", get(insights::insights))
+    use openbook_core::config::ApiMode;
+    use routes::{chat, conversations, courses, demo, documents, health, insights, me, models};
+    let mode = state.config.api_mode;
+    let mut router = Router::new().route("/api/health", get(health::health));
+    if mode != ApiMode::Demo {
+        router = router
+            .route("/api/me", get(me::me))
+            .route("/api/models", get(models::list))
+            .route("/api/courses", get(courses::list).post(courses::create))
+            .route(
+                "/api/courses/{course_id}",
+                get(courses::get)
+                    .patch(courses::update)
+                    .delete(courses::delete),
+            )
+            .route(
+                "/api/courses/{course_id}/invite-code",
+                post(courses::rotate_invite_code),
+            )
+            .route("/api/join", post(courses::join))
+            .route("/api/courses/{course_id}/members", get(courses::members))
+            .route(
+                "/api/courses/{course_id}/members/{user_id}",
+                axum::routing::delete(courses::remove_member),
+            )
+            .route(
+                "/api/courses/{course_id}/documents",
+                get(documents::list).post(documents::create),
+            )
+            .route(
+                "/api/courses/{course_id}/documents/{document_id}/complete",
+                post(documents::complete),
+            )
+            .route(
+                "/api/courses/{course_id}/documents/{document_id}",
+                axum::routing::delete(documents::delete),
+            )
+            .route(
+                "/api/courses/{course_id}/conversations",
+                get(conversations::list),
+            )
+            .route(
+                "/api/conversations/{conversation_id}",
+                get(conversations::get).delete(conversations::delete),
+            )
+            .route("/api/courses/{course_id}/chat", post(chat::chat))
+            .route("/api/courses/{course_id}/insights", get(insights::insights));
+    }
+    if mode != ApiMode::Full {
+        // The only route that has no sign-in. It reads the demo course and nothing else.
+        router = router.route(
+            "/api/demo/chat",
+            post(demo::chat).layer(axum::middleware::map_response(mark_demo)),
+        );
+    }
+    router
         .fallback(routes::not_found)
         .method_not_allowed_fallback(routes::not_found)
         .layer(axum::middleware::from_fn(logging::log_request))

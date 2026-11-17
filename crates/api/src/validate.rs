@@ -49,6 +49,17 @@ pub fn chat_message(input: &str) -> Result<String, ApiError> {
     }
 }
 
+/// A demo question: 1..300 characters after trimming.
+pub fn demo_message(input: &str) -> Result<String, ApiError> {
+    let max = openbook_core::demo::MAX_MESSAGE_CHARS;
+    let text = input.trim();
+    match text.chars().count() {
+        0 => Err(invalid("message is required")),
+        n if n > max => Err(invalid(format!("message must be at most {max} characters"))),
+        _ => Ok(text.to_owned()),
+    }
+}
+
 /// A PDF file name: 1..200 characters, ends in `.pdf` (any case), no control characters.
 pub fn pdf_filename(input: &str) -> Result<String, ApiError> {
     let name = input.trim();
@@ -148,6 +159,21 @@ mod tests {
         assert!(is_invalid(chat_message(&"x".repeat(4001))));
         // Counted in characters, not bytes.
         assert!(chat_message(&"é".repeat(4000)).is_ok());
+    }
+
+    #[test]
+    fn demo_messages() {
+        assert_eq!(
+            demo_message("  What is a function? ").unwrap(),
+            "What is a function?"
+        );
+        assert!(is_invalid(demo_message("")));
+        assert!(is_invalid(demo_message(" \n\t ")));
+        assert!(demo_message(&"x".repeat(300)).is_ok());
+        assert!(is_invalid(demo_message(&"x".repeat(301))));
+        // Padding does not count, and characters are not bytes.
+        assert!(demo_message(&format!("  {}  ", "é".repeat(300))).is_ok());
+        assert!(is_invalid(demo_message(&"é".repeat(301))));
     }
 
     #[test]

@@ -122,7 +122,10 @@ describe.each([
   test('both functions get the same environment, with the phase 2 variables', () => {
     const api = envOf(functionBy(s, 'ApiFunction'));
     const ingest = envOf(functionBy(s, 'IngestFunction'));
-    expect(ingest).toEqual(api);
+    // The API function also has its mode (every route except the demo), and nothing else differs.
+    const { OPENBOOK_API_MODE: mode, ...apiShared } = api;
+    expect(mode).toBe('full');
+    expect(ingest).toEqual(apiShared);
     expect(text(api.OPENBOOK_INGEST_QUEUE_URL)).toContain('IngestQueue');
     expect(api.OPENBOOK_VECTOR_BUCKET).toBe(`openbook-${stage}-vectors`);
     expect(api.OPENBOOK_EMBEDDING_MODEL_ID).toBe('amazon.titan-embed-text-v2:0');
@@ -261,6 +264,8 @@ describe('the transcribe and embedding model rules', () => {
     residency: 'au',
     maxOutputTokens: 2000,
     vision: true,
+    inputUsdPerMillion: 1,
+    outputUsdPerMillion: 5,
     ...over,
   });
   const withModels = (list: Json[], extra: Json = {}): (() => Synth) =>

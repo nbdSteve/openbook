@@ -12,7 +12,7 @@ Locally, the Vite dev server proxies `/api/*` to the API process on `127.0.0.1:8
 Request rules:
 
 - Bodies are JSON (`content-type: application/json`) unless a route says otherwise.
-- Every route except `GET /api/health` is authenticated and needs the header `x-auth-token: <Cognito ID token>`.
+- Every route except `GET /api/health` and `POST /api/demo/chat` is authenticated and needs the header `x-auth-token: <Cognito ID token>`.
   Do not use `Authorization`: CloudFront OAC replaces that header with its own SigV4 signature.
 - Every request that is not `GET` or `HEAD` must send `x-amz-content-sha256: <lowercase hex SHA-256 of the exact body bytes>`.
   For an empty body, send the hash of the empty string (`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`).
@@ -36,8 +36,11 @@ Error responses always have this shape and a matching status code:
 | 404 | `not_found` | The resource does not exist, or the caller is not a member (never reveal that a course exists to a non-member) |
 | 409 | `conflict`, `limit_reached` | State conflict, or a per-user resource limit (courses, documents) |
 | 413 | `too_large` | Upload size above the limit |
+| 404 | `demo_unavailable` | The demo is switched off (`POST /api/demo/chat` only) |
 | 429 | `quota_exceeded` | The caller used all of today's chat messages |
+| 429 | `demo_rate_limited` | A demo visitor asked too often (`POST /api/demo/chat` only). The body also has `retryAfterSeconds` |
 | 503 | `capacity_exhausted`, `model_unavailable` | The global daily cap is reached, or the model provider fails or throttles |
+| 503 | `demo_busy`, `demo_unavailable` | The demo used its budget for today, or the demo is not provisioned yet (`POST /api/demo/chat` only) |
 | 500 | `internal` | Anything else (the message must not leak internals) |
 
 ## Accounts
@@ -232,6 +235,32 @@ Stream events, in order (each is `event: <name>` plus one `data: <json>` line):
 The server also sends SSE comment lines (`: keep-alive`) at least every 15 seconds.
 The API saves the user message before it calls the model, and saves the assistant message (with sources and usage) before it sends `done`, even if the client disconnects.
 
+### Demo
+
+`POST /api/demo/chat` body `{ "message": string, "conversationId"?: string }` → `200 text/event-stream`. This is the only route besides `GET /api/health` that needs no sign-in: it is the "try it" demo of the landing page. It answers from one demo course (two OpenStax excerpts, CC BY 4.0) and from nothing else.
+
+- `message` is 1..300 characters after trim. Any other field in the body is `400 invalid_request`: there is no `model`, `history`, or token limit to send.
+- Without `conversationId`, the turn starts a new conversation. The server keeps the turns of a conversation (see below) and builds the history itself, so clients cannot send history.
+- A `conversationId` that is unknown, expired, not in the shape of an ID from this route, or already at 10 turns starts a new conversation. The `meta` event then has a new ID. A client never learns which of these it was.
+- The server fixes everything else: the model is the deployment's default chat model, with an output limit of 1,000 tokens (CDK context, never above the catalog limit); the prompt and the sources are the same as in the course chat. A question that the materials do not cover gets a real answer from the model with the normal "not covered" notice, and the stream has no `sources` event. A follow-up is rewritten into one search query by the fast model, as in the course chat.
+- The same events in the same order as the course chat (`meta`, `sources`, `delta`, `done`, `error`). The `meta` data is `{ "conversationId": string, "model": string, "attribution": Attribution[] }`, where `model` is the catalog ID of the model that answers and `Attribution` is `{ title, authors, publisher, copyright, license, licenseUrl, sourceUrl, changes }` for each OpenStax book, for the credit line (CC BY 4.0 needs it). `sources` and `delta` are as in the course chat. `done` has the usage of the answer.
+- Demo conversations: the ID is 192 random bits as 48 lower-case hex characters, so it cannot be guessed, and whoever holds it can continue the conversation. The server stores the turns in the table with a time to live of 24 hours after the first turn, and at most 10 turns for each conversation. A conversation is not linked to any user or visitor and is in no other route. A turn is saved just before `done`; a turn that failed is not saved.
+- Limits (all from CDK context per stage). Per visitor, which is an HMAC of the client address with a salt that changes every day (an IPv6 visitor is the whole `/56`): 10 questions in a fixed 10-minute window, 40 questions a day (UTC), and 0.30 USD of model cost a day. For the whole demo: a budget of 2.00 USD for each UTC day. The output limit of an answer is 1,000 tokens. Every turn reserves its worst-case cost (against the day and against the visitor) before it calls a model, and settles with the real cost after it. A stream that fails keeps its whole reservation (`docs/architecture.md`, "Public demo").
+- The route runs in its own Lambda function with a small reserved concurrency (3 in prod, 2 in dev), behind its own CloudFront behavior `/api/demo/*`. The main API does not serve it. **The rule for a client:** every response that the route itself makes has the header `x-openbook-demo`. A `429` or a `5xx` from `/api/demo/*` **without** that header is not ours: it is a throttle of Lambda (all executions are busy) or a timeout or error page of CloudFront. Treat it as `demo_busy`, whatever the body is. (CloudFront does not run a viewer-response function when the origin answers 400 or higher, so the server cannot rewrite these responses.) A `429` or `5xx` with the header has a JSON error body with a `code`, and the client reads that code.
+- Errors before the stream starts are normal JSON errors:
+  - `400 invalid_request`: the body fails validation.
+  - `404 demo_unavailable`: the kill switch is off. The route reads nothing and counts nothing.
+  - `429 demo_rate_limited`: the visitor hit a limit (the window, the day, or the dollar cap of the day). The error object also has `retryAfterSeconds` (until the end of the 10-minute window, or until midnight UTC), and the response has the header `Retry-After`. The UI can say "You reached the demo limit for now".
+  - `503 demo_busy`: the budget of the day has no room for this turn, or every execution of the demo function is busy. The UI can say "The demo is busy, try again later".
+  - `503 demo_unavailable`: the demo course is not provisioned yet, or the server cannot tell the client address (it fails closed). Nothing is counted.
+  - Model failures after the stream started are `error` events with the code `model_unavailable`, as in the course chat.
+
+```json
+{ "error": { "code": "demo_rate_limited", "message": "You reached the demo limit for now. Try again later.", "retryAfterSeconds": 412 } }
+```
+
+Privacy: the address and its hash are never stored with a question, never logged, and never in a response. The only stored trace of a visitor is a counter under the hash, which expires in 10 minutes (window) or 2 days (day), and the salt expires after 2 days, so hashes of different days cannot be linked. One structured log line for each turn has the outcome, the model, the tokens, the cost, the duration, and the limit that was hit.
+
 ### Insights
 
 `GET /api/courses/{courseId}/insights` (owner) → `200 { "questions": Question[], "totals": { "questionsLast7Days": number, "activeStudentsLast7Days": number } }`.
@@ -246,8 +275,16 @@ The web app loads `/config.json` before it renders. The deployed stack writes th
 {
   "stage": "dev",
   "region": "ap-southeast-2",
-  "cognito": { "userPoolId": "ap-southeast-2_xxxx", "clientId": "xxxx", "endpoint": null }
+  "cognito": { "userPoolId": "ap-southeast-2_xxxx", "clientId": "xxxx", "endpoint": null },
+  "demo": {
+    "enabled": true,
+    "model": { "label": "Claude Sonnet 4.6" },
+    "sources": [{ "title": "College Algebra (first edition)", "license": "CC BY 4.0", "url": "https://openstax.org/details/books/college-algebra" }],
+    "examples": ["What is the product rule of exponents?", "What was the Great Compromise?"]
+  }
 }
 ```
+
+`demo` is the public demo. `enabled` is the kill switch (`OPENBOOK_DEMO_ENABLED`): the landing page hides the demo when it is `false`, and the API returns `404 demo_unavailable`. `model.label` is the name of the model that answers. `sources` are the credit lines, and `examples` are 4 to 6 questions, half from each book. The CDK app reads the sources and the examples from `demo/course.json`, the same manifest that `make demo-provision` loads. The web app treats a missing or malformed `demo` as `enabled: false`.
 
 `cognito.endpoint` is `null` for deployed stages. Locally it is the relative path `"/__aws/"`, which the Vite dev server proxies to AWS Emulator. The web app resolves it against `location.origin` and passes the absolute URL to `CognitoUserPool` as `endpoint`, so the file does not depend on the port.
