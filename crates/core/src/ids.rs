@@ -21,6 +21,23 @@ pub fn new_id() -> String {
         .to_string()
 }
 
+/// The reserved start of the ID of the demo course. A normal ID is a ULID: 26 characters of
+/// upper-case Crockford base32, which has no `o` and no lower-case letter, so a normal ID can never
+/// start with `demo`. The IAM role of the demo function may read only `COURSE#demo*`,
+/// `courses/demo*`, and the index `c-demo*`, so it cannot read any course of a user.
+pub const DEMO_COURSE_PREFIX: &str = "demo";
+
+/// A new ID for the demo course: `demo` and a ULID. It is not a ULID, so the course routes
+/// (`ulid_path`) answer `404` for it, as for any ID that does not exist.
+pub fn new_demo_course_id() -> String {
+    format!("{DEMO_COURSE_PREFIX}{}", new_id())
+}
+
+/// True for an ID from `new_demo_course_id`.
+pub fn is_demo_course_id(id: &str) -> bool {
+    id.strip_prefix(DEMO_COURSE_PREFIX).is_some_and(is_ulid)
+}
+
 /// A ULID that sorts before every ULID created at or after `millis` (Unix milliseconds).
 pub fn ulid_floor(millis: u64) -> String {
     Ulid::from_parts(millis, 0).to_string()
@@ -65,6 +82,37 @@ pub fn normalize_invite_code(input: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_demo_course_prefix_is_reserved() {
+        let demo = new_demo_course_id();
+        assert!(demo.starts_with("demo"));
+        assert_eq!(demo.len(), 30);
+        assert!(is_demo_course_id(&demo));
+        // It is not a ULID, so no course route accepts it, and a normal ID is never a demo ID.
+        assert!(!is_ulid(&demo));
+        for _ in 0..2000 {
+            let normal = new_id();
+            assert!(is_ulid(&normal));
+            assert!(!normal.starts_with(DEMO_COURSE_PREFIX), "{normal}");
+            assert!(
+                !normal.to_lowercase().starts_with(DEMO_COURSE_PREFIX),
+                "{normal}"
+            );
+            assert!(!is_demo_course_id(&normal));
+        }
+        // The alphabet has no `o`, so `demo` cannot start a ULID at any time, whatever the clock says.
+        let alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+        assert!(!alphabet.contains('O') && !alphabet.contains('o'));
+        for bad in [
+            "demo",
+            "DEMO01M7K",
+            "demo01m7kxr2q0rzngkkbhq2tq9e8",
+            "demo!1M7KXR2Q0RZNGKKBHQ2TQ9E8",
+        ] {
+            assert!(!is_demo_course_id(bad), "{bad}");
+        }
+    }
 
     #[test]
     fn ids_are_increasing_ulids() {

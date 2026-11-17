@@ -97,8 +97,8 @@ After the first deploy with the demo function, check on dev:
 1. `curl -s https://<dev-site>/api/health` is `200` (the main API), and `curl -s https://<dev-site>/api/demo/health` is `404` (the demo function has no such route, and the main API has no demo routes).
 2. Provision the demo (`make demo-provision STAGE=dev`), then ask one question in the landing page, or `curl -sN -X POST https://<dev-site>/api/demo/chat -H 'content-type: application/json' -H 'x-amz-content-sha256: <sha256 of the body>' -d '{"message":"What is a function?"}'`. It must stream `meta`, `sources`, `delta`, and `done`. A `503 demo_unavailable` with the log line `no_client_address` in the demo function's log group means that `CloudFront-Viewer-Address` did not arrive.
 3. Ask 11 questions in 10 minutes: the 11th gives `429 demo_rate_limited` with `retryAfterSeconds`.
-4. Send 4 slow requests at once (dev has 2 executions): the extra ones give `503` with `demo_busy` (the throttle answer that the viewer-response function rewrites). A normal chat in the app still works while they run.
-5. Open `https://<dev-site>/ask/x` and `/portal/x` (the SPA routes work); on prod also `curl -sI https://ask.steve.gg/anything?a=1` gives `301` with `location: https://openbook.steve.gg/ask?a=1`.
+4. Send 4 slow requests at once (dev has 2 executions): the extra ones fail with `429` (Lambda's own throttle) or `502`/`504` and no `x-openbook-demo` header, and the client shows "busy". A normal chat in the app still works while they run.
+5. Open `https://<dev-site>/ask/x` and `/portal/x` (the SPA routes work); on prod also `curl -sI "https://ask.steve.gg/join/ABCD2345?a=1"` gives `302` with `location: https://openbook.steve.gg/join/ABCD2345?a=1`, `curl -sI https://portal.steve.gg/anything` gives `302` to `https://openbook.steve.gg/portal`, and `curl -s -o /dev/null -w "%{http_code}" https://ask.steve.gg/api/health` is `200` (the API is never redirected).
 
 ## Fake model provider
 

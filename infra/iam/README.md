@@ -55,21 +55,23 @@ Use admin credentials for the target account in your own terminal. Use the same 
 2. Confirm that the account has the GitHub OIDC provider `token.actions.githubusercontent.com` (`aws iam list-open-id-connect-providers`). Another repository in the account may already use it.
 3. Render the documents with the real values.
 4. Create the boundary policy: `aws iam create-policy --policy-name OpenbookProdPermissionsBoundary --policy-document file://iam/rendered/permissions-boundary-policy.json`. Do not change the name. The execution role and the CDK app both refer to it.
-5. Create the execution role: `aws iam create-role --role-name <execution-role> --assume-role-policy-document file://iam/rendered/cloudformation-execution-role-trust.json`, then `aws iam put-role-policy --role-name <execution-role> --policy-name OpenbookProdExecution --policy-document file://iam/rendered/cloudformation-execution-role-policy.json`.
+5. Create the execution role: `aws iam create-role --role-name <execution-role> --assume-role-policy-document file://iam/rendered/cloudformation-execution-role-trust.json`, then `aws iam put-role-policy --role-name <execution-role> --policy-name OpenbookProdExecution --policy-document file://iam/rendered/cloudformation-execution-role-policy.json`. Then create the managed policy of the site and attach it: `aws iam create-policy --policy-name OpenbookProdExecutionSite --policy-document file://iam/rendered/cloudformation-execution-role-site-policy.json`, then `aws iam attach-role-policy --role-name <execution-role> --policy-arn arn:aws:iam::<account>:policy/OpenbookProdExecutionSite`.
 6. Create the deploy role: `aws iam create-role --role-name <deploy-role> --assume-role-policy-document file://iam/rendered/github-deploy-role-trust.json`, then `aws iam put-role-policy --role-name <deploy-role> --policy-name OpenbookProdDeploy --policy-document file://iam/rendered/github-deploy-role-policy.json`.
 7. Set the five secrets on the GitHub `production` environment (see `../README.md`).
 
 ### Update for the move to openbook.steve.gg and the demo function (execution role only)
 
-The new domain names (the Route 53 condition) and the two new CloudFront Functions (`Openbook-prod-HostRedirect`, `Openbook-prod-DemoResponse`) change the execution role policy. The boundary and the deploy role are the same: the demo function and its role are inside the `Openbook-prod-*` patterns that they already allow. Apply the execution role policy before the deploy, from `infra/`, with admin credentials in your own terminal:
+The new domain names (the Route 53 condition) change the execution role. The role now has two documents: the inline policy (`cloudformation-execution-role-policy`, 10,240 characters at most) and a customer managed policy (`cloudformation-execution-role-site-policy`, 6,144 at most) with the CloudFront, Route 53, and ACM statements of the site. The inline policy had 10,197 characters, with 43 left. The boundary and the deploy role are the same: the demo function and its role are inside the `Openbook-prod-*` patterns that they already allow. Apply with admin credentials in your own terminal, from `infra/`. Attach the managed policy first, so the role never lacks a permission, then replace the inline policy:
 
 ```
 cd infra
 npm run render:iam -- --account-id <ACCOUNT_ID> --repository-identity nbdSteve@<owner-id>/openbook@<repository-id> --execution-role-name <execution-role> --hosted-zone-id <ZONE_ID>
+aws iam create-policy --policy-name OpenbookProdExecutionSite --policy-document file://iam/rendered/cloudformation-execution-role-site-policy.json
+aws iam attach-role-policy --role-name <execution-role> --policy-arn arn:aws:iam::<ACCOUNT_ID>:policy/OpenbookProdExecutionSite
 aws iam put-role-policy --role-name <execution-role> --policy-name OpenbookProdExecution --policy-document file://iam/rendered/cloudformation-execution-role-policy.json
 ```
 
-The rendered policy is under the 10,240 character limit of an inline role policy (a test checks it).
+A later change of the site policy is a new version: `aws iam create-policy-version --policy-arn arn:aws:iam::<ACCOUNT_ID>:policy/OpenbookProdExecutionSite --policy-document file://iam/rendered/cloudformation-execution-role-site-policy.json --set-as-default` (a managed policy keeps five versions; delete the oldest non-default one first when it has five). Tests check that each document is under its limit (inline 10,240, managed 6,144, trust 2,048, whitespace excluded), and that the inline policy has room to grow.
 
 ### Update an existing setup (the custom domain added Route 53 and ACM to the execution role)
 

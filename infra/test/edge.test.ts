@@ -1,9 +1,10 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import * as vm from 'vm';
 import { describe, expect, test } from 'vitest';
 import { resolveConfig } from '../lib/config';
-import { demoResponseCode, viewerRequestCode, type HostRedirect } from '../lib/spa-rewrite';
-import { exampleValues, readTemplate, renderIamDocument, type Values } from '../scripts/render-iam';
-import { asArray, cdkJsonContext, fakeAccount, newApp, synth, type Json } from './helpers';
+import { redirectStatus, viewerRequestCode, type HostRedirect } from '../lib/spa-rewrite';
+import { asArray, cdkJsonContext, newApp, synth, type Json } from './helpers';
 
 // ---- The CloudFront Functions: the exact source runs in a sandbox -----------------------------
 
@@ -24,48 +25,82 @@ const compile = (code: string): Handler => {
 };
 
 const redirects: HostRedirect[] = [
-  { host: 'ask.steve.gg', target: 'https://openbook.steve.gg/ask' },
-  { host: 'portal.steve.gg', target: 'https://openbook.steve.gg/portal' },
+  { host: 'ask.steve.gg', target: 'https://openbook.steve.gg', keepPath: true },
+  { host: 'portal.steve.gg', target: 'https://openbook.steve.gg/portal', keepPath: false },
 ];
 const withRedirects = compile(viewerRequestCode(redirects, true));
-const redirectOnly = compile(viewerRequestCode(redirects, false));
 const event = (host: string, uri: string, querystring: Record<string, Item> = {}): Event => ({
   request: { uri, headers: { host: { value: host } }, querystring },
 });
 const location = (out: Json): string => (out.headers as { location: { value: string } }).location.value;
 
 describe('the host redirect', () => {
-  test.each([
-    ['ask.steve.gg', 'https://openbook.steve.gg/ask'],
-    ['portal.steve.gg', 'https://openbook.steve.gg/portal'],
-  ])('sends %s to %s with a 301', (host, target) => {
-    for (const handler of [withRedirects, redirectOnly]) {
-      const out = handler(event(host, '/'));
-      expect(out.statusCode).toBe(301);
-      expect(out.statusDescription).toBe('Moved Permanently');
-      expect(location(out)).toBe(target);
+  test('is a 302 for now (switch to 301 after the release is verified)', () => {
+    expect(redirectStatus).toBe(302);
+    const out = withRedirects(event('ask.steve.gg', '/'));
+    expect(out.statusCode).toBe(302);
+    expect(out.statusDescription).toBe('Found');
+  });
+
+  test('ask.steve.gg keeps the path and the query string, so an invite link keeps its code', () => {
+    for (const [uri, target] of [
+      ['/', 'https://openbook.steve.gg/'],
+      ['/join/ABCD2345', 'https://openbook.steve.gg/join/ABCD2345'],
+      ['/app', 'https://openbook.steve.gg/app'],
+      ['/app/c/01HZZZ/chat', 'https://openbook.steve.gg/app/c/01HZZZ/chat'],
+      ['/login', 'https://openbook.steve.gg/login'],
+      ['/assets/app.js', 'https://openbook.steve.gg/assets/app.js'],
+      ['/a%20b/c', 'https://openbook.steve.gg/a%20b/c'],
+    ]) {
+      expect(location(withRedirects(event('ask.steve.gg', uri))), uri).toBe(target);
+    }
+    const single = withRedirects(event('ask.steve.gg', '/join/ABCD2345', { ref: { value: 'mail' } }));
+    expect(location(single)).toBe('https://openbook.steve.gg/join/ABCD2345?ref=mail');
+  });
+
+  test('portal.steve.gg goes to /portal, whatever the old path', () => {
+    for (const uri of ['/', '/courses/01HZZZ', '/join/ABCD2345', '/assets/app.js', '/index.html']) {
+      expect(location(withRedirects(event('portal.steve.gg', uri))), uri).toBe('https://openbook.steve.gg/portal');
     }
   });
 
-  test('maps every old path to the area root', () => {
-    for (const uri of ['/', '/courses/01HZZZ', '/join/ABCD2345', '/assets/app.js', '/api/me', '/api/courses/x/chat', '/index.html']) {
-      expect(location(withRedirects(event('ask.steve.gg', uri)))).toBe('https://openbook.steve.gg/ask');
-      expect(location(redirectOnly(event('portal.steve.gg', uri)))).toBe('https://openbook.steve.gg/portal');
-    }
-  });
-
-  test('keeps the query string, including repeated keys', () => {
-    const single = withRedirects(event('ask.steve.gg', '/x', { code: { value: 'ABCD2345' } }));
-    expect(location(single)).toBe('https://openbook.steve.gg/ask?code=ABCD2345');
+  test('keeps repeated keys, and a key without a value as it is (no = is added)', () => {
     const many = withRedirects(
-      event('portal.steve.gg', '/', { a: { value: '1', multiValue: [{ value: '1' }, { value: '2' }] }, b: { value: 'x%20y' } }),
+      event('ask.steve.gg', '/x', {
+        a: { value: '1', multiValue: [{ value: '1' }, { value: '2' }] },
+        b: { value: 'x%20y' },
+        flag: { value: '' },
+        list: { value: '', multiValue: [{ value: '' }, { value: 'z' }] },
+      }),
     );
-    expect(location(many)).toBe('https://openbook.steve.gg/portal?a=1&a=2&b=x%20y');
+    expect(location(many)).toBe('https://openbook.steve.gg/x?a=1&a=2&b=x%20y&flag&list&list=z');
+    // No query: no question mark.
+    expect(location(withRedirects(event('ask.steve.gg', '/x')))).toBe('https://openbook.steve.gg/x');
   });
 
-  test('matches the host in any case, and leaves every other host alone', () => {
-    expect(withRedirects(event('ASK.Steve.GG', '/')).statusCode).toBe(301);
-    for (const host of ['openbook.steve.gg', 'd111111abcdef8.cloudfront.net', 'constructor', '__proto__', 'ask.steve.gg.evil.test', '']) {
+  test('never redirects /api, on any host', () => {
+    for (const host of ['ask.steve.gg', 'portal.steve.gg']) {
+      for (const uri of ['/api', '/api/', '/api/me', '/api/demo/chat', '/api/courses/x/chat']) {
+        const out = withRedirects(event(host, uri));
+        expect(out.statusCode, `${host}${uri}`).toBeUndefined();
+        // And it is not rewritten to the SPA either: the API behaviors do not use this function, but
+        // a request that reached it must pass unchanged in the redirect step.
+      }
+    }
+    // A path that only starts like it is not the API.
+    expect(withRedirects(event('ask.steve.gg', '/apiary')).statusCode).toBe(302);
+    expect(withRedirects(event('ask.steve.gg', '/api-docs/x')).statusCode).toBe(302);
+  });
+
+  test('normalizes the host: case, :443, and a trailing dot', () => {
+    for (const host of ['ASK.Steve.GG', 'ask.steve.gg:443', 'ask.steve.gg.', 'Ask.Steve.Gg.:443']) {
+      expect(withRedirects(event(host, '/join/X')).statusCode, host).toBe(302);
+      expect(location(withRedirects(event(host, '/join/X'))), host).toBe('https://openbook.steve.gg/join/X');
+    }
+  });
+
+  test('leaves every other host alone', () => {
+    for (const host of ['openbook.steve.gg', 'd111111abcdef8.cloudfront.net', 'constructor', '__proto__', 'ask.steve.gg.evil.test', 'ask.steve.gg:8443', 'xask.steve.gg', '']) {
       expect(withRedirects(event(host, '/x')).statusCode, host).toBeUndefined();
     }
     // A request without a Host header (not possible through CloudFront) passes too.
@@ -73,18 +108,12 @@ describe('the host redirect', () => {
     expect(withRedirects(noHost).uri).toBe('/index.html');
   });
 
-  test('the SPA rewrite serves index.html for the site, /ask/*, and /portal/*, and leaves files alone', () => {
-    for (const uri of ['/', '/ask', '/ask/', '/ask/lesson/01HZZZ', '/portal', '/portal/courses/01HZZ/documents', '/courses', '/a.b/c']) {
+  test('the SPA rewrite serves index.html for the site, /ask/*, /portal/*, and /join/*, and leaves files alone', () => {
+    for (const uri of ['/', '/ask', '/ask/', '/ask/lesson/01HZZZ', '/portal', '/portal/courses/01HZZ/documents', '/join/ABCD2345', '/signin', '/a.b/c']) {
       expect(withRedirects(event('openbook.steve.gg', uri)).uri, uri).toBe('/index.html');
     }
     for (const uri of ['/index.html', '/config.json', '/assets/app-abc123.js', '/ask/assets/logo.svg', '/favicon.ico']) {
       expect(withRedirects(event('openbook.steve.gg', uri)).uri, uri).toBe(uri);
-    }
-  });
-
-  test('the redirect-only function never rewrites the path (API behaviors)', () => {
-    for (const uri of ['/api/me', '/api/demo/chat', '/api/courses/x']) {
-      expect(redirectOnly(event('openbook.steve.gg', uri)).uri).toBe(uri);
     }
   });
 
@@ -95,36 +124,9 @@ describe('the host redirect', () => {
   });
 
   test('does not use syntax that the CloudFront JS 2.0 runtime lacks', () => {
-    for (const code of [viewerRequestCode(redirects, true), viewerRequestCode(redirects, false), demoResponseCode]) {
+    for (const code of [viewerRequestCode(redirects, true), viewerRequestCode(redirects, false)]) {
       expect(code).not.toMatch(/=>|\bawait\b|\bimport\b|\bclass\b|\blet\b|\bconst\b/);
     }
-  });
-});
-
-describe('the demo response function', () => {
-  const handler = compile(demoResponseCode) as unknown as (e: { response: Json }) => Json;
-  const response = (statusCode: number, ours: boolean): { response: Json } => ({
-    response: { statusCode, headers: ours ? { 'x-openbook-demo': { value: '1' } } : {} },
-  });
-
-  test.each([429, 500, 502, 503, 504])('turns a %s that is not ours (a throttle or a timeout) into demo_busy', (code) => {
-    const out = handler(response(code, false));
-    expect(out.statusCode).toBe(503);
-    const body = JSON.parse((out.body as { data: string }).data) as { error: { code: string; message: string } };
-    expect(body.error.code).toBe('demo_busy');
-    expect(body.error.message).toContain('busy');
-    expect((out.headers as Record<string, { value: string }>)['content-type'].value).toBe('application/json');
-    expect((out.headers as Record<string, { value: string }>)['cache-control'].value).toBe('no-store');
-  });
-
-  test('leaves every answer of the demo route alone, errors included', () => {
-    for (const code of [200, 400, 404, 429, 500, 503]) {
-      const input = response(code, true);
-      expect(handler(input)).toBe(input.response);
-    }
-    // A 4xx that is not a throttle stays too.
-    const missing = response(404, false);
-    expect(handler(missing)).toBe(missing.response);
   });
 });
 
@@ -150,11 +152,11 @@ describe('the domain of the prod stage', () => {
       domainName: 'openbook.steve.gg',
       hostedZoneName: 'steve.gg',
       redirects: [
-        { host: 'ask.steve.gg', path: '/ask', recordIdPrefix: 'Alias' },
+        { host: 'ask.steve.gg', path: '/', keepPath: true, recordIdPrefix: 'Alias' },
         { host: 'portal.steve.gg', path: '/portal' },
       ],
     });
-    expect(domains.redirects.map((r) => r.path)).toEqual(['/ask', '/portal']);
+    expect(domains.redirects.map((r) => r.path)).toEqual(['/', '/portal']);
   });
 
   test('the distribution has all three aliases', () => {
@@ -192,32 +194,32 @@ describe('the domain of the prod stage', () => {
     expect(JSON.stringify(origins)).not.toContain('portal.steve.gg');
   });
 
-  test('every behavior has a viewer-request function: the merged one on the site, the redirect on the API', () => {
+  test('the default behavior has the one viewer-request function, and the API behaviors have none', () => {
     const [[, dist]] = resourcesOf(prod, 'AWS::CloudFront::Distribution');
     const config = dist.DistributionConfig as { DefaultCacheBehavior: Json; CacheBehaviors: Json[] };
-    const functionIds = (b: Json, event: string): string[] =>
-      (b.FunctionAssociations as { EventType: string; FunctionARN: { 'Fn::GetAtt': string[] } }[])
-        .filter((f) => f.EventType === event)
-        .map((f) => f.FunctionARN['Fn::GetAtt'][0]);
-    const request = (b: Json) => functionIds(b, 'viewer-request');
-    expect(request(config.DefaultCacheBehavior)).toEqual([expect.stringMatching(/^SpaRewrite/)]);
+    const associations = (b: Json): { EventType: string; FunctionARN: { 'Fn::GetAtt': string[] } }[] =>
+      (b.FunctionAssociations ?? []) as { EventType: string; FunctionARN: { 'Fn::GetAtt': string[] } }[];
+    const defaults = associations(config.DefaultCacheBehavior);
+    expect(defaults.map((f) => f.EventType)).toEqual(['viewer-request']);
+    expect(defaults[0].FunctionARN['Fn::GetAtt'][0]).toMatch(/^SpaRewrite/);
     expect(config.CacheBehaviors.map((b) => b.PathPattern)).toEqual(['/api/demo/*', '/api/*']);
-    for (const behavior of config.CacheBehaviors) expect(request(behavior)).toEqual([expect.stringMatching(/^HostRedirect/)]);
-    // One function of each kind per event: a behavior has a single viewer-request function.
-    expect(functionIds(config.CacheBehaviors[0], 'viewer-response')).toEqual([expect.stringMatching(/^DemoResponse/)]);
-    expect(functionIds(config.CacheBehaviors[1], 'viewer-response')).toEqual([]);
+    // The API is never redirected and never rewritten, and no behavior has a viewer-response function
+    // (CloudFront does not run one when the origin answers 400 or higher).
+    for (const behavior of config.CacheBehaviors) expect(associations(behavior)).toEqual([]);
+    expect(resourcesOf(prod, 'AWS::CloudFront::Function')).toHaveLength(1);
   });
 
-  test('the merged function holds the redirects and the rewrite, and the targets are the areas of the site', () => {
-    const code = (resourcesOf(prod, 'AWS::CloudFront::Function').find(([id]) => id.startsWith('SpaRewrite'))?.[1].FunctionCode as string);
-    expect(code).toContain('https://openbook.steve.gg/ask');
-    expect(code).toContain('https://openbook.steve.gg/portal');
+  test('the function holds the redirects: ask keeps the path, portal goes to /portal, with a 302', () => {
+    const code = resourcesOf(prod, 'AWS::CloudFront::Function').find(([id]) => id.startsWith('SpaRewrite'))?.[1].FunctionCode as string;
+    expect(code).toContain('"ask.steve.gg":{"target":"https://openbook.steve.gg","keepPath":true}');
+    expect(code).toContain('"portal.steve.gg":{"target":"https://openbook.steve.gg/portal","keepPath":false}');
+    expect(code).toContain('statusCode: 302');
     expect(code).toContain('/index.html');
   });
 
   test('dev has no domain, no redirect function, and no host redirect in its default function', () => {
     const names = resourcesOf(dev, 'AWS::CloudFront::Function').map(([id]) => id.replace(/[0-9A-F]{8}$/, ''));
-    expect(names.sort()).toEqual(['DemoResponse', 'SpaRewrite']);
+    expect(names.sort()).toEqual(['SpaRewrite']);
     expect(JSON.stringify(dev.json)).not.toContain('steve.gg');
   });
 });
@@ -228,7 +230,7 @@ describe('the redirect settings of a domain are checked', () => {
     stageDomains: { prod: { domainName: 'openbook.example.test', hostedZoneName: 'example.test', redirects } },
   });
   test('a good list is accepted', () => {
-    expect(() => synth(ctx([{ host: 'ask.example.test', path: '/ask' }]))).not.toThrow();
+    expect(() => synth(ctx([{ host: 'ask.example.test', path: '/', keepPath: true }, { host: 'portal.example.test', path: '/portal' }]))).not.toThrow();
   });
   test.each([
     [[{ host: 'ask.other.test', path: '/ask' }], /hosted zone/],
@@ -236,6 +238,8 @@ describe('the redirect settings of a domain are checked', () => {
     [[{ host: 'a.example.test', path: '/a' }, { host: 'a.example.test', path: '/b' }], /twice/],
     [[{ host: 'a.example.test', path: 'ask' }], /path like/],
     [[{ host: 'a.example.test', path: '/a/b' }], /path like/],
+    [[{ host: 'a.example.test', path: '/a', keepPath: true }], /must be \//],
+    [[{ host: 'a.example.test', path: '/', keepPath: 'yes' }], /keepPath must be/],
     [[{ host: 'A.example.test', path: '/a' }], /lower case DNS name/],
     [[{ host: 'a.example.test', path: '/a', recordIdPrefix: 'x y' }], /recordIdPrefix/],
     ['ask.example.test', /must be a list/],
@@ -317,13 +321,15 @@ describe('the demo function', () => {
     const statements = (policies[0][1].PolicyDocument as { Statement: Json[] }).Statement;
     const bySid = (sid: string): Json => statements.find((s) => s.Sid === sid) as Json;
     expect(asArray(bySid('DemoReadItems').Action as string[]).sort()).toEqual(['dynamodb:GetItem', 'dynamodb:Query']);
+    // Only the demo items and the courses whose ID starts with `demo`: never the course of a user.
     expect(bySid('DemoReadItems').Condition).toEqual({
-      'ForAllValues:StringLike': { 'dynamodb:LeadingKeys': ['DEMO#*', 'COURSE#*'] },
+      'ForAllValues:StringLike': { 'dynamodb:LeadingKeys': ['DEMO#*', 'COURSE#demo*'] },
     });
     expect(asArray(bySid('DemoWriteItems').Action as string[]).sort()).toEqual(['dynamodb:DeleteItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem']);
     expect(bySid('DemoWriteItems').Condition).toEqual({ 'ForAllValues:StringLike': { 'dynamodb:LeadingKeys': ['DEMO#*'] } });
     expect(bySid('DemoReadBm25Indexes').Action).toBe('s3:GetObject');
-    expect(JSON.stringify(bySid('DemoReadBm25Indexes').Resource)).toContain('/courses/*/bm25/*');
+    expect(JSON.stringify(bySid('DemoReadBm25Indexes').Resource)).toContain('/courses/demo*/bm25/*');
+    expect(JSON.stringify(bySid('DemoQueryCourseVectors').Resource)).toContain('/index/c-demo*');
     expect(asArray(bySid('DemoQueryCourseVectors').Action as string[]).sort()).toEqual(['s3vectors:GetVectors', 's3vectors:QueryVectors']);
     const actions = statements.flatMap((s) => asArray(s.Action as string | string[]));
     // No queue, no writes of files or vectors, no index or batch writes, no invalidation.
@@ -343,11 +349,41 @@ describe('the demo function', () => {
   });
 });
 
-describe('the execution role policy', () => {
-  test('stays under the IAM limit for an inline policy of 10,240 characters, whitespace excluded', () => {
-    const values: Values = { ...exampleValues(), ACCOUNT_ID: fakeAccount };
-    const text = renderIamDocument(readTemplate('cloudformation-execution-role-policy'), values);
-    const compact = JSON.stringify(JSON.parse(text));
-    expect(compact.length, `the rendered policy has ${compact.length} characters`).toBeLessThan(10_240);
+describe('the demo course ID and the IAM patterns of the demo role', () => {
+  /** IAM `StringLike`: `*` matches any run of characters, and the rest is exact and case-sensitive. */
+  const like = (pattern: string, value: string): boolean =>
+    new RegExp(`^${pattern.split('*').map((p) => p.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`).test(value);
+  const demoId = 'demo01M7KXR2Q0RZNGKKBHQ2TQ9E8';
+  const ulid = (): string => {
+    const alphabet = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+    return Array.from({ length: 26 }, () => alphabet[Math.floor(Math.random() * 32)]).join('');
+  };
+
+  test('the patterns match the demo course and nothing that a normal course can be', () => {
+    expect(like('COURSE#demo*', `COURSE#${demoId}`)).toBe(true);
+    expect(like('courses/demo*/bm25/*', `courses/${demoId}/bm25/v2-X.tar.zst`)).toBe(true);
+    expect(like('c-demo*', `c-${demoId.toLowerCase()}`)).toBe(true);
+    for (let i = 0; i < 5000; i += 1) {
+      const id = ulid();
+      expect(like('COURSE#demo*', `COURSE#${id}`), id).toBe(false);
+      expect(like('courses/demo*/bm25/*', `courses/${id}/bm25/v1-X.tar.zst`), id).toBe(false);
+      expect(like('c-demo*', `c-${id.toLowerCase()}`), id).toBe(false);
+    }
+    // A ULID has no letter O, so even a clock that made it start with D, E, M cannot spell `demo`.
+    expect('0123456789ABCDEFGHJKMNPQRSTVWXYZ').not.toContain('O');
+    // The items of the demo are not the items of a user either.
+    for (const other of ['USER#x', 'CONV#x', 'INVITE#x', 'GLOBAL']) expect(like('DEMO#*', other)).toBe(false);
+  });
+
+  test('the role reads the demo patterns, and the same patterns are in the stack and in the demo item', () => {
+    const policies = resourcesOf(prod, 'AWS::IAM::Policy').filter(([id]) => id.startsWith('DemoFunctionServiceRole'));
+    const text = JSON.stringify(policies[0][1].PolicyDocument);
+    expect(text).toContain('COURSE#demo*');
+    expect(text).not.toContain('COURSE#*');
+    expect(text).not.toContain('courses/*/bm25');
+    expect(text).not.toContain('index/c-*');
+    // The Rust side makes the ID with this prefix (crates/core/src/ids.rs: DEMO_COURSE_PREFIX).
+    const ids = fs.readFileSync(path.join(__dirname, '../../crates/core/src/ids.rs'), 'utf8');
+    expect(ids).toContain('pub const DEMO_COURSE_PREFIX: &str = "demo";');
   });
 });

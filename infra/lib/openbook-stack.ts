@@ -18,15 +18,8 @@ import type { Construct, IConstruct } from 'constructs';
 import { assertTranscribeModel, bedrockStatements, embeddingModelArn } from './catalog';
 import { region, type OpenbookConfig } from './config';
 import { assertLambdaAssetDir } from './lambda-assets';
-import {
-  certificateArnPattern,
-  demoResponseFunctionName,
-  hostRedirectFunctionName,
-  hostedZoneIdPattern,
-  permissionsBoundaryName,
-  spaRewriteFunctionName,
-} from './deployment';
-import { demoResponseCode, viewerRequestCode, type HostRedirect } from './spa-rewrite';
+import { certificateArnPattern, hostedZoneIdPattern, permissionsBoundaryName, spaRewriteFunctionName } from './deployment';
+import { viewerRequestCode, type HostRedirect } from './spa-rewrite';
 import { assertNoInlineScripts } from './web-assets';
 
 export interface OpenbookStackProps extends cdk.StackProps {
@@ -339,15 +332,16 @@ export class OpenbookStack extends cdk.Stack {
       logGroup: demoLogGroup,
       environment: { ...environment, ...demoSettings },
     });
-    // Reads of the demo course (`COURSE#`) and of the demo items. IAM cannot name one course, because
-    // the ID is created at provisioning: the code reads only the course that the demo item names.
+    // Reads of the demo course and of the demo items. The ID of the demo course starts with `demo`
+    // (`ids::new_demo_course_id`), and no ID of a user's course can (a ULID has no `o`), so the
+    // role cannot read any course of a user.
     demoFunction.addToRolePolicy(
       new iam.PolicyStatement({
         sid: 'DemoReadItems',
         actions: ['dynamodb:GetItem', 'dynamodb:Query'],
         resources: [table.tableArn],
         conditions: {
-          'ForAllValues:StringLike': { 'dynamodb:LeadingKeys': ['DEMO#*', 'COURSE#*'] },
+          'ForAllValues:StringLike': { 'dynamodb:LeadingKeys': ['DEMO#*', 'COURSE#demo*'] },
         },
       }),
     );
@@ -362,19 +356,20 @@ export class OpenbookStack extends cdk.Stack {
         },
       }),
     );
-    // The BM25 index of a course: a read of one object. No list, no write.
+    // The BM25 index of the demo course: a read of one object. No list, no write.
     demoFunction.addToRolePolicy(
       new iam.PolicyStatement({
         sid: 'DemoReadBm25Indexes',
         actions: ['s3:GetObject'],
-        resources: [`arn:${this.partition}:s3:::${docsBucketName}/courses/*/bm25/*`],
+        resources: [`arn:${this.partition}:s3:::${docsBucketName}/courses/demo*/bm25/*`],
       }),
     );
+    // The index of the demo course is `c-demo<ulid>` (the worker lower-cases the course ID).
     demoFunction.addToRolePolicy(
       new iam.PolicyStatement({
         sid: 'DemoQueryCourseVectors',
         actions: ['s3vectors:GetVectors', 's3vectors:QueryVectors'],
-        resources: [`${vectorBucketArn}/index/${courseIndexPattern}`],
+        resources: [`${vectorBucketArn}/index/c-demo*`],
       }),
     );
     // The two models of a demo turn (the default chat model and the fast model) and the embedding model.
@@ -497,31 +492,18 @@ export class OpenbookStack extends cdk.Stack {
       },
     });
 
-    // Old host names redirect to an area of the site. One viewer-request function per behavior: the
-    // default behavior gets the redirect and the SPA rewrite together, the API behaviors the redirect.
+    // Old host names redirect to the site (docs/architecture.md). The default behavior has one
+    // viewer-request function that does the redirect and the SPA rewrite. The API behaviors have none:
+    // the API is never redirected, and works on any host.
     const redirects: HostRedirect[] = (config.domain?.redirects ?? []).map((r) => ({
       host: r.host,
-      target: `https://${config.domain?.domainName ?? ''}${r.path}`,
+      target: `https://${config.domain?.domainName ?? ''}${r.keepPath ? '' : r.path}`,
+      keepPath: r.keepPath === true,
     }));
     const spaRewrite = new cloudfront.Function(this, 'SpaRewrite', {
       functionName: spaRewriteFunctionName(config.stage),
       runtime: cloudfront.FunctionRuntime.JS_2_0,
       code: cloudfront.FunctionCode.fromInline(viewerRequestCode(redirects, true)),
-    });
-    const apiViewerRequest: cloudfront.FunctionAssociation[] = [];
-    if (redirects.length > 0) {
-      const hostRedirect = new cloudfront.Function(this, 'HostRedirect', {
-        functionName: hostRedirectFunctionName(config.stage),
-        runtime: cloudfront.FunctionRuntime.JS_2_0,
-        code: cloudfront.FunctionCode.fromInline(viewerRequestCode(redirects, false)),
-      });
-      apiViewerRequest.push({ function: hostRedirect, eventType: cloudfront.FunctionEventType.VIEWER_REQUEST });
-    }
-    // A throttle or a timeout of the demo function is not an answer of ours: it becomes `demo_busy`.
-    const demoResponse = new cloudfront.Function(this, 'DemoResponse', {
-      functionName: demoResponseFunctionName(config.stage),
-      runtime: cloudfront.FunctionRuntime.JS_2_0,
-      code: cloudfront.FunctionCode.fromInline(demoResponseCode),
     });
 
     const distribution = new cloudfront.Distribution(this, 'Distribution', {
@@ -557,10 +539,6 @@ export class OpenbookStack extends cdk.Stack {
           originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
           compress: false,
           responseHeadersPolicy,
-          functionAssociations: [
-            ...apiViewerRequest,
-            { function: demoResponse, eventType: cloudfront.FunctionEventType.VIEWER_RESPONSE },
-          ],
         },
         '/api/*': {
           origin: origins.FunctionUrlOrigin.withOriginAccessControl(functionUrl, {
@@ -576,7 +554,6 @@ export class OpenbookStack extends cdk.Stack {
           // Server-sent events must not be buffered for compression.
           compress: false,
           responseHeadersPolicy,
-          functionAssociations: apiViewerRequest,
         },
       },
     });

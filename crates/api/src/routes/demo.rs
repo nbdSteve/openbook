@@ -258,8 +258,14 @@ pub async fn chat(State(state): State<AppState>, request: Request) -> Result<Res
             u64::from(max_output),
         )
         .ok_or_else(|| ApiError::internal("the demo models have no prices"))?;
+        // A transaction conflict that does not go away after the tries is a busy demo, not an error.
         let budget =
-            demo::reserve_budget(&state.store, &visitor_id, now, cost, &state.config.demo).await?;
+            match demo::reserve_budget(&state.store, &visitor_id, now, cost, &state.config.demo)
+                .await
+            {
+                Err(openbook_core::store::StoreError::Conflict) => Ok(Err(BudgetHit::Global)),
+                other => other,
+            }?;
         Ok::<_, ApiError>((resumed, budget))
     }
     .await;
@@ -395,11 +401,9 @@ async fn run_demo(run: DemoRun, tx: mpsc::Sender<ChatEvent>) {
     let first_wait = timeouts.first_delta.min(timeouts.overall);
     let mut stream = match tokio::time::timeout(first_wait, provider.stream(request)).await {
         Ok(Ok(stream)) => stream,
-        outcome => {
-            if let Ok(Err(error)) = &outcome {
-                tracing::error!(%error, model = %model_id, "demo model call failed to start");
-            }
-            // The model never started, so only retrieval cost money (the usage is known, not estimated).
+        Ok(Err(error)) => {
+            // A clear error response: the model did not start, so only retrieval cost money.
+            tracing::error!(%error, model = %model_id, "demo model call failed to start");
             budget.settle(&store, retrieval_cost).await;
             visitor.release(&store).await;
             log_turn(
@@ -407,6 +411,27 @@ async fn run_demo(run: DemoRun, tx: mpsc::Sender<ChatEvent>) {
                 &model_id,
                 TokenUsage::default(),
                 retrieval_cost,
+                started,
+                None,
+            );
+            emit(
+                &tx,
+                error_event("model_unavailable", MODEL_UNAVAILABLE_MESSAGE),
+            )
+            .await;
+            return;
+        }
+        Err(_) => {
+            // A timeout is not a clear answer: the call may have run. Keep the whole reservation.
+            tracing::error!(model = %model_id, "demo model call timed out before it started");
+            let cost = budget.reserved_micro_usd();
+            budget.keep(&store).await;
+            visitor.release(&store).await;
+            log_turn(
+                "model_start_timed_out",
+                &model_id,
+                TokenUsage::default(),
+                cost,
                 started,
                 None,
             );

@@ -1,48 +1,77 @@
 /**
- * CloudFront Functions (cloudfront-js-2.0). The test in `test/spa-rewrite.test.ts` runs this source.
+ * The CloudFront Function of the default behavior (viewer request, cloudfront-js-2.0). The test in
+ * `test/edge.test.ts` runs this exact source.
  *
- * - The host redirect: a request for an old host (`ask.steve.gg`, `portal.steve.gg`) gets a 301 to
- *   the area of the new site, with the query string and without the old path. It runs on every
- *   behavior, in front of the cache and the origin.
- * - The SPA rewrite (default behavior only): a path whose last segment has no file extension is a
- *   single-page-app route, so it is served from `/index.html`. That covers `/`, `/ask/...`, and
- *   `/portal/...`. Paths with an extension (assets, config.json) pass through unchanged.
+ * - The host redirect: a request for an old host gets a redirect to the new site.
+ *   - `keepPath` hosts (`ask.steve.gg`) keep the path and the query string:
+ *     `ask.steve.gg/join/CODE?a=1` goes to `openbook.steve.gg/join/CODE?a=1`. The new web app
+ *     redirects the old app routes (`/app/...`, `/login`) on the client and keeps `/join/:code`, so an
+ *     invite link keeps its code.
+ *   - The other hosts (`portal.steve.gg`) go to one fixed address (`/portal`), because the old routes
+ *     do not exist in the new app.
+ *   - `/api` and `/api/*` are never redirected: the API works on any host, and a redirected `POST`
+ *     becomes a cross-origin `GET`. (They are not served by this behavior anyway.)
+ *   - The status is 302 for now. Switch to 301 after the release is verified, because browsers keep a
+ *     301 with no end date.
+ * - The SPA rewrite: a path whose last segment has no file extension is a single-page-app route, so it
+ *   is served from `/index.html`. That covers `/`, `/ask/...`, and `/portal/...`. Paths with an
+ *   extension (assets, config.json) pass through unchanged.
  *
  * A behavior has one viewer-request function, so the default behavior gets both in one function.
  */
 export interface HostRedirect {
   /** The old host name, in lower case. */
   host: string;
-  /** Where it goes: an absolute https URL. Every path of the old host maps to it. */
+  /** An absolute https URL without a trailing slash: the site, or the fixed address. */
   target: string;
+  /** True: the target is the site and the old path (and query) is kept. False: the target is the whole address. */
+  keepPath: boolean;
 }
 
+/** The status of a host redirect. 302 until the release is verified, then 301. */
+export const redirectStatus = 302;
+
 const redirectPart = (redirects: HostRedirect[]): string => {
-  const map = Object.fromEntries(redirects.map((r) => [r.host, r.target]));
+  const map = Object.fromEntries(redirects.map((r) => [r.host, { target: r.target, keepPath: r.keepPath }]));
   return `var REDIRECTS = ${JSON.stringify(map)};
+
+function normalizeHost(value) {
+  var host = value.toLowerCase();
+  if (host.slice(-4) === ':443') host = host.slice(0, -4);
+  if (host.charAt(host.length - 1) === '.') host = host.slice(0, -1);
+  return host;
+}
+
+function part(key, value) {
+  return value === '' ? key : key + '=' + value;
+}
 
 function queryString(querystring) {
   var parts = [];
   for (var key in querystring) {
     var item = querystring[key];
     if (item.multiValue) {
-      for (var i = 0; i < item.multiValue.length; i++) parts.push(key + '=' + item.multiValue[i].value);
+      for (var i = 0; i < item.multiValue.length; i++) parts.push(part(key, item.multiValue[i].value));
     } else {
-      parts.push(key + '=' + item.value);
+      parts.push(part(key, item.value));
     }
   }
   return parts.join('&');
 }
 
 function redirectOf(request) {
+  var uri = request.uri;
+  if (uri === '/api' || uri.indexOf('/api/') === 0) return null;
   var header = request.headers.host;
-  var host = header ? header.value.toLowerCase() : '';
+  var host = header ? normalizeHost(header.value) : '';
   if (!Object.prototype.hasOwnProperty.call(REDIRECTS, host)) return null;
+  var rule = REDIRECTS[host];
+  var location = rule.keepPath ? rule.target + uri : rule.target;
   var qs = queryString(request.querystring);
   return {
-    statusCode: 301,
-    statusDescription: 'Moved Permanently',
-    headers: { location: { value: qs ? REDIRECTS[host] + '?' + qs : REDIRECTS[host] } }
+    statusCode: ${redirectStatus},
+    statusDescription: 'Found',
+    headers: { location: { value: qs ? location + '?' + qs : location } }
   };
 }
 `;
@@ -70,29 +99,3 @@ ${redirect ? '  var moved = redirectOf(request);\n  if (moved) return moved;\n' 
 
 /** The default behavior without redirects (dev). */
 export const spaRewriteCode = viewerRequestCode([], true);
-
-/**
- * The viewer-response function of the demo behavior. The demo function has a small reserved
- * concurrency, so a busy moment makes Lambda answer 429 itself (a throttle), and a stuck origin gives
- * 5xx. Those answers are not ours: the demo route sets the header `x-openbook-demo` on every
- * response (`crates/api/src/lib.rs`). An answer without it becomes the clean `demo_busy` error.
- */
-export const demoResponseCode = `function handler(event) {
-  var response = event.response;
-  var ours = response.headers['x-openbook-demo'];
-  var code = response.statusCode;
-  if (!ours && (code === 429 || code >= 500)) {
-    return {
-      statusCode: 503,
-      statusDescription: 'Service Unavailable',
-      headers: {
-        'content-type': { value: 'application/json' },
-        'cache-control': { value: 'no-store' },
-        'x-openbook-demo': { value: 'busy' }
-      },
-      body: { encoding: 'text', data: '{"error":{"code":"demo_busy","message":"The demo is busy. Try again later."}}' }
-    };
-  }
-  return response;
-}
-`;

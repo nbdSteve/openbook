@@ -43,6 +43,9 @@ pub enum StoreError {
     /// A per-user or per-course limit counter is at its maximum.
     #[error("limit reached")]
     LimitReached,
+    /// A transaction was cancelled because another one runs on the same item. The caller may retry.
+    #[error("transaction conflict")]
+    Conflict,
 }
 
 fn internal(error: impl std::error::Error) -> StoreError {

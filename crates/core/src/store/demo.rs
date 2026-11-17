@@ -9,7 +9,7 @@ use aws_sdk_dynamodb::types::{Delete, Put, TransactWriteItem, Update};
 
 use super::{
     CourseItem, Item, META_SK, Query, Store, StoreError, cancel_is, course_pk, from_item, internal,
-    is_conditional_failure, n, s, to_item,
+    is_conditional_failure, n, s, to_item, transaction_conflict,
 };
 use crate::demo::{
     BudgetHit, Counter, DemoBudgets, DemoConversations, DemoCounters, DemoCourse, MAX_TURNS,
@@ -96,7 +96,8 @@ impl Store {
     ) -> Result<CourseRecord, StoreError> {
         let now = crate::domain::now();
         let record = CourseRecord {
-            id: ids::new_id(),
+            // `demo` and a ULID: the role of the demo function can read only courses with this prefix.
+            id: ids::new_demo_course_id(),
             name: name.into(),
             description: description.into(),
             tutoring_style: style,
@@ -316,6 +317,8 @@ impl DemoBudgets for Store {
             Ok(_) => Ok(Ok(())),
             Err(e) if cancel_is(&e, 0, "ConditionalCheckFailed") => Ok(Err(BudgetHit::Global)),
             Err(e) if cancel_is(&e, 1, "ConditionalCheckFailed") => Ok(Err(BudgetHit::Visitor)),
+            // Another transaction runs on the same counter. The SDK does not retry it: the caller does.
+            Err(e) if transaction_conflict(&e) => Err(StoreError::Conflict),
             Err(e) => Err(internal(e)),
         }
     }
@@ -342,6 +345,7 @@ impl DemoBudgets for Store {
             Ok(_) => Ok(true),
             // The item is gone: this turn was settled before, so there is nothing to give back.
             Err(e) if cancel_is(&e, 0, "ConditionalCheckFailed") => Ok(false),
+            Err(e) if transaction_conflict(&e) => Err(StoreError::Conflict),
             Err(e) => Err(internal(e)),
         }
     }

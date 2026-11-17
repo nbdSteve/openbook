@@ -65,7 +65,8 @@
         "redirects": [
           {
             "host": "ask.steve.gg",
-            "path": "/ask",
+            "path": "/",
+            "keepPath": true,
             "recordIdPrefix": "Alias"
           },
           {

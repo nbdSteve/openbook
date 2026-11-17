@@ -225,13 +225,12 @@ describe('the CloudFront Function', () => {
     const names = Object.values(prod.json.Resources)
       .filter((r) => r.Type === 'AWS::CloudFront::Function')
       .map((r) => r.Properties?.Name);
-    expect(names).toContain(spaRewriteFunctionName('prod'));
-    const exec = rendered('cloudformation-execution-role-policy').Statement;
+    // One function: the host redirect and the SPA rewrite.
+    expect(names).toEqual([spaRewriteFunctionName('prod')]);
+    const exec = rendered('cloudformation-execution-role-site-policy').Statement;
     const st = exec.find((x) => x.Sid === 'CloudFrontSpaRewriteFunction');
-    // The role may manage exactly the three functions of the stack, and no other.
-    expect([...(st?.Resource as string[])].sort()).toEqual(
-      names.map((n) => `arn:aws:cloudfront::${fakeAccount}:function/${String(n)}`).sort(),
-    );
+    // The role may manage exactly the function of the stack, and no other.
+    expect(st?.Resource).toBe(`arn:aws:cloudfront::${fakeAccount}:function/${spaRewriteFunctionName('prod')}`);
   });
 });
 

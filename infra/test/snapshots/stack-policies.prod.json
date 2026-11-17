@@ -114,7 +114,7 @@
         "ForAllValues:StringLike": {
           "dynamodb:LeadingKeys": [
             "DEMO#*",
-            "COURSE#*"
+            "COURSE#demo*"
           ]
         }
       }
@@ -149,7 +149,7 @@
         "s3:GetObject"
       ],
       "Resource": [
-        "arn:aws:s3:::openbook-prod-docs-111111111111-ap-southeast-2/courses/*/bm25/*"
+        "arn:aws:s3:::openbook-prod-docs-111111111111-ap-southeast-2/courses/demo*/bm25/*"
       ]
     }
   },
@@ -162,7 +162,7 @@
         "s3vectors:QueryVectors"
       ],
       "Resource": [
-        "arn:aws:s3vectors:ap-southeast-2:111111111111:bucket/openbook-prod-vectors/index/c-*"
+        "arn:aws:s3vectors:ap-southeast-2:111111111111:bucket/openbook-prod-vectors/index/c-demo*"
       ]
     }
   },

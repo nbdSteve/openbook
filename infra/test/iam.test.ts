@@ -30,7 +30,12 @@ const allActions = (doc: { Statement: Statement[] }): string[] => doc.Statement.
 const trust = render('github-deploy-role-trust');
 const deployPolicy = render('github-deploy-role-policy');
 const execTrust = render('cloudformation-execution-role-trust');
-const execPolicy = render('cloudformation-execution-role-policy');
+// The execution role has two documents: an inline policy and a customer managed policy (the site:
+// CloudFront, Route 53, and ACM). The permission checks below look at both together, and the size
+// checks at each one.
+const execInline = render('cloudformation-execution-role-policy');
+const execSite = render('cloudformation-execution-role-site-policy');
+const execPolicy = { ...execInline, Statement: [...execInline.Statement, ...execSite.Statement] };
 
 const prod = synth({ stage: 'prod' });
 const region = 'ap-southeast-2';
@@ -346,9 +351,10 @@ describe('synthesis under the deployment synthesizer', () => {
 });
 
 describe('the committed IAM templates', () => {
-  test('are the five documents applied to the two roles and the boundary policy', () => {
+  test('are the six documents applied to the two roles, the managed policy of the site, and the boundary policy', () => {
     expect(templateNames()).toEqual([
       'cloudformation-execution-role-policy',
+      'cloudformation-execution-role-site-policy',
       'cloudformation-execution-role-trust',
       'github-deploy-role-policy',
       'github-deploy-role-trust',
@@ -434,7 +440,7 @@ describe('the custom domain permissions of the execution role', () => {
   });
 
   test('never name a zone or use a wildcard zone', () => {
-    const text = readTemplate('cloudformation-execution-role-policy');
+    const text = readTemplate('cloudformation-execution-role-site-policy');
     expect(text).toContain('hostedzone/${HOSTED_ZONE_ID}');
     expect(text).not.toMatch(/hostedzone\/(\*|Z[A-Z0-9]+)/);
     expect(text).not.toContain('route53:*');
@@ -457,5 +463,35 @@ describe('the custom domain permissions of the execution role', () => {
     for (const name of ['github-deploy-role-policy', 'permissions-boundary-policy']) {
       expect(readTemplate(name), name).not.toMatch(/route53|acm:/);
     }
+  });
+});
+
+describe('the size of each IAM document', () => {
+  // IAM counts the characters without whitespace. An inline role policy may have 10,240, a customer
+  // managed policy 6,144, and a trust policy 2,048.
+  const compact = (name: string): number => JSON.stringify(JSON.parse(renderIamDocument(readTemplate(name), values))).length;
+
+  test('the inline execution policy stays under 10,240 characters, with room to grow', () => {
+    expect(compact('cloudformation-execution-role-policy')).toBeLessThan(9_000);
+  });
+
+  test('the managed policy of the site stays under 6,144 characters', () => {
+    expect(compact('cloudformation-execution-role-site-policy')).toBeLessThan(6_144);
+  });
+
+  test('every other document is under its limit too', () => {
+    expect(compact('github-deploy-role-policy')).toBeLessThan(10_240);
+    expect(compact('permissions-boundary-policy')).toBeLessThan(6_144);
+    expect(compact('cloudformation-execution-role-trust')).toBeLessThan(2_048);
+    expect(compact('github-deploy-role-trust')).toBeLessThan(2_048);
+  });
+
+  test('the site policy holds the CloudFront, Route 53, and ACM statements, and the inline policy none of them', () => {
+    const services = (doc: { Statement: Statement[] }): string[] =>
+      [...new Set(allActions(doc).map((a) => a.split(':')[0]))].sort();
+    expect(services(execSite)).toEqual(['acm', 'cloudfront', 'route53']);
+    expect(services(execInline)).not.toContain('route53');
+    expect(services(execInline)).not.toContain('acm');
+    expect(services(execInline)).not.toContain('cloudfront');
   });
 });

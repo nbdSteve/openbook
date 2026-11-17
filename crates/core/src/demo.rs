@@ -380,10 +380,29 @@ impl BudgetReservation {
             );
         }
         let refund = reserved.saturating_sub(actual_micro_usd);
-        match budgets.settle_turn(&self.turn, refund).await {
-            Ok(true) => {}
-            Ok(false) => tracing::warn!("a demo turn was settled before"),
-            Err(error) => tracing::error!(%error, "could not settle the demo budget"),
+        // A transaction that conflicts with another one is cancelled, and the SDK does not retry it.
+        for attempt in 0..CONFLICT_ATTEMPTS {
+            match budgets.settle_turn(&self.turn, refund).await {
+                Ok(true) => return,
+                Ok(false) => {
+                    tracing::warn!("a demo turn was settled before");
+                    return;
+                }
+                Err(StoreError::Conflict) if attempt + 1 < CONFLICT_ATTEMPTS => {
+                    conflict_backoff(attempt).await;
+                }
+                Err(StoreError::Conflict) => {
+                    // The reservation stays: the money is kept, never given back by mistake.
+                    tracing::error!(
+                        attempts = CONFLICT_ATTEMPTS,
+                        "the demo settlement kept conflicting; the reservation stays"
+                    );
+                }
+                Err(error) => {
+                    tracing::error!(%error, "could not settle the demo budget");
+                    return;
+                }
+            }
         }
     }
 
@@ -393,6 +412,18 @@ impl BudgetReservation {
         let reserved = self.turn.amount;
         self.settle(budgets, reserved).await;
     }
+}
+
+/// How often a reservation or a settlement is tried when transactions conflict.
+const CONFLICT_ATTEMPTS: u32 = 5;
+
+/// A short, jittered pause before the next try: 10 ms, 20 ms, ... plus up to the same again.
+async fn conflict_backoff(attempt: u32) {
+    let mut random = [0u8; 1];
+    let _ = getrandom::fill(&mut random);
+    let base = 10 * u64::from(attempt + 1);
+    let jitter = u64::from(random[0]) % (base + 1);
+    tokio::time::sleep(std::time::Duration::from_millis(base + jitter)).await;
 }
 
 /// The global counter of a day: the money in millionths of a US dollar.
@@ -427,25 +458,32 @@ pub async fn reserve_budget(
     if amount_micro_usd > limits.visitor_budget_micro_usd_per_day {
         return Ok(Err(BudgetHit::Visitor));
     }
-    let turn_id = new_turn_id()?;
-    let turn = TurnReservation {
-        item: Counter {
-            pk: format!("DEMO#RES#{turn_id}"),
-            sk: "R".to_owned(),
-            // A turn ends in 2 minutes. If the server dies, the item expires after the day.
-            expires_at: now.timestamp() + DAY_ITEM_TTL_SECONDS,
-        },
-        turn_id,
-        global: budget_counter(now),
-        visitor: visitor_budget_counter(visitor, now),
-        amount: amount_micro_usd,
-        global_limit: limits.budget_micro_usd_per_day,
-        visitor_limit: limits.visitor_budget_micro_usd_per_day,
-    };
-    Ok(budgets
-        .reserve_turn(&turn)
-        .await?
-        .map(|()| BudgetReservation { turn }))
+    // Every try has a new turn ID, so a cancelled try leaves nothing behind.
+    for attempt in 0..CONFLICT_ATTEMPTS {
+        let turn_id = new_turn_id()?;
+        let turn = TurnReservation {
+            item: Counter {
+                pk: format!("DEMO#RES#{turn_id}"),
+                sk: "R".to_owned(),
+                // A turn ends in 2 minutes. If the server dies, the item expires after the day.
+                expires_at: now.timestamp() + DAY_ITEM_TTL_SECONDS,
+            },
+            turn_id,
+            global: budget_counter(now),
+            visitor: visitor_budget_counter(visitor, now),
+            amount: amount_micro_usd,
+            global_limit: limits.budget_micro_usd_per_day,
+            visitor_limit: limits.visitor_budget_micro_usd_per_day,
+        };
+        match budgets.reserve_turn(&turn).await {
+            // Another transaction runs on the same counter. The caller turns a last conflict into `demo_busy`.
+            Err(StoreError::Conflict) if attempt + 1 < CONFLICT_ATTEMPTS => {
+                conflict_backoff(attempt).await;
+            }
+            other => return Ok(other?.map(|()| BudgetReservation { turn })),
+        }
+    }
+    Err(StoreError::Conflict)
 }
 
 fn new_turn_id() -> Result<String, StoreError> {
@@ -456,15 +494,16 @@ fn new_turn_id() -> Result<String, StoreError> {
 }
 
 /// An upper bound of the tokens in a text that the server did not count. ASCII letters and spaces
-/// are at most one token per 3 characters. Digits, punctuation, symbols (LaTeX), non-Latin text, and
-/// emoji are counted as one token per character, which no tokenizer goes above.
+/// are at most one token per 3 characters. Digits, punctuation, and symbols (LaTeX) are one token per
+/// character. Any other character is counted by its UTF-8 bytes (up to 4), because a byte-level
+/// tokenizer can spend one token on each byte of a rare character or an emoji.
 pub fn token_bound(text: &str) -> u64 {
     let (mut plain, mut dense) = (0u64, 0u64);
     for c in text.chars() {
         if c.is_ascii_alphabetic() || c == ' ' || c == '\n' {
             plain += 1;
         } else {
-            dense += 1;
+            dense += c.len_utf8() as u64;
         }
     }
     plain.div_ceil(3) + dense
@@ -1026,6 +1065,97 @@ mod tests {
         }
     }
 
+    /// A store whose transactions conflict a number of times before they work.
+    struct Conflicting {
+        conflicts: u32,
+        calls: Mutex<u32>,
+        settled: Mutex<u32>,
+    }
+
+    #[async_trait]
+    impl DemoBudgets for Conflicting {
+        async fn reserve_turn(
+            &self,
+            _t: &TurnReservation,
+        ) -> Result<Result<(), BudgetHit>, StoreError> {
+            let mut calls = self.calls.lock().unwrap();
+            *calls += 1;
+            if *calls <= self.conflicts {
+                return Err(StoreError::Conflict);
+            }
+            Ok(Ok(()))
+        }
+        async fn settle_turn(
+            &self,
+            _t: &TurnReservation,
+            _refund: u64,
+        ) -> Result<bool, StoreError> {
+            let mut calls = self.calls.lock().unwrap();
+            *calls += 1;
+            if *calls <= self.conflicts {
+                return Err(StoreError::Conflict);
+            }
+            *self.settled.lock().unwrap() += 1;
+            Ok(true)
+        }
+    }
+
+    fn conflicting(conflicts: u32) -> Conflicting {
+        Conflicting {
+            conflicts,
+            calls: Mutex::new(0),
+            settled: Mutex::new(0),
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_reservation_tries_again_after_a_transaction_conflict() {
+        let now = at("2026-11-17T10:00:00Z");
+        let store = conflicting(3);
+        let held = reserve_budget(&store, "v", now, 100, &limits_one_visitor_big())
+            .await
+            .unwrap();
+        assert!(held.is_ok(), "the fourth try works");
+        assert_eq!(*store.calls.lock().unwrap(), 4);
+        // After five conflicts in a row, the caller gets the conflict and turns it into demo_busy.
+        let store = conflicting(100);
+        let error = reserve_budget(&store, "v", now, 100, &limits_one_visitor_big())
+            .await
+            .unwrap_err();
+        assert!(matches!(error, StoreError::Conflict));
+        assert_eq!(
+            *store.calls.lock().unwrap(),
+            5,
+            "three to five tries, not a loop without end"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_settlement_tries_again_and_logs_a_final_conflict() {
+        let now = at("2026-11-17T10:00:00Z");
+        let ok = conflicting(0);
+        let held = reserve_budget(&ok, "v", now, 100, &limits_one_visitor_big())
+            .await
+            .unwrap()
+            .unwrap();
+        let store = conflicting(2);
+        held.settle(&store, 10).await;
+        assert_eq!(
+            *store.settled.lock().unwrap(),
+            1,
+            "settled after two conflicts, once"
+        );
+        // A final conflict gives up after five tries and keeps the reservation (nothing is settled).
+        let held = reserve_budget(&ok, "v", now, 100, &limits_one_visitor_big())
+            .await
+            .unwrap()
+            .unwrap();
+        let store = conflicting(100);
+        held.settle(&store, 10).await;
+        assert_eq!(*store.calls.lock().unwrap(), 5);
+        assert_eq!(*store.settled.lock().unwrap(), 0);
+    }
+
     #[test]
     fn token_bounds_are_safe_for_dense_and_non_latin_text() {
         // Plain English: one token per 3 characters at most.
@@ -1033,9 +1163,10 @@ mod tests {
         // Digits, punctuation, and LaTeX symbols: one token per character.
         assert_eq!(token_bound("1234567890"), 10);
         assert_eq!(token_bound("$$x^2+y^2=z^2$$"), 1 + 12);
-        // Non-Latin text and emoji: one token per character.
-        assert_eq!(token_bound("日本語のテキスト"), 8);
-        assert_eq!(token_bound("😀😀😀"), 3);
+        // Other characters count by their UTF-8 bytes: 3 for Japanese, 4 for an emoji, 2 for an accent.
+        assert_eq!(token_bound("日本語のテキスト"), 8 * 3);
+        assert_eq!(token_bound("😀😀😀"), 12);
+        assert_eq!(token_bound("é"), 2);
         assert_eq!(token_bound(""), 0);
         assert_eq!(source_token_bound(2400), 1200);
         assert_eq!(usd_to_micro(2.0), Some(2_000_000));

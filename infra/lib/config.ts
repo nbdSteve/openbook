@@ -40,8 +40,10 @@ export interface DomainConfig {
 
 export interface DomainRedirect {
   host: string;
-  /** The area of the site that it goes to, for example `/ask`. Every old path maps to it. */
+  /** Where it goes on the site: `/portal` for a fixed address, or `/` together with `keepPath`. */
   path: string;
+  /** True: the old path and query string are kept (`ask.steve.gg/join/CODE` to `/join/CODE`). */
+  keepPath?: boolean;
   /**
    * The start of the logical IDs of its two DNS records (`<prefix>A`, `<prefix>Aaaa`). The default
    * comes from the first label (`portal.steve.gg` gives `PortalAlias`). A name that the stack
@@ -236,16 +238,18 @@ function resolveRedirects(
   const seen = new Set<string>([domainName]);
   const prefixes = new Set<string>();
   return raw.map((entry: unknown) => {
-    const { host, path: area, recordIdPrefix } = (entry ?? {}) as Record<string, unknown>;
+    const { host, path: area, keepPath, recordIdPrefix } = (entry ?? {}) as Record<string, unknown>;
     if (typeof host !== 'string' || !dnsName.test(host)) throw new Error('a redirect needs a lower case DNS name as host');
     if (host !== hostedZoneName && !host.endsWith(`.${hostedZoneName}`)) {
       throw new Error(`redirect host ${host} must be in the hosted zone ${hostedZoneName}`);
     }
     if (seen.has(host)) throw new Error(`redirect host ${host} is used twice or is the site itself`);
     seen.add(host);
-    if (typeof area !== 'string' || !/^\/[a-z0-9-]+$/.test(area)) {
-      throw new Error(`redirect ${host} needs a path like /ask (one lower case segment)`);
+    if (typeof area !== 'string' || !/^\/([a-z0-9-]+)?$/.test(area)) {
+      throw new Error(`redirect ${host} needs a path like /portal (one lower case segment), or /`);
     }
+    if (keepPath !== undefined && typeof keepPath !== 'boolean') throw new Error(`redirect ${host} keepPath must be true or false`);
+    if (keepPath === true && area !== '/') throw new Error(`redirect ${host} keeps the path, so its path must be /`);
     if (recordIdPrefix !== undefined) {
       if (typeof recordIdPrefix !== 'string' || !/^[A-Za-z][A-Za-z0-9]*$/.test(recordIdPrefix)) {
         throw new Error(`redirect ${host} has a bad recordIdPrefix`);
@@ -253,7 +257,12 @@ function resolveRedirects(
       if (prefixes.has(recordIdPrefix)) throw new Error(`recordIdPrefix ${recordIdPrefix} is used twice`);
       prefixes.add(recordIdPrefix);
     }
-    return { host, path: area, ...(recordIdPrefix !== undefined ? { recordIdPrefix } : {}) };
+    return {
+      host,
+      path: area,
+      ...(keepPath === true ? { keepPath } : {}),
+      ...(recordIdPrefix !== undefined ? { recordIdPrefix } : {}),
+    };
   });
 }
 
