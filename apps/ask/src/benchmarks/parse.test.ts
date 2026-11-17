@@ -8,6 +8,7 @@ describe('parseBenchmarks', () => {
     expect(b.questions).toBe(180);
     expect(b.corpora.map((c) => c.id)).toEqual(['college-algebra', 'american-government']);
     expect(b.retrieval.hybrid.recallAt8).toBeGreaterThan(b.retrieval.dense.recallAt8);
+    expect(b.retrieval.hybrid.recallAt1).toBeLessThan(b.retrieval.hybrid.recallAt8);
     expect(b.gate.falseGateRate).toBe(0);
   });
 

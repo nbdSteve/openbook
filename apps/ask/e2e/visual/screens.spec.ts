@@ -4,7 +4,7 @@ import { COURSE_ID, CONVERSATIONS, OWNER_COURSE, STUDENT_COURSE_ID } from './dat
 import { expectNoHorizontalOverflow, expectNoSeriousA11yViolations, prepare, type MockOptions, scrollThrough, VIEWPORTS, type Theme } from './fixtures';
 
 // Screenshots go to an ignored folder. Read them to check the screens by eye.
-const OUT = path.join(import.meta.dirname, '..', '.screenshots');
+const OUT = process.env.OPENBOOK_SCREENSHOT_DIR ?? path.join(import.meta.dirname, '..', '.screenshots');
 
 interface Screen {
   name: string;
@@ -23,8 +23,116 @@ interface Screen {
 const heading = (name: string | RegExp, level = 1) => (page: Page) =>
   expect(page.getByRole('heading', { name, level })).toBeVisible();
 
+const ask = async (page: Page, chip = 'Factor x² − 5x + 6') => {
+  await expect(page.getByTestId('demo-thread').locator('.katex').first()).toBeVisible();
+  await page.getByRole('button', { name: chip }).click();
+};
+
+/** The demo on the landing page, in each of its states. */
+const DEMO_SCREENS: Screen[] = [
+  {
+    name: 'landing-demo-answered',
+    url: '/',
+    signedIn: false,
+    ready: heading(/answers from it/i),
+    act: async (page) => {
+      await ask(page);
+      const thread = page.getByTestId('demo-thread');
+      // Two of eight passages are cited: two listed, six behind the disclosure.
+      await expect(thread.getByRole('list', { name: 'Sources for this answer' }).getByRole('listitem')).toHaveCount(2);
+      await expect(thread.getByRole('button', { name: '6 more passages found' })).toHaveAttribute('aria-expanded', 'false');
+      await expect(thread.getByText('Which root would you like to check first?')).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Start over' })).toBeVisible();
+      await expect(page.getByLabel('Your question')).toHaveAttribute('placeholder', 'Ask a follow-up');
+    },
+    fullPage: true,
+  },
+  {
+    name: 'landing-demo-streaming',
+    url: '/',
+    signedIn: false,
+    mock: { demoMode: 'slow' },
+    ready: heading(/answers from it/i),
+    act: async (page) => {
+      await ask(page);
+      await expect(page.getByRole('button', { name: 'Stop answer' })).toBeVisible();
+      await expect(page.getByText('Ask is thinking')).toBeAttached();
+    },
+  },
+  {
+    name: 'landing-demo-not-covered',
+    url: '/',
+    signedIn: false,
+    mock: { demoMode: 'not_covered' },
+    ready: heading(/answers from it/i),
+    act: async (page) => {
+      await ask(page, 'Who can veto a bill?');
+      await expect(page.getByText('do not seem to cover that question')).toBeVisible();
+      await expect(page.getByTestId('demo-thread').getByTestId('sources')).toHaveCount(0);
+    },
+  },
+  ...(
+    [
+      ['rate-limited', 'rate_limited', /Try again in 42 seconds/],
+      ['busy', 'busy', /helped enough people for today/],
+      ['unavailable', 'unavailable', /resting/],
+      ['invalid', 'invalid', /1 to 300 characters/],
+    ] as const
+  ).map(
+    ([name, demoMode, text]): Screen => ({
+      name: `landing-demo-${name}`,
+      url: '/',
+      signedIn: false,
+      mock: { demoMode },
+      ready: heading(/answers from it/i),
+      act: async (page) => {
+        await ask(page);
+        await expect(page.getByTestId('demo-problem')).toContainText(text);
+        // The example answer stays, and the visitor can try again.
+        await expect(page.getByTestId('demo-thread').locator('.katex').first()).toBeVisible();
+      },
+    }),
+  ),
+  {
+    name: 'landing-demo-error',
+    url: '/',
+    signedIn: false,
+    mock: { demoMode: 'stream_error' },
+    ready: heading(/answers from it/i),
+    act: async (page) => {
+      await ask(page);
+      await expect(page.getByRole('alert')).toContainText('The model is busy.');
+    },
+  },
+];
+
 const SCREENS: Screen[] = [
-  { name: 'landing', url: '/', signedIn: false, ready: heading(/answers from your course materials/i), fullPage: true },
+  {
+    name: 'landing',
+    url: '/',
+    signedIn: false,
+    // The fixed example shows until a visitor asks. Its answer needs the lazy renderer.
+    ready: async (page) => {
+      await heading(/answers from it/i)(page);
+      await expect(page.getByTestId('demo-thread').locator('.katex').first()).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Source 1' })).toBeVisible();
+    },
+    fullPage: true,
+  },
+  {
+    name: 'landing-demo-off',
+    url: '/',
+    signedIn: false,
+    mock: { demo: 'off' },
+    ready: heading(/answers from it/i),
+    act: async (page) => {
+      await expect(page.getByTestId('demo-thread').locator('.katex').first()).toBeVisible();
+      await expect(page.getByRole('textbox')).toHaveCount(0);
+      await expect(page.getByRole('link', { name: 'Ask your own books' })).toBeVisible();
+    },
+    fullPage: true,
+  },
+  ...DEMO_SCREENS,
   { name: 'login', url: '/login', signedIn: false, ready: heading('Sign in'), fullPage: true },
   { name: 'signup', url: '/signup', signedIn: false, ready: heading('Create your account'), fullPage: true },
   { name: 'verify', url: '/verify?email=new%40openbook.test', signedIn: false, ready: heading('Confirm your email'), fullPage: true },
@@ -319,7 +427,7 @@ for (const theme of ['light', 'dark'] as Theme[]) {
           page.on('pageerror', (e) => errors.push(e.message));
           await page.goto(screen.url);
           await screen.ready(page);
-          if (screen.name === 'landing') await scrollThrough(page);
+          if (screen.name.startsWith('landing')) await scrollThrough(page);
           if (screen.act) await screen.act(page);
           await page.waitForTimeout(250);
           await expectNoHorizontalOverflow(page);

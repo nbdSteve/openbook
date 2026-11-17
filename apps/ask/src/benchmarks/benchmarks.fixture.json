@@ -24,18 +24,21 @@
   "retrieval": {
     "combined": {
       "hybrid": {
+        "recallAt1": 0.8222,
         "recallAt5": 0.9556,
         "recallAt8": 0.9778,
         "ndcgAt8": 0.9012,
         "mrr": 0.8801
       },
       "dense": {
+        "recallAt1": 0.7556,
         "recallAt5": 0.9111,
         "recallAt8": 0.9444,
         "ndcgAt8": 0.8433,
         "mrr": 0.8123
       },
       "bm25": {
+        "recallAt1": 0.6889,
         "recallAt5": 0.8667,
         "recallAt8": 0.9,
         "ndcgAt8": 0.7921,
@@ -45,18 +48,21 @@
     "corpora": {
       "college-algebra": {
         "hybrid": {
+          "recallAt1": 0.8,
           "recallAt5": 0.9,
           "recallAt8": 0.93,
           "ndcgAt8": 0.8,
           "mrr": 0.77
         },
         "dense": {
+          "recallAt1": 0.72,
           "recallAt5": 0.82,
           "recallAt8": 0.86,
           "ndcgAt8": 0.73,
           "mrr": 0.7
         },
         "bm25": {
+          "recallAt1": 0.68,
           "recallAt5": 0.78,
           "recallAt8": 0.82,
           "ndcgAt8": 0.7,
@@ -65,18 +71,21 @@
       },
       "american-government": {
         "hybrid": {
+          "recallAt1": 0.83,
           "recallAt5": 0.93,
           "recallAt8": 0.96,
           "ndcgAt8": 0.86,
           "mrr": 0.83
         },
         "dense": {
+          "recallAt1": 0.77,
           "recallAt5": 0.87,
           "recallAt8": 0.91,
           "ndcgAt8": 0.79,
           "mrr": 0.76
         },
         "bm25": {
+          "recallAt1": 0.65,
           "recallAt5": 0.75,
           "recallAt8": 0.79,
           "ndcgAt8": 0.65,

@@ -30,7 +30,7 @@ for (const viewport of VIEWPORTS) {
       await expectVisibleAtFirstPaint(
         page,
         page.getByRole('heading', { level: 1 }),
-        page.getByRole('main').getByRole('link', { name: 'Create a free account' }).first(),
+        page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Get started' }),
       );
     });
 

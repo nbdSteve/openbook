@@ -6,6 +6,7 @@
 export type RetrievalMode = 'hybrid' | 'dense' | 'bm25';
 
 export interface RetrievalMetrics {
+  recallAt1: number;
   recallAt5: number;
   recallAt8: number;
   ndcgAt8: number;
@@ -71,6 +72,7 @@ function ratio(value: unknown, path: string): number {
 function retrieval(value: unknown, path: string): RetrievalMetrics {
   const v = obj(value, path);
   return {
+    recallAt1: ratio(v.recallAt1, `${path}.recallAt1`),
     recallAt5: ratio(v.recallAt5, `${path}.recallAt5`),
     recallAt8: ratio(v.recallAt8, `${path}.recallAt8`),
     ndcgAt8: ratio(v.ndcgAt8, `${path}.ndcgAt8`),

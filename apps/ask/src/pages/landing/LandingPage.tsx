@@ -77,11 +77,9 @@ export function LandingPage() {
       <main>
         {/* The hero has no fade-in: it is the largest thing on the page, so it must show at first paint. */}
         <section className="mx-auto max-w-6xl px-5 pb-16 pt-12 sm:px-8 sm:pb-24 sm:pt-16">
-          <div className="flex items-end gap-4">
-            <h1 className="max-w-4xl font-serif text-display font-medium tracking-[-0.02em] text-text-primary">
-              A tutor that <em className="text-accent">shows its sources.</em>
-            </h1>
-          </div>
+          <h1 className="max-w-5xl font-serif text-display font-medium tracking-[-0.02em] text-text-primary">
+            Upload your course. <em className="block text-accent">The tutor answers from it.</em>
+          </h1>
           <div className="mt-10 sm:mt-12">
             <DemoCard demo={demo} />
           </div>
