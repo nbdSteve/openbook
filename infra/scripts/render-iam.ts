@@ -16,6 +16,7 @@ import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { bedrockResourceArns, validateCatalog } from '../lib/catalog';
+import { hostedZoneIdPattern } from '../lib/deployment';
 
 export const iamDir = path.join(__dirname, '..', 'iam');
 export const templateSuffix = '.template.json';
@@ -28,8 +29,8 @@ export const placeholderRules: Record<string, RegExp> = {
   CLOUDFORMATION_EXECUTION_ROLE_NAME: /^[\w+=,.@-]{1,64}$/,
   // GitHub's immutable subject form: both identities are canonical positive integers.
   GITHUB_REPOSITORY_IDENTITY: /^nbdSteve@[1-9][0-9]*\/openbook@[1-9][0-9]*$/,
-  // A Route 53 hosted zone ID (the same pattern as the HostedZoneId parameter of the stack).
-  HOSTED_ZONE_ID: /^Z[A-Z0-9]{1,32}$/,
+  // A Route 53 hosted zone ID (one definition with the HostedZoneId parameter of the stack, in lib/deployment.ts).
+  HOSTED_ZONE_ID: new RegExp(hostedZoneIdPattern),
 };
 
 /**

@@ -10,6 +10,8 @@ const prod = synth({ stage: 'prod' });
 
 /** Resource types that cost money while idle (docs/architecture.md, hard rule 1). */
 const baselineCostTypes = [
+  // A hosted zone costs a monthly fee. The stack uses an existing zone, by parameter.
+  /^AWS::Route53::HostedZone$/,
   /^AWS::OpenSearchServerless::/,
   /^AWS::OpenSearchService::Domain$/,
   /^AWS::EC2::NatGateway$/,

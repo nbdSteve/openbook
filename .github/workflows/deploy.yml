@@ -36,8 +36,8 @@
 # ID and no account. They are environment secrets, and the deploy step passes them as parameters.
 #
 # This repository is public, and so are its logs. The account ID, the role ARNs, the certificate
-# ARN, and the hosted zone ID are environment secrets, the credentials action masks the account ID, and `cdk deploy` writes
-# to a file that only a filtered summary leaves.
+# ARN, and the hosted zone ID are environment secrets, the credentials action masks the account
+# ID, and `cdk deploy` writes to a file that only a filtered summary leaves.
 name: deploy
 
 on:
@@ -357,7 +357,7 @@ jobs:
           SITE_URL: ${{ steps.outputs.outputs.site_url }}
         run: |
           # A new DNS record can take a moment to resolve, so retry a few times.
-          for attempt in 1 2 3 4 5 6; do
+          for _ in 1 2 3 4 5 6; do
             status="$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' "$SITE_URL/" || true)"
             if [ "$status" = 200 ]; then
               echo "GET / returned 200"

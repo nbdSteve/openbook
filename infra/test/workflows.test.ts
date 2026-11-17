@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { parse } from 'yaml';
 import { afterAll, describe, expect, test } from 'vitest';
+import { certificateArnPattern, certificateIdPattern, hostedZoneIdPattern } from '../lib/deployment';
 import { copyAgnosticAssembly } from './helpers';
 
 const root = path.resolve(__dirname, '..', '..');
@@ -275,6 +276,16 @@ describe('the deploy workflow', () => {
     expect((build.steps.map((x) => JSON.stringify(x))).join('')).not.toMatch(/secrets\./);
   });
 
+  test('checks the two secrets with the patterns of the stack parameters', () => {
+    const step = deploySteps.find((s) => s.name === 'require the deployment configuration');
+    // One definition each, in lib/deployment.ts. The bash copy swaps the account for the secret.
+    expect(step?.run).toContain(hostedZoneIdPattern);
+    expect(step?.run).toContain(`certificate/${certificateIdPattern}$`);
+    expect(certificateArnPattern).toContain(`certificate/${certificateIdPattern}$`);
+    expect(certificateArnPattern).toContain('arn:aws:acm:us-east-1:');
+    expect(step?.run).toContain('arn:aws:acm:us-east-1:${AWS_ACCOUNT_ID}:certificate/');
+  });
+
   test('masks a hosted zone ID in the deploy log', () => {
     const step = deploySteps.find((s) => s.name === 'deploy');
     expect(step?.run).toContain('<zone>');
@@ -505,6 +516,43 @@ describe('the retrieval evaluation', () => {
     // The grid is offline: no profile, no Bedrock.
     expect(target('eval-grid')).toMatch(/openbook-eval -- grid\n/);
     expect(target('eval-grid')).not.toMatch(/AWS|Bedrock/);
+  });
+});
+
+describe('make deploy and the custom domain', () => {
+  const root = path.resolve(__dirname, '..', '..');
+  const make = (args: string[], env: Record<string, string | undefined>): { status: number | null; output: string } => {
+    const result = spawnSync('make', args, {
+      cwd: root,
+      encoding: 'utf8',
+      env: { PATH: process.env.PATH ?? '', HOME: os.tmpdir(), ...env },
+    });
+    return { status: result.status, output: result.stdout + result.stderr };
+  };
+  const prod = ['deploy', 'STAGE=prod', 'ALLOW_PROD=1'];
+  const profile = { AWS_PROFILE: 'x' };
+  const vars = { OPENBOOK_CERTIFICATE_ARN: 'cert-arn', OPENBOOK_HOSTED_ZONE_ID: 'ZONEID' };
+
+  test('prod has a domain in cdk.json, so it refuses to start without both variables', () => {
+    for (const env of [{}, { OPENBOOK_CERTIFICATE_ARN: 'x' }, { OPENBOOK_HOSTED_ZONE_ID: 'x' }]) {
+      const result = make(prod, { ...profile, ...env });
+      expect(result.status).not.toBe(0);
+      expect(result.output).toContain('ask.steve.gg');
+      expect(result.output).toContain('OPENBOOK_CERTIFICATE_ARN');
+    }
+  });
+
+  test('passes both variables as the parameters of the stage stack', () => {
+    const result = make([...prod, '-n'], { ...profile, ...vars });
+    expect(result.status).toBe(0);
+    expect(result.output).toContain('--parameters "Openbook-prod:CertificateArn=$OPENBOOK_CERTIFICATE_ARN"');
+    expect(result.output).toContain('--parameters "Openbook-prod:HostedZoneId=$OPENBOOK_HOSTED_ZONE_ID"');
+  });
+
+  test('dev has no domain: it needs no variable and passes no parameter', () => {
+    const result = make(['deploy', 'STAGE=dev', '-n'], profile);
+    expect(result.status).toBe(0);
+    expect(result.output).not.toContain('--parameters');
   });
 });
 

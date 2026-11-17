@@ -40,7 +40,7 @@ define npm_check
 @if [ -f "$(1)/package.json" ]; then \
   echo "==> $(2)"; \
   $(call npm_install,$(1)); \
-  for script in $(3); do echo "--> npm run $$script ($(1))"; npm --prefix "$(1)" run "$$script"; done; \
+  for script in $(3); do echo "--> npm run $$script ($(1))"; npm --prefix "$(1)" run "$$script" || exit 1; done; \
 else \
   echo "==> $(2): skipped ($(1)/package.json does not exist yet)"; \
 fi
@@ -133,8 +133,10 @@ synth: ## Synthesize the CDK app for STAGE (needs built Lambda and web assets)
 	@$(call npm_install,infra)
 	cd infra && npx cdk synth --quiet -c stage=$(STAGE)
 
-# Prod has a custom domain (infra/cdk.json), so its certificate and hosted zone are parameters.
-DEPLOY_PARAMETERS = $(if $(filter prod,$(STAGE)),--parameters "Openbook-prod:CertificateArn=$$OPENBOOK_CERTIFICATE_ARN" --parameters "Openbook-prod:HostedZoneId=$$OPENBOOK_HOSTED_ZONE_ID")
+# A stage with a custom domain (infra/cdk.json, stageDomains) takes its certificate and hosted
+# zone as stack parameters. They are passed whenever both variables are set.
+STAGE_DOMAIN = $(shell node -p "((require('./infra/cdk.json').context.stageDomains||{})['$(STAGE)']||{}).domainName||''" 2>/dev/null)
+DEPLOY_PARAMETERS = $(if $(and $(OPENBOOK_CERTIFICATE_ARN),$(OPENBOOK_HOSTED_ZONE_ID)),--parameters "Openbook-$(STAGE):CertificateArn=$$OPENBOOK_CERTIFICATE_ARN" --parameters "Openbook-$(STAGE):HostedZoneId=$$OPENBOOK_HOSTED_ZONE_ID")
 
 .PHONY: deploy
 deploy: ## Build and deploy Openbook-<stage> with your AWS_PROFILE (STAGE=dev by default)
@@ -149,8 +151,8 @@ deploy: ## Build and deploy Openbook-<stage> with your AWS_PROFILE (STAGE=dev by
 	@if [ -z "$${AWS_PROFILE:-}" ] && [ -z "$${AWS_ACCESS_KEY_ID:-}" ]; then \
 	  echo "error: set AWS_PROFILE (or AWS credentials) for the account to deploy to" >&2; exit 1; \
 	fi
-	@if [ "$(STAGE)" = prod ] && { [ -z "$${OPENBOOK_CERTIFICATE_ARN:-}" ] || [ -z "$${OPENBOOK_HOSTED_ZONE_ID:-}" ]; }; then \
-	  echo "error: prod has a custom domain. Set OPENBOOK_CERTIFICATE_ARN (an ACM certificate in us-east-1) and OPENBOOK_HOSTED_ZONE_ID (a Route 53 zone ID)." >&2; exit 1; \
+	@if [ -n "$(STAGE_DOMAIN)" ] && { [ -z "$${OPENBOOK_CERTIFICATE_ARN:-}" ] || [ -z "$${OPENBOOK_HOSTED_ZONE_ID:-}" ]; }; then \
+	  echo "error: $(STAGE) has the custom domain $(STAGE_DOMAIN) in infra/cdk.json. Set OPENBOOK_CERTIFICATE_ARN (an ACM certificate in us-east-1) and OPENBOOK_HOSTED_ZONE_ID (a Route 53 zone ID)." >&2; exit 1; \
 	fi
 	$(MAKE) build-lambdas build-web
 	@$(call npm_install,infra)

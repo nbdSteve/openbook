@@ -43,7 +43,9 @@ A stage without a domain (dev, and local) has none of these and no parameter.
 
 The certificate is not created by this stack. Request it once in the ACM console in `us-east-1` with DNS validation and keep it. CloudFront reads certificates only from `us-east-1`, and a stack in another Region cannot create one without a second stack and cross-Region references, which this design avoids.
 
-If `ask.steve.gg` is still an alias of another CloudFront distribution, the first deploy fails: CloudFront refuses a second distribution with the same alias (`CNAMEAlreadyExists`) and CloudFormation rolls the stack back. Remove the alias from the old distribution first. If an `A` or `AAAA` record for the name already exists in the zone, the first deploy fails too: CloudFormation does not take over a record it did not create (the change set fails with "already exists"). Delete the old records first, or point them at the new distribution by hand. Either failure is a rollback, not a half-deployed stack. Do the clean-up and deploy again.
+If `ask.steve.gg` is still an alias of another CloudFront distribution, the first deploy fails: CloudFront refuses a second distribution with the same alias (`CNAMEAlreadyExists`) and CloudFormation rolls the stack back. Remove the alias from the old distribution first. If an `A` or `AAAA` record for the name already exists in the zone, the first deploy fails too: CloudFormation does not take over a record it did not create. The change set is fine, the record `CREATE` fails during execution, and then the stack rolls back. A `CNAME` at the name also blocks the `A` alias, and the execution role cannot delete it (it may change only `A` and `AAAA`), so delete any `CNAME` at the name by hand. Delete the old records first, or point them at the new distribution by hand. Either failure is a rollback, not a half-deployed stack, but a rollback after the distribution update costs two slow CloudFront updates. Do the clean-up and deploy again.
+
+Keep the ACM validation `CNAME` in the zone. ACM renews the certificate only while that record exists.
 
 ## The ingest worker
 

@@ -29,6 +29,16 @@ export function assetBucketName(account: string, region: string): string {
  */
 export const permissionsBoundaryName = 'OpenbookProdPermissionsBoundary';
 
+/**
+ * The shapes of the two deploy-time parameters of a stage with a custom domain. The stack
+ * checks them as `AllowedPattern`, `scripts/render-iam.ts` checks the zone ID, and the deploy
+ * workflow checks both in bash. `test/workflows.test.ts` ties the workflow copy to these.
+ */
+export const hostedZoneIdPattern = '^Z[A-Z0-9]{1,32}$';
+export const certificateIdPattern = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+/** An ACM certificate in us-east-1 (CloudFront reads certificates only there). */
+export const certificateArnPattern = `^arn:aws:acm:us-east-1:[0-9]{12}:certificate/${certificateIdPattern}$`;
+
 /** The name of the CloudFront Function. The execution role is scoped to it. */
 export function spaRewriteFunctionName(stage: Stage): string {
   return `Openbook-${stage}-SpaRewrite`;

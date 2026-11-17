@@ -213,6 +213,7 @@ describe('the CloudFormation execution role', () => {
       'ReadTheStackAssets',
       'ReadTheBootstrapVersion',
       'AttachAnAcmCertificateToCloudFront',
+      'ReadTheAcmCertificateMetadata',
       'DnsAliasRecordsOfTheSiteDomain',
       'ReadTheRecordsOfTheHostedZone',
       'WaitForRecordChanges',
@@ -380,16 +381,19 @@ describe('the committed IAM templates', () => {
   });
 });
 
+const byAction2 = (list: Statement[], action: string): Statement => list.find((s) => actions(s).includes(action)) as Statement;
+
 describe('the custom domain permissions of the execution role', () => {
   const zoneArn = `arn:aws:route53:::hostedzone/${values.HOSTED_ZONE_ID}`;
   const domain = (cdkJsonContext.stageDomains as { prod: { domainName: string } }).prod.domainName;
   const route53 = execPolicy.Statement.filter((s) => actions(s).some((a) => a.startsWith('route53:')));
   const byAction = (action: string): Statement[] => route53.filter((s) => actions(s).includes(action));
 
-  test('grant exactly three Route 53 actions, each on its own statement', () => {
+  test('grant exactly four Route 53 actions', () => {
     expect(route53.flatMap(actions).sort()).toEqual([
       'route53:ChangeResourceRecordSets',
       'route53:GetChange',
+      'route53:GetHostedZone',
       'route53:ListResourceRecordSets',
     ]);
     for (const s of route53) expect(s.Effect).toBe('Allow');
@@ -403,6 +407,11 @@ describe('the custom domain permissions of the execution role', () => {
         'route53:ChangeResourceRecordSetsNormalizedRecordNames': domain,
         'route53:ChangeResourceRecordSetsRecordTypes': ['A', 'AAAA'],
       },
+      // A request without these keys must not match the ForAllValues conditions.
+      Null: {
+        'route53:ChangeResourceRecordSetsNormalizedRecordNames': 'false',
+        'route53:ChangeResourceRecordSetsRecordTypes': 'false',
+      },
     });
   });
 
@@ -412,8 +421,11 @@ describe('the custom domain permissions of the execution role', () => {
     for (const r of records) expect(r.Properties?.Name).toBe(`${domain}.`);
   });
 
-  test('list records in the same zone, and read a change by ID (AWS has no narrower resource)', () => {
+  test('read the zone and its records in the same zone, and a change by ID (AWS has no narrower resource)', () => {
+    // CloudFormation probably reads the zone for a record set, and AWS does not document it.
     expect(resources(byAction('route53:ListResourceRecordSets')[0])).toEqual([zoneArn]);
+    expect(resources(byAction('route53:GetHostedZone')[0])).toEqual([zoneArn]);
+    expect(actions(byAction('route53:GetHostedZone')[0]).sort()).toEqual(['route53:GetHostedZone', 'route53:ListResourceRecordSets']);
     expect(resources(byAction('route53:GetChange')[0])).toEqual(['arn:aws:route53:::change/*']);
   });
 
@@ -424,10 +436,17 @@ describe('the custom domain permissions of the execution role', () => {
     expect(text).not.toContain('route53:*');
   });
 
-  test('allow only the ACM list action that CloudFront needs to attach a certificate', () => {
+  // AWS documents acm:ListCertificates for assigning a certificate in the console. It lists no ACM
+  // action that CreateDistribution or UpdateDistribution needs. Both actions are read-only
+  // guards for the first deploy, not a documented need.
+  test('allow only two read-only ACM actions, as guards for attaching the certificate', () => {
     const acm = execPolicy.Statement.filter((s) => actions(s).some((a) => a.startsWith('acm:')));
-    expect(acm.flatMap(actions)).toEqual(['acm:ListCertificates']);
-    expect(resources(acm[0])).toEqual(['*']);
+    expect(acm.flatMap(actions).sort()).toEqual(['acm:DescribeCertificate', 'acm:ListCertificates']);
+    for (const s of acm) expect(s.Effect).toBe('Allow');
+    expect(resources(byAction2(acm, 'acm:ListCertificates'))).toEqual(['*']);
+    expect(resources(byAction2(acm, 'acm:DescribeCertificate'))).toEqual([
+      `arn:aws:acm:us-east-1:${fakeAccount}:certificate/*`,
+    ]);
   });
 
   test('keep Route 53 and ACM out of the deploy role and the permissions boundary', () => {

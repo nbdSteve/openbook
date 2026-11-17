@@ -18,7 +18,7 @@ import type { Construct, IConstruct } from 'constructs';
 import { assertTranscribeModel, bedrockStatements, embeddingModelArn } from './catalog';
 import { region, type OpenbookConfig } from './config';
 import { assertLambdaAssetDir } from './lambda-assets';
-import { permissionsBoundaryName, spaRewriteFunctionName } from './deployment';
+import { certificateArnPattern, hostedZoneIdPattern, permissionsBoundaryName, spaRewriteFunctionName } from './deployment';
 import { spaRewriteCode } from './spa-rewrite';
 import { assertNoInlineScripts } from './web-assets';
 
@@ -32,9 +32,6 @@ export interface OpenbookStackProps extends cdk.StackProps {
  */
 export const certificateArnParameter = 'CertificateArn';
 export const hostedZoneIdParameter = 'HostedZoneId';
-/** An ACM certificate in us-east-1 (CloudFront reads certificates only there). */
-export const certificateArnPattern = '^arn:aws:acm:us-east-1:[0-9]{12}:certificate/[0-9a-f-]{36}$';
-export const hostedZoneIdPattern = '^Z[A-Z0-9]{1,32}$';
 
 /** The one-year cache for hashed, immutable build assets. */
 export const immutableCacheControl = 'public, max-age=31536000, immutable';
@@ -67,7 +64,6 @@ export class OpenbookStack extends cdk.Stack {
     const { config } = props;
     const isProd = config.stage === 'prod';
     const removalPolicy = isProd ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY;
-
 
     // A stage with a custom domain gets its certificate and its hosted zone at deploy time.
     let certificate: acm.ICertificate | undefined;
