@@ -13,8 +13,7 @@
   "sources": [
     {
       "files": [
-        "../evals/corpora/college-algebra/college-algebra-excerpt.pdf",
-        "../evals/corpus/college-algebra-excerpt.pdf"
+        "../evals/corpora/college-algebra/college-algebra-excerpt.pdf"
       ],
       "attribution": {
         "title": "College Algebra (first edition)",
