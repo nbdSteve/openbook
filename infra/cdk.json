@@ -52,6 +52,12 @@
     ],
     "defaultChatModel": "claude-sonnet",
     "fastModel": "claude-haiku",
+    "stageDomains": {
+      "prod": {
+        "domainName": "ask.steve.gg",
+        "hostedZoneName": "steve.gg"
+      }
+    },
     "stageLimits": {
       "dev": {
         "limitDailyMessagesGlobal": 100,

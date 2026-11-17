@@ -31,9 +31,13 @@
 #   - Every role that the stack creates carries a permissions boundary, and the execution role
 #     can create roles only with it. See infra/iam/README.md.
 #
-# This repository is public, and so are its logs. The account ID and the role ARNs are
-# environment secrets, the credentials action masks the account ID, and `cdk deploy` writes
-# to a file that only a filtered summary leaves.
+# The site is served at the custom domain of infra/cdk.json. The certificate ARN and the hosted
+# zone ID are parameters of the stack (not context), so the synthesized template has no resource
+# ID and no account. They are environment secrets, and the deploy step passes them as parameters.
+#
+# This repository is public, and so are its logs. The account ID, the role ARNs, the certificate
+# ARN, and the hosted zone ID are environment secrets, the credentials action masks the account
+# ID, and `cdk deploy` writes to a file that only a filtered summary leaves.
 name: deploy
 
 on:
@@ -164,8 +168,10 @@ jobs:
           AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
           AWS_DEPLOY_ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           AWS_CLOUDFORMATION_EXECUTION_ROLE_ARN: ${{ secrets.AWS_CLOUDFORMATION_EXECUTION_ROLE_ARN }}
+          OPENBOOK_CERTIFICATE_ARN: ${{ secrets.OPENBOOK_CERTIFICATE_ARN }}
+          OPENBOOK_HOSTED_ZONE_ID: ${{ secrets.OPENBOOK_HOSTED_ZONE_ID }}
         run: |
-          for name in AWS_ACCOUNT_ID AWS_DEPLOY_ROLE_ARN AWS_CLOUDFORMATION_EXECUTION_ROLE_ARN; do
+          for name in AWS_ACCOUNT_ID AWS_DEPLOY_ROLE_ARN AWS_CLOUDFORMATION_EXECUTION_ROLE_ARN OPENBOOK_CERTIFICATE_ARN OPENBOOK_HOSTED_ZONE_ID; do
             if [ -z "${!name}" ]; then
               echo "::error::secret $name is not set on the production environment"
               exit 1
@@ -181,6 +187,16 @@ jobs:
               exit 1
             fi
           done
+          # The custom domain of the stack (infra/cdk.json) needs a CloudFront certificate, which
+          # must be in us-east-1, and the Route 53 zone that holds the domain.
+          if [[ ! $OPENBOOK_CERTIFICATE_ARN =~ ^arn:aws:acm:us-east-1:${AWS_ACCOUNT_ID}:certificate/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+            echo "::error::OPENBOOK_CERTIFICATE_ARN is not an ACM certificate ARN in us-east-1 of the account of AWS_ACCOUNT_ID"
+            exit 1
+          fi
+          if [[ ! $OPENBOOK_HOSTED_ZONE_ID =~ ^Z[A-Z0-9]{1,32}$ ]]; then
+            echo "::error::OPENBOOK_HOSTED_ZONE_ID is not a Route 53 hosted zone ID"
+            exit 1
+          fi
           if [ "$AWS_DEPLOY_ROLE_ARN" = "$AWS_CLOUDFORMATION_EXECUTION_ROLE_ARN" ]; then
             echo "::error::the deploy role and the execution role must be two different roles"
             exit 1
@@ -263,6 +279,9 @@ jobs:
           allowed-account-ids: ${{ secrets.AWS_ACCOUNT_ID }}
           role-session-name: openbook-deploy-${{ github.run_id }}
 
+      # The certificate ARN and the hosted zone ID are parameters of the stack, so the template
+      # from the build job has no resource ID. They come from environment secrets.
+      #
       # `--role-arn` makes CloudFormation create and update the resources as the dedicated
       # execution role, so the deploy role needs no permission over DynamoDB, Lambda, IAM,
       # or anything else in the stack. `--app cdk.out` deploys the validated assembly that the
@@ -273,13 +292,17 @@ jobs:
         working-directory: infra
         env:
           AWS_CLOUDFORMATION_EXECUTION_ROLE_ARN: ${{ secrets.AWS_CLOUDFORMATION_EXECUTION_ROLE_ARN }}
+          OPENBOOK_CERTIFICATE_ARN: ${{ secrets.OPENBOOK_CERTIFICATE_ARN }}
+          OPENBOOK_HOSTED_ZONE_ID: ${{ secrets.OPENBOOK_HOSTED_ZONE_ID }}
         run: |
           log="$RUNNER_TEMP/cdk-deploy.log"
-          mask() { sed -E 's/[0-9]{12}/<account>/g; s#arn:aws[a-z-]*:[^[:space:]"]*#<arn>#g'; }
+          mask() { sed -E 's/[0-9]{12}/<account>/g; s#arn:aws[a-z-]*:[^[:space:]"]*#<arn>#g; s/\bZ[A-Z0-9]{8,32}\b/<zone>/g'; }
           if ! npx cdk deploy Openbook-prod \
               --app cdk.out \
               --role-arn "$AWS_CLOUDFORMATION_EXECUTION_ROLE_ARN" \
               --require-approval never \
+              --parameters "Openbook-prod:CertificateArn=$OPENBOOK_CERTIFICATE_ARN" \
+              --parameters "Openbook-prod:HostedZoneId=$OPENBOOK_HOSTED_ZONE_ID" \
               --progress events \
               --no-color \
               --outputs-file cdk-outputs.json > "$log" 2>&1; then
@@ -299,6 +322,15 @@ jobs:
             https://*) ;;
             *) echo "::error::SiteUrl is not an https URL"; exit 1 ;;
           esac
+          # With a custom domain (infra/cdk.json), the site must be served at that domain, and the
+          # smoke tests below run against it, through DNS and the certificate.
+          domain="$(jq -r '.context.stageDomains.prod.domainName // empty' cdk.json)"
+          if [ -n "$domain" ]; then
+            if [ "$site_url" != "https://$domain" ]; then
+              echo "::error::SiteUrl is not the custom domain"
+              exit 1
+            fi
+          fi
           echo "site_url=$site_url" >> "$GITHUB_OUTPUT"
           {
             echo "### Site"
@@ -324,9 +356,14 @@ jobs:
         env:
           SITE_URL: ${{ steps.outputs.outputs.site_url }}
         run: |
-          status="$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' "$SITE_URL/")"
-          if [ "$status" != 200 ]; then
-            echo "::error::GET / returned $status"
-            exit 1
-          fi
-          echo "GET / returned 200"
+          # A new DNS record can take a moment to resolve, so retry a few times.
+          for _ in 1 2 3 4 5 6; do
+            status="$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' "$SITE_URL/" || true)"
+            if [ "$status" = 200 ]; then
+              echo "GET / returned 200"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::GET / returned $status"
+          exit 1

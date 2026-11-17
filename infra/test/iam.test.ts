@@ -3,7 +3,7 @@ import * as path from 'path';
 import { describe, expect, test } from 'vitest';
 import { assetBucketName, assetPrefix, bootstrapQualifier, permissionsBoundaryName } from '../lib/deployment';
 import { exampleValues, iamDir, placeholderRules, placeholdersIn, readTemplate, renderIamDocument, templateNames, type Values } from '../scripts/render-iam';
-import { asArray, fakeAccount, synth, type Json } from './helpers';
+import { asArray, cdkJsonContext, fakeAccount, synth, type Json } from './helpers';
 
 /**
  * The IAM documents live in an AWS account, outside CDK, so nothing synthesizes or
@@ -174,11 +174,12 @@ describe('the CloudFormation execution role', () => {
     'AWS::CloudFront::Function': 'cloudfront',
     'AWS::CloudFront::OriginAccessControl': 'cloudfront',
     'AWS::CloudFront::ResponseHeadersPolicy': 'cloudfront',
+    'AWS::Route53::RecordSet': 'route53',
     'AWS::CDK::Metadata': null,
   };
   // Services the policy uses without a stack resource of their own: reading assets and the
-  // bootstrap version.
-  const supportServices = ['ssm'];
+  // bootstrap version, and CloudFront attaching an ACM certificate (the certificate is a parameter).
+  const supportServices = ['acm', 'ssm'];
 
   test('every resource type of the prod stack is one the policy was written for', () => {
     const types = new Set(Object.values(prod.json.Resources).map((r) => r.Type));
@@ -197,7 +198,7 @@ describe('the CloudFormation execution role', () => {
 
   test('grants nothing on a service with a baseline cost or that the stack does not use', () => {
     const granted = allActions(execPolicy).map((a) => a.split(':')[0]);
-    for (const service of ['kms', 'secretsmanager', 'ec2', 'rds', 'es', 'aoss', 'elasticache', 'wafv2', 'bedrock', 'route53', 'acm']) {
+    for (const service of ['kms', 'secretsmanager', 'ec2', 'rds', 'es', 'aoss', 'elasticache', 'wafv2', 'bedrock']) {
       expect(granted).not.toContain(service);
     }
   });
@@ -211,6 +212,11 @@ describe('the CloudFormation execution role', () => {
       'DescribeLogGroupsTakesTheWholeRegion',
       'ReadTheStackAssets',
       'ReadTheBootstrapVersion',
+      'AttachAnAcmCertificateToCloudFront',
+      'ReadTheAcmCertificateMetadata',
+      'DnsAliasRecordsOfTheSiteDomain',
+      'ReadTheRecordsOfTheHostedZone',
+      'WaitForRecordChanges',
       'CloudFrontSpaRewriteFunction',
       'IngestEventSourceMappingOfTheStackFunctions',
       'ReadAndDeleteEventSourceMappings',
@@ -224,7 +230,12 @@ describe('the CloudFormation execution role', () => {
 
   test('the only statements on every resource are the ones that AWS cannot scope, and a Deny', () => {
     const star = execPolicy.Statement.filter((s) => resources(s).includes('*')).map((s) => s.Sid).sort();
-    expect(star).toEqual(['CloudFrontSite', 'NeverRemoveTheBoundary', 'UserPoolCreateTakesNoResource']);
+    expect(star).toEqual([
+      'AttachAnAcmCertificateToCloudFront',
+      'CloudFrontSite',
+      'NeverRemoveTheBoundary',
+      'UserPoolCreateTakesNoResource',
+    ]);
     const create = execPolicy.Statement.find((s) => s.Sid === 'UserPoolCreateTakesNoResource');
     expect(create && actions(create)).toEqual(['cognito-idp:CreateUserPool']);
   });
@@ -366,6 +377,81 @@ describe('the committed IAM templates', () => {
   test('refer to the one stage the production role may deploy', () => {
     for (const name of templateNames()) {
       expect(readTemplate(name), name).not.toMatch(/Openbook-dev|openbook-dev/);
+    }
+  });
+});
+
+const byAction2 = (list: Statement[], action: string): Statement => list.find((s) => actions(s).includes(action)) as Statement;
+
+describe('the custom domain permissions of the execution role', () => {
+  const zoneArn = `arn:aws:route53:::hostedzone/${values.HOSTED_ZONE_ID}`;
+  const domain = (cdkJsonContext.stageDomains as { prod: { domainName: string } }).prod.domainName;
+  const route53 = execPolicy.Statement.filter((s) => actions(s).some((a) => a.startsWith('route53:')));
+  const byAction = (action: string): Statement[] => route53.filter((s) => actions(s).includes(action));
+
+  test('grant exactly four Route 53 actions', () => {
+    expect(route53.flatMap(actions).sort()).toEqual([
+      'route53:ChangeResourceRecordSets',
+      'route53:GetChange',
+      'route53:GetHostedZone',
+      'route53:ListResourceRecordSets',
+    ]);
+    for (const s of route53) expect(s.Effect).toBe('Allow');
+  });
+
+  test('change records only in the one hosted zone, only the domain name, only A and AAAA', () => {
+    const [change] = byAction('route53:ChangeResourceRecordSets');
+    expect(resources(change)).toEqual([zoneArn]);
+    expect(change.Condition).toEqual({
+      'ForAllValues:StringEquals': {
+        'route53:ChangeResourceRecordSetsNormalizedRecordNames': domain,
+        'route53:ChangeResourceRecordSetsRecordTypes': ['A', 'AAAA'],
+      },
+      // A request without these keys must not match the ForAllValues conditions.
+      Null: {
+        'route53:ChangeResourceRecordSetsNormalizedRecordNames': 'false',
+        'route53:ChangeResourceRecordSetsRecordTypes': 'false',
+      },
+    });
+  });
+
+  test('the record types and the name are the ones that the prod stack creates', () => {
+    const records = Object.values(prod.json.Resources).filter((r) => r.Type === 'AWS::Route53::RecordSet');
+    expect(records.map((r) => r.Properties?.Type).sort()).toEqual(['A', 'AAAA']);
+    for (const r of records) expect(r.Properties?.Name).toBe(`${domain}.`);
+  });
+
+  test('read the zone and its records in the same zone, and a change by ID (AWS has no narrower resource)', () => {
+    // CloudFormation probably reads the zone for a record set, and AWS does not document it.
+    expect(resources(byAction('route53:ListResourceRecordSets')[0])).toEqual([zoneArn]);
+    expect(resources(byAction('route53:GetHostedZone')[0])).toEqual([zoneArn]);
+    expect(actions(byAction('route53:GetHostedZone')[0]).sort()).toEqual(['route53:GetHostedZone', 'route53:ListResourceRecordSets']);
+    expect(resources(byAction('route53:GetChange')[0])).toEqual(['arn:aws:route53:::change/*']);
+  });
+
+  test('never name a zone or use a wildcard zone', () => {
+    const text = readTemplate('cloudformation-execution-role-policy');
+    expect(text).toContain('hostedzone/${HOSTED_ZONE_ID}');
+    expect(text).not.toMatch(/hostedzone\/(\*|Z[A-Z0-9]+)/);
+    expect(text).not.toContain('route53:*');
+  });
+
+  // AWS documents acm:ListCertificates for assigning a certificate in the console. It lists no ACM
+  // action that CreateDistribution or UpdateDistribution needs. Both actions are read-only
+  // guards for the first deploy, not a documented need.
+  test('allow only two read-only ACM actions, as guards for attaching the certificate', () => {
+    const acm = execPolicy.Statement.filter((s) => actions(s).some((a) => a.startsWith('acm:')));
+    expect(acm.flatMap(actions).sort()).toEqual(['acm:DescribeCertificate', 'acm:ListCertificates']);
+    for (const s of acm) expect(s.Effect).toBe('Allow');
+    expect(resources(byAction2(acm, 'acm:ListCertificates'))).toEqual(['*']);
+    expect(resources(byAction2(acm, 'acm:DescribeCertificate'))).toEqual([
+      `arn:aws:acm:us-east-1:${fakeAccount}:certificate/*`,
+    ]);
+  });
+
+  test('keep Route 53 and ACM out of the deploy role and the permissions boundary', () => {
+    for (const name of ['github-deploy-role-policy', 'permissions-boundary-policy']) {
+      expect(readTemplate(name), name).not.toMatch(/route53|acm:/);
     }
   });
 });

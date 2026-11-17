@@ -63,6 +63,9 @@ describe('rendering', () => {
     ['ACCOUNT_ID', '12345'],
     ['ACCOUNT_ID', '12345678901a'],
     ['CLOUDFORMATION_EXECUTION_ROLE_NAME', 'has space'],
+    ['HOSTED_ZONE_ID', 'z0000000000example'],
+    ['HOSTED_ZONE_ID', '/hostedzone/Z0000000000EXAMPLE'],
+    ['HOSTED_ZONE_ID', 'Z1 '],
     ['GITHUB_REPOSITORY_IDENTITY', 'nbdSteve/openbook'],
     ['GITHUB_REPOSITORY_IDENTITY', 'nbdSteve@0/openbook@2'],
     ['GITHUB_REPOSITORY_IDENTITY', 'nbdSteve@01/openbook@2'],
@@ -121,6 +124,10 @@ describe('the command line', () => {
     expect(() => parseArgv(['--nope'])).toThrow('unknown argument');
     expect(() => parseArgv(['--account-id'])).toThrow(/takes a value/);
     expect(() => parseArgv(['--account-id', '1', '--account-id', '2'])).toThrow(/only once/);
+  });
+
+  test('takes the hosted zone ID by flag', () => {
+    expect(parseArgv(['--hosted-zone-id', 'Z0000000000EXAMPLE']).values).toEqual({ HOSTED_ZONE_ID: 'Z0000000000EXAMPLE' });
   });
 
   test('refuses --example with a value of its own', () => {

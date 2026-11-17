@@ -2,13 +2,16 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { Match } from 'aws-cdk-lib/assertions';
 import { describe, expect, test } from 'vitest';
-import { cdkJsonContext, synth, type Json } from './helpers';
+import { resolveConfig } from '../lib/config';
+import { cdkJsonContext, newApp, synth, type Json } from './helpers';
 
 const dev = synth({ stage: 'dev' });
 const prod = synth({ stage: 'prod' });
 
 /** Resource types that cost money while idle (docs/architecture.md, hard rule 1). */
 const baselineCostTypes = [
+  // A hosted zone costs a monthly fee. The stack uses an existing zone, by parameter.
+  /^AWS::Route53::HostedZone$/,
   /^AWS::OpenSearchServerless::/,
   /^AWS::OpenSearchService::Domain$/,
   /^AWS::EC2::NatGateway$/,
@@ -486,36 +489,115 @@ describe('configuration', () => {
 });
 
 describe('custom domain', () => {
-  const ctx = { stage: 'prod', domainName: 'ask.example.test', hostedZoneName: 'example.test', hostedZoneId: 'Z0000000000000000000' };
+  const ctx = { stage: 'prod', domainName: 'ask.example.test', hostedZoneName: 'example.test' };
   const s = synth(ctx);
+  const resources = Object.values(s.json.Resources);
+  const parameters = (s.json as unknown as { Parameters: Record<string, Record<string, unknown>> }).Parameters;
 
-  test('the certificate lives in us-east-1 with DNS validation', () => {
-    expect(s.certStack?.region).toBe('us-east-1');
-    const certTemplate = JSON.stringify(s.app.synth().getStackByName('OpenbookCert-prod').template);
-    expect(certTemplate).toContain('AWS::CertificateManager::Certificate');
-    expect(certTemplate).toContain('ask.example.test');
+  test('the stack is the only stack: no certificate stack, no cross-Region reference', () => {
+    expect(s.app.synth().stacks.map((st) => st.stackName)).toEqual(['Openbook-prod']);
+    expect(JSON.stringify(resources)).not.toMatch(/ImportValue|us-east-1/);
   });
 
-  test('the distribution serves the domain and Route 53 aliases it', () => {
+  test('the certificate ARN and the hosted zone ID are parameters with no default', () => {
+    expect(Object.keys(parameters).filter((k) => !k.startsWith('BootstrapVersion')).sort()).toEqual(['CertificateArn', 'HostedZoneId']);
+    for (const name of ['CertificateArn', 'HostedZoneId']) {
+      expect(parameters[name].Type).toBe('String');
+      expect(parameters[name]).not.toHaveProperty('Default');
+      expect(parameters[name]).toHaveProperty('AllowedPattern');
+    }
+    expect(new RegExp(parameters.CertificateArn.AllowedPattern as string).test('arn:aws:acm:us-east-1:111111111111:certificate/12345678-1234-1234-1234-123456789012')).toBe(true);
+    expect(new RegExp(parameters.CertificateArn.AllowedPattern as string).test('arn:aws:acm:ap-southeast-2:111111111111:certificate/12345678-1234-1234-1234-123456789012')).toBe(false);
+    expect(new RegExp(parameters.HostedZoneId.AllowedPattern as string).test('Z0000000000EXAMPLE')).toBe(true);
+    expect(new RegExp(parameters.HostedZoneId.AllowedPattern as string).test('/hostedzone/Z1')).toBe(false);
+  });
+
+  test('the template holds no certificate ARN and no hosted zone ID', () => {
+    const text = JSON.stringify(resources);
+    expect(text).not.toMatch(/arn:aws:acm/);
+    expect(text).not.toMatch(/"Z[A-Z0-9]{8,}"/);
+    expect(text).not.toContain('Z0000000000EXAMPLE');
+  });
+
+  test('the distribution has the alias, the certificate from the parameter, SNI, and TLS 1.2 (2021)', () => {
     s.template.hasResourceProperties('AWS::CloudFront::Distribution', {
-      DistributionConfig: Match.objectLike({ Aliases: ['ask.example.test'] }),
+      DistributionConfig: Match.objectLike({
+        Aliases: ['ask.example.test'],
+        ViewerCertificate: {
+          AcmCertificateArn: { Ref: 'CertificateArn' },
+          SslSupportMethod: 'sni-only',
+          MinimumProtocolVersion: 'TLSv1.2_2021',
+        },
+      }),
     });
+  });
+
+  test('Route 53 has an A and an AAAA alias record in the zone of the parameter', () => {
     s.template.resourceCountIs('AWS::Route53::RecordSet', 2);
-    s.template.hasResourceProperties('AWS::Route53::RecordSet', { Name: 'ask.example.test.', Type: 'A' });
-    s.template.hasResourceProperties('AWS::Route53::RecordSet', { Name: 'ask.example.test.', Type: 'AAAA' });
+    for (const type of ['A', 'AAAA']) {
+      s.template.hasResourceProperties('AWS::Route53::RecordSet', {
+        Name: 'ask.example.test.',
+        Type: type,
+        HostedZoneId: { Ref: 'HostedZoneId' },
+        AliasTarget: Match.objectLike({ DNSName: Match.anyValue() }),
+      });
+    }
+  });
+
+  test('SiteUrl is the domain', () => {
     const outputs = (s.json as unknown as { Outputs: { SiteUrl: { Value: string } } }).Outputs;
     expect(outputs.SiteUrl.Value).toBe('https://ask.example.test');
   });
 
-  test('the docs bucket CORS allows the custom domain', () => {
-    expect(JSON.stringify(s.json)).toContain('https://ask.example.test');
+  test('the docs bucket CORS allows the domain and the CloudFront domain, nothing else', () => {
+    const docs = resources.find((r) => r.Type === 'AWS::S3::Bucket' && r.Properties?.CorsConfiguration);
+    const origins = (docs?.Properties?.CorsConfiguration as { CorsRules: { AllowedOrigins: unknown[] }[] }).CorsRules[0].AllowedOrigins;
+    expect(origins).toHaveLength(2);
+    expect(origins).toContain('https://ask.example.test');
   });
 
-  test('a partial domain configuration is refused', () => {
+  test('the security headers stay, with HSTS for a year and subdomains', () => {
+    s.template.hasResourceProperties('AWS::CloudFront::ResponseHeadersPolicy', {
+      ResponseHeadersPolicyConfig: Match.objectLike({
+        SecurityHeadersConfig: Match.objectLike({
+          StrictTransportSecurity: { AccessControlMaxAgeSec: 31536000, IncludeSubdomains: true, Override: true, Preload: false },
+          ContentTypeOptions: { Override: true },
+          FrameOptions: { FrameOption: 'DENY', Override: true },
+          ReferrerPolicy: { ReferrerPolicy: 'strict-origin-when-cross-origin', Override: true },
+          ContentSecurityPolicy: Match.objectLike({ Override: true }),
+        }),
+      }),
+    });
+  });
+
+  test('a stage with no domain has no alias, certificate, record, or parameter', () => {
+    for (const stage of [synth({ stage: 'dev' }), synth({ stage: 'prod', stageDomains: {} })]) {
+      const text = JSON.stringify(stage.json);
+      expect(text).not.toContain('"Aliases"');
+      expect(text).not.toContain('ViewerCertificate');
+      expect(text).not.toContain('AWS::Route53::RecordSet');
+      expect(text).not.toContain('CertificateArn');
+      expect(text).not.toContain('HostedZoneId');
+      expect(Object.keys((stage.json as unknown as { Parameters?: object }).Parameters ?? {})).toEqual([]);
+    }
+  });
+
+  test('prod has the domain of cdk.json, and dev has none', () => {
+    expect(resolveConfig(newApp({ ...cdkJsonContext, stage: 'prod' }).node).domain).toEqual({
+      domainName: 'ask.steve.gg',
+      hostedZoneName: 'steve.gg',
+    });
+    expect(resolveConfig(newApp({ ...cdkJsonContext, stage: 'dev' }).node).domain).toBeUndefined();
+  });
+
+  test('half a domain is refused, in either direction and in cdk.json', () => {
     expect(() => synth({ domainName: 'ask.example.test' })).toThrow(/together/);
+    expect(() => synth({ hostedZoneName: 'example.test' })).toThrow(/together/);
+    expect(() => synth({ stage: 'prod', stageDomains: { prod: { domainName: 'ask.example.test' } } })).toThrow(/together/);
   });
 
-  test('a domain outside the hosted zone is refused', () => {
+  test('a domain outside the hosted zone, or a badly spelled one, is refused', () => {
     expect(() => synth({ ...ctx, domainName: 'ask.other.test' })).toThrow(/subdomain/);
+    expect(() => synth({ ...ctx, domainName: 'Ask.example.test' })).toThrow(/lower case DNS name/);
   });
 });

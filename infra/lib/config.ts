@@ -22,10 +22,13 @@ export interface Limits {
   transcribedPagesGlobal: number;
 }
 
+/**
+ * A custom domain. Both names are public and static. The certificate ARN and the hosted zone ID
+ * are CloudFormation parameters that the deployment supplies, so the template has no resource ID.
+ */
 export interface DomainConfig {
   domainName: string;
   hostedZoneName: string;
-  hostedZoneId: string;
 }
 
 export interface OpenbookConfig {
@@ -77,6 +80,38 @@ function limit(node: Node, stage: Stage, key: string, fallback: number): number 
   return n;
 }
 
+const dnsName = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
+
+/**
+ * The domain comes from the context keys `domainName` and `hostedZoneName`, or else from
+ * `stageDomains.<stage>` in cdk.json. A stage with no domain has none. Half a domain is an error.
+ */
+function resolveDomain(node: Node, stage: Stage): DomainConfig | undefined {
+  const stageDomains = node.tryGetContext('stageDomains') as Record<string, Record<string, unknown>> | undefined;
+  const fromStage = stageDomains?.[stage];
+  const pick = (key: string): string | undefined => {
+    const direct = str(node, key);
+    if (direct !== undefined) return direct;
+    const value = fromStage?.[key];
+    if (value === undefined || value === null || value === '') return undefined;
+    if (typeof value !== 'string') throw new Error(`context stageDomains.${stage}.${key} must be a string`);
+    return value;
+  };
+  const domainName = pick('domainName');
+  const hostedZoneName = pick('hostedZoneName');
+  if (domainName === undefined && hostedZoneName === undefined) return undefined;
+  if (domainName === undefined || hostedZoneName === undefined) {
+    throw new Error('a custom domain needs the context keys domainName and hostedZoneName together');
+  }
+  for (const [key, value] of [['domainName', domainName], ['hostedZoneName', hostedZoneName]]) {
+    if (!dnsName.test(value)) throw new Error(`context ${key} must be a lower case DNS name`);
+  }
+  if (domainName !== hostedZoneName && !domainName.endsWith(`.${hostedZoneName}`)) {
+    throw new Error('domainName must be the hosted zone name or a subdomain of it');
+  }
+  return { domainName, hostedZoneName };
+}
+
 export function resolveConfig(node: Node): OpenbookConfig {
   const stage = str(node, 'stage') ?? 'dev';
   if (stage !== 'dev' && stage !== 'prod') {
@@ -95,19 +130,7 @@ export function resolveConfig(node: Node): OpenbookConfig {
   assertTranscribeModel(catalog, transcribeModel);
   const embeddingModelId = assertEmbeddingModel(str(node, 'embeddingModelId') ?? defaultEmbeddingModelId);
 
-  const domainName = str(node, 'domainName');
-  const hostedZoneName = str(node, 'hostedZoneName');
-  const hostedZoneId = str(node, 'hostedZoneId');
-  let domain: DomainConfig | undefined;
-  if (domainName || hostedZoneName || hostedZoneId) {
-    if (!domainName || !hostedZoneName || !hostedZoneId) {
-      throw new Error('a custom domain needs the context keys domainName, hostedZoneName, and hostedZoneId together');
-    }
-    if (domainName !== hostedZoneName && !domainName.endsWith(`.${hostedZoneName}`)) {
-      throw new Error('domainName must be the hosted zone name or a subdomain of it');
-    }
-    domain = { domainName, hostedZoneName, hostedZoneId };
-  }
+  const domain = resolveDomain(node, stage);
 
   return {
     stage,

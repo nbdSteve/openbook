@@ -89,6 +89,8 @@ Docs bucket (private, SSE-S3, TLS only, CORS allows `PUT` from the site origin):
 
 Web bucket (private, read by CloudFront OAC): the built `apps/ask/dist` plus `config.json`.
 
+The prod site is served at the custom domain `ask.steve.gg` (`infra/cdk.json`, `stageDomains`). The ACM certificate (`us-east-1`) and the Route 53 hosted zone ID are parameters of the `Openbook-prod` stack that the deploy supplies, so the template holds no resource ID. Dev has no domain. See `infra/README.md`.
+
 ## API configuration
 
 The API reads only environment variables. Names and defaults:
