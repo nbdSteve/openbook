@@ -1,8 +1,7 @@
 import { useRef, type KeyboardEvent } from 'react';
-import { Navigate, useSearchParams } from 'react-router';
+import { useSearchParams } from 'react-router';
 import { clsx } from 'clsx';
 import { BarChart3, FileText, KeyRound, Settings, Users } from 'lucide-react';
-import { useCourse } from './CourseContext';
 import { DocumentsTab } from './manage/DocumentsTab';
 import { InsightsTab } from './manage/InsightsTab';
 import { InviteTab } from './manage/InviteTab';
@@ -20,11 +19,8 @@ const TABS = [
 type TabId = (typeof TABS)[number]['id'];
 
 export function ManagePage() {
-  const { course } = useCourse();
   const [params, setParams] = useSearchParams();
   const list = useRef<HTMLDivElement>(null);
-
-  if (course.role !== 'owner') return <Navigate to={`/app/c/${course.id}`} replace />;
 
   const requested = params.get('tab');
   const active: TabId = TABS.some((t) => t.id === requested) ? (requested as TabId) : 'documents';
@@ -47,10 +43,9 @@ export function ManagePage() {
   };
 
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-3xl px-4 py-6 sm:px-6">
-        <h2 className="text-xl font-bold text-text-primary">Manage course</h2>
-        <div className="mt-4">
+    <div>
+      <div>
+        <div className="mt-5">
           <div ref={list} role="tablist" aria-label="Manage course" onKeyDown={onKeyDown} className="grid grid-cols-5 gap-0.5 border-b border-border sm:flex sm:gap-1">
             {TABS.map(({ id, label, icon: Icon }) => {
               const selected = id === active;

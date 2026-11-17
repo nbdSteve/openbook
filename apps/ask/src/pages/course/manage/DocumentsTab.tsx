@@ -324,7 +324,7 @@ export function DocumentsTab() {
         {docs.data && docs.data.length > 0 && (
           <ul className="space-y-2">
             {docs.data.map((doc) => (
-              <li key={doc.id} className={clsx('rounded-xl border border-border bg-surface p-3 sm:p-4', doc.status === 'deleting' && 'opacity-70')}>
+              <li key={doc.id} className={clsx('rounded-xl border border-border bg-surface p-3 sm:p-4', doc.status === 'deleting' && 'border-dashed bg-bg-secondary')}>
                 <div className="flex items-start gap-3">
                   <FileText className="mt-0.5 h-5 w-5 shrink-0 text-text-muted" aria-hidden="true" />
                   <div className="min-w-0 flex-1">

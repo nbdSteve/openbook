@@ -21,7 +21,7 @@ export function JoinCourseDialog({ open, onClose }: { open: boolean; onClose: ()
     setBusy(true);
     try {
       const course = await joinCourse(normalizeInviteCode(code));
-      navigate(`/app/c/${course.id}`);
+      navigate(`/ask/courses/${course.id}`);
     } catch (err) {
       setError(
         err instanceof ApiError && err.code === 'not_found'

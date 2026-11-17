@@ -200,3 +200,47 @@ export const CHAT_STREAM = [
   'event: delta\ndata: {"text":"ATP is the cell\'s energy currency."}\n\n',
   'event: done\ndata: {"usage":{"inputTokens":10,"outputTokens":8},"stopReason":"end_turn"}\n\n',
 ].join('');
+
+// The public demo on the landing page (POST /api/demo/chat). The shapes follow the demo contract.
+
+export const DEMO_CONFIG = {
+  enabled: true,
+  model: { label: 'Claude Sonnet 4.6' },
+  sources: [
+    { title: 'College Algebra', license: 'CC BY 4.0', url: 'https://openstax.org/details/books/college-algebra' },
+    { title: 'American Government 2e', license: 'CC BY 4.0', url: 'https://openstax.org/details/books/american-government-2e' },
+  ],
+  examples: ['Factor x² − 5x + 6', 'Who can veto a bill?', 'What is a function?'],
+};
+
+const sse = (event: string, data: unknown) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+const DEMO_META = { conversationId: 'DEMO000000000000000000001', userMessageId: 'u', assistantMessageId: 'a', title: 'Factor', model: 'claude-sonnet-4-6' };
+const DEMO_DONE = { usage: { inputTokens: 10, outputTokens: 10 }, stopReason: 'end_turn' };
+
+/** Eight passages were found. The answer cites two of them. */
+export const DEMO_SOURCES = [
+  { n: 1, documentId: 'd1', documentName: 'College Algebra', page: 184, snippet: 'To factor a trinomial of the form x² + bx + c, find two numbers whose product is c and whose sum is b.' },
+  { n: 2, documentId: 'd1', documentName: 'College Algebra', page: 185, snippet: 'The zero-product property: if a · b = 0, then a = 0 or b = 0.' },
+  ...[3, 4, 5, 6, 7, 8].map((n) => ({ n, documentId: 'd1', documentName: 'College Algebra', page: 190 + n, snippet: `Passage ${n} of the book.` })),
+];
+
+export const DEMO_ANSWER_STREAM =
+  sse('meta', DEMO_META) +
+  sse('sources', { sources: DEMO_SOURCES }) +
+  [
+    'To factor $x^2 - 5x + 6$, look for two numbers that multiply to $6$ and add to $-5$ [1].',
+    '\n\nThey are $-2$ and $-3$, so $x^2 - 5x + 6 = (x-2)(x-3)$. Setting each factor to zero gives the roots [2].',
+    '\n\n$$x = 2 \\quad \\text{or} \\quad x = 3$$',
+    '\n\nWhich root would you like to check first?',
+  ]
+    .map((text) => sse('delta', { text }))
+    .join('') +
+  sse('done', DEMO_DONE);
+
+/** A question that the books do not cover: the answer has no sources event. */
+export const DEMO_NOT_COVERED_STREAM =
+  sse('meta', DEMO_META) +
+  sse('delta', { text: 'The books I can read do not seem to cover that question. Ask me about algebra or American government.' }) +
+  sse('done', DEMO_DONE);
+
+export const DEMO_ERROR_STREAM = sse('meta', DEMO_META) + sse('delta', { text: 'To factor' }) + sse('error', { code: 'model_unavailable', message: 'The model is busy.' });

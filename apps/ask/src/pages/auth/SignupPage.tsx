@@ -27,7 +27,7 @@ export function SignupPage() {
     setBusy(true);
     try {
       const { confirmed } = await signUp(email, password);
-      navigate(authPath(confirmed ? '/login' : '/verify', { next, notice: confirmed ? 'verified' : undefined }), {
+      navigate(authPath(confirmed ? '/signin' : '/verify', { next, notice: confirmed ? 'verified' : undefined }), {
         replace: true,
         state: emailState(email),
       });
@@ -44,7 +44,7 @@ export function SignupPage() {
       footer={
         <>
           Already have an account?{' '}
-          <Link className="font-medium text-accent underline" to={authPath('/login', { next })}>
+          <Link className="font-medium text-accent underline" to={authPath('/signin', { next })}>
             Sign in
           </Link>
         </>

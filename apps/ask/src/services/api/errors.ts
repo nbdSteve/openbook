@@ -14,7 +14,7 @@ export function describeApiError(error: unknown, limits?: Limits): string {
         ? `You used all ${limits.dailyMessages} messages for today. Your messages reset at midnight UTC.`
         : 'You used all of your messages for today. Your messages reset at midnight UTC.';
     case 'capacity_exhausted':
-      return 'Ask has reached its daily limit for all users. Try again tomorrow.';
+      return 'Openbook has reached its daily limit for all users. Try again tomorrow.';
     case 'model_unavailable':
       return 'The tutor is busy or unavailable right now. Wait a moment and try again.';
     case 'limit_reached':

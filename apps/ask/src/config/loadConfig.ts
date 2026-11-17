@@ -1,17 +1,16 @@
-/** A credit line of the public demo. */
 export interface DemoSource {
   title: string;
   license: string;
   url: string;
 }
 
-/** The public demo (docs/api.md, "Demo"). `enabled` false means the landing page hides it. */
+/** The public demo on the landing page. Missing or `enabled: false` means the page shows a static example. */
 export interface DemoConfig {
   enabled: boolean;
-  /** The model that answers the demo, for the label in the UI. */
-  model: { label: string };
   sources: DemoSource[];
   examples: string[];
+  /** The model that answers demo questions. */
+  model?: { label: string };
 }
 
 export interface AppConfig {
@@ -23,7 +22,7 @@ export interface AppConfig {
     /** `null` for deployed stages. Locally it points at the Vite proxy for AWS Emulator. */
     endpoint: string | null;
   };
-  demo: DemoConfig;
+  demo?: DemoConfig;
 }
 
 export class ConfigError extends Error {
@@ -37,23 +36,24 @@ function isString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
 }
 
-/** The `demo` part is optional: an older file has none, and then the demo is off. */
-function parseDemo(value: unknown): DemoConfig {
-  const off: DemoConfig = { enabled: false, model: { label: '' }, sources: [], examples: [] };
-  if (!value || typeof value !== 'object') return off;
-  const d = value as Partial<Record<keyof DemoConfig, unknown>>;
-  if (d.enabled !== true) return off;
-  const sources = Array.isArray(d.sources)
-    ? d.sources.flatMap((s: unknown) => {
-        const x = s as Partial<DemoSource> | null;
-        return x && isString(x.title) && isString(x.license) && isString(x.url)
-          ? [{ title: x.title, license: x.license, url: x.url }]
-          : [];
+/**
+ * Read the optional demo block. A bad or partial block never stops the app: the demo is then off
+ * and the landing page shows its static example.
+ */
+export function parseDemo(value: unknown): DemoConfig | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const v = value as Record<string, unknown>;
+  if (v.enabled !== true) return undefined;
+  const sources = Array.isArray(v.sources)
+    ? v.sources.flatMap((item): DemoSource[] => {
+        const s = item as Partial<DemoSource> | null;
+        // CC BY needs the title, the licence, and the source link, so an entry without all three is dropped.
+        return s && isString(s.title) && isString(s.license) && isString(s.url) ? [{ title: s.title, license: s.license, url: s.url }] : [];
       })
     : [];
-  const examples = Array.isArray(d.examples) ? d.examples.filter(isString) : [];
-  const model = d.model as { label?: unknown } | null | undefined;
-  return { enabled: true, model: { label: isString(model?.label) ? model.label : '' }, sources, examples };
+  const examples = Array.isArray(v.examples) ? v.examples.filter((e): e is string => isString(e)) : [];
+  const model = v.model as { label?: unknown } | null | undefined;
+  return { enabled: true, sources, examples, ...(model && isString(model.label) ? { model: { label: model.label } } : {}) };
 }
 
 /** Check that a parsed JSON value has the shape in docs/api.md. */
@@ -69,11 +69,12 @@ export function parseConfig(value: unknown): AppConfig {
   if (c.endpoint !== null && c.endpoint !== undefined && !isString(c.endpoint)) {
     throw new ConfigError('The Cognito endpoint must be a string or null.');
   }
+  const demo = parseDemo((value as { demo?: unknown }).demo);
   return {
     stage: v.stage,
     region: v.region,
     cognito: { userPoolId: c.userPoolId, clientId: c.clientId, endpoint: c.endpoint ?? null },
-    demo: parseDemo((v as { demo?: unknown }).demo),
+    ...(demo ? { demo } : {}),
   };
 }
 

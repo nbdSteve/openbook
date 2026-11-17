@@ -10,6 +10,7 @@ import { CourseSidebar } from '@/components/layout/CourseSidebar';
 import { NotFoundScreen } from '@/components/layout/NotFoundScreen';
 import { useChatController } from '@/components/chat/useChatController';
 import { styleName } from '@/lib/constants';
+import { useDocumentTitle } from '@/lib/useDocumentTitle';
 import { useMediaQuery } from '@/lib/useMediaQuery';
 import { useResource } from '@/lib/useResource';
 import { ApiError } from '@/services/api/client';
@@ -18,7 +19,7 @@ import { deleteConversation, getCourse, listConversations, removeMember } from '
 import type { Conversation, Course } from '@/services/api/types';
 import { useAuth } from '@/services/auth/AuthContext';
 import { useMe } from '@/services/me/MeContext';
-import type { CourseContextValue } from './CourseContext';
+import type { ChatCourseContextValue } from './CourseContext';
 
 /**
  * Wraps the chat and manage screens of one course. It owns the course, the conversation list, and
@@ -35,7 +36,7 @@ export function CourseLayout() {
         <NotFoundScreen
           title="Course not found"
           message="This course does not exist, or you are not a member of it. Check the link, or ask the teacher for a new invite code."
-          actionTo="/app"
+          actionTo="/ask"
           actionLabel="Go to my courses"
         />
       );
@@ -66,6 +67,7 @@ interface CourseShellProps {
 }
 
 function CourseShell({ course, setCourse, conversationId }: CourseShellProps) {
+  useDocumentTitle(course.name);
   const navigate = useNavigate();
   const location = useLocation();
   const { user, signOut } = useAuth();
@@ -96,7 +98,7 @@ function CourseShell({ course, setCourse, conversationId }: CourseShellProps) {
   }, [sidebarOpen]);
 
   const onConversationCreated = useCallback(
-    (id: string) => navigate(`/app/c/${course.id}/chat/${id}`, { replace: true }),
+    (id: string) => navigate(`/ask/courses/${course.id}/c/${id}`, { replace: true }),
     [navigate, course.id],
   );
   const onActivity = useCallback(() => {
@@ -114,14 +116,14 @@ function CourseShell({ course, setCourse, conversationId }: CourseShellProps) {
   });
 
   const list = conversations.data;
-  const context: CourseContextValue = { course, setCourse, chat };
+  const context: ChatCourseContextValue = { course, setCourse, chat };
 
   const confirmDelete = async () => {
     if (!toDelete) return;
     setBusy(true);
     try {
       await deleteConversation(toDelete.id);
-      if (toDelete.id === conversationId) navigate(`/app/c/${course.id}`, { replace: true });
+      if (toDelete.id === conversationId) navigate(`/ask/courses/${course.id}`, { replace: true });
       reloadConversations();
       setToDelete(null);
     } catch (error) {
@@ -136,7 +138,7 @@ function CourseShell({ course, setCourse, conversationId }: CourseShellProps) {
     try {
       await removeMember(course.id, me.user.id);
       toast.success(`You left ${course.name}`);
-      navigate('/app', { replace: true });
+      navigate('/ask', { replace: true });
     } catch (error) {
       toast.error(describeApiError(error));
       setBusy(false);
@@ -173,7 +175,7 @@ function CourseShell({ course, setCourse, conversationId }: CourseShellProps) {
           >
             <Menu className="h-5 w-5" aria-hidden="true" />
           </button>
-          <h1 className="min-w-0 flex-1 truncate text-base font-semibold text-text-primary">{course.name}</h1>
+          <h1 className="min-w-0 flex-1 truncate font-serif text-xl font-semibold text-text-primary">{course.name}</h1>
           <Badge tone="accent" className="shrink-0">
             <span className="sr-only">Tutoring style: </span>
             {styleName(course.tutoringStyle)}

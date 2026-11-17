@@ -43,7 +43,7 @@ export function ForgotPage() {
     setBusy(true);
     try {
       await confirmNewPassword(email, code, password);
-      navigate(authPath('/login', { next, notice: 'reset' }), { replace: true, state: emailState(email) });
+      navigate(authPath('/signin', { next, notice: 'reset' }), { replace: true, state: emailState(email) });
     } catch (err) {
       setError(describeAuthError(err));
       setBusy(false);
@@ -55,7 +55,7 @@ export function ForgotPage() {
       title="Reset your password"
       subtitle={step === 'request' ? 'Enter your email. We send you a code to set a new password.' : `We sent a code to ${email.trim()}.`}
       footer={
-        <Link className="font-medium text-accent underline" to={authPath('/login', { next })} state={emailState(email)}>
+        <Link className="font-medium text-accent underline" to={authPath('/signin', { next })} state={emailState(email)}>
           Back to sign in
         </Link>
       }

@@ -4,7 +4,7 @@ import { COURSE_ID, CONVERSATIONS, OWNER_COURSE, STUDENT_COURSE_ID } from './dat
 import { expectNoHorizontalOverflow, expectNoSeriousA11yViolations, prepare, type MockOptions, scrollThrough, VIEWPORTS, type Theme } from './fixtures';
 
 // Screenshots go to an ignored folder. Read them to check the screens by eye.
-const OUT = path.join(import.meta.dirname, '..', '.screenshots');
+const OUT = process.env.OPENBOOK_SCREENSHOT_DIR ?? path.join(import.meta.dirname, '..', '.screenshots');
 
 interface Screen {
   name: string;
@@ -23,25 +23,150 @@ interface Screen {
 const heading = (name: string | RegExp, level = 1) => (page: Page) =>
   expect(page.getByRole('heading', { name, level })).toBeVisible();
 
+const ask = async (page: Page, chip = 'Factor x² − 5x + 6') => {
+  await expect(page.getByTestId('demo-thread').locator('.katex').first()).toBeVisible();
+  await page.getByRole('button', { name: chip }).click();
+};
+
+/** The demo on the landing page, in each of its states. */
+const DEMO_SCREENS: Screen[] = [
+  {
+    name: 'landing-demo-answered',
+    url: '/',
+    signedIn: false,
+    ready: heading(/answers from it/i),
+    act: async (page) => {
+      await ask(page);
+      const thread = page.getByTestId('demo-thread');
+      // Two of eight passages are cited: two listed, six behind the disclosure.
+      await expect(thread.getByRole('list', { name: 'Sources for this answer' }).getByRole('listitem')).toHaveCount(2);
+      await expect(thread.getByRole('button', { name: '6 more passages found' })).toHaveAttribute('aria-expanded', 'false');
+      await expect(thread.getByText('Which root would you like to check first?')).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Start over' })).toBeVisible();
+      await expect(page.getByLabel('Your question')).toHaveAttribute('placeholder', 'Ask a follow-up');
+    },
+    fullPage: true,
+  },
+  {
+    name: 'landing-demo-start-over',
+    url: '/',
+    signedIn: false,
+    ready: heading(/answers from it/i),
+    act: async (page) => {
+      await ask(page);
+      await expect(page.getByTestId('demo-thread').getByText('Which root would you like to check first?')).toBeVisible();
+      await page.getByRole('button', { name: 'Start over' }).click();
+      // The example comes back, and the focus is in the box, so the visitor can type at once.
+      await expect(page.getByLabel('Your question')).toBeFocused();
+      await expect(page.getByTestId('demo-thread').locator('.katex').first()).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Start over' })).toHaveCount(0);
+    },
+  },
+  {
+    name: 'landing-demo-streaming',
+    url: '/',
+    signedIn: false,
+    mock: { demoMode: 'slow' },
+    ready: heading(/answers from it/i),
+    act: async (page) => {
+      await ask(page);
+      await expect(page.getByRole('button', { name: 'Stop answer' })).toBeVisible();
+      await expect(page.getByText('The tutor is thinking')).toBeAttached();
+    },
+  },
+  {
+    name: 'landing-demo-not-covered',
+    url: '/',
+    signedIn: false,
+    mock: { demoMode: 'not_covered' },
+    ready: heading(/answers from it/i),
+    act: async (page) => {
+      await ask(page, 'Who can veto a bill?');
+      await expect(page.getByText('do not seem to cover that question')).toBeVisible();
+      await expect(page.getByTestId('demo-thread').getByTestId('sources')).toHaveCount(0);
+    },
+  },
+  ...(
+    [
+      ['rate-limited', 'rate_limited', /Try again in 42 seconds/],
+      ['busy', 'busy', /helped enough people for today/],
+      ['unavailable', 'unavailable', /resting/],
+      ['invalid', 'invalid', /1 to 300 characters/],
+    ] as const
+  ).map(
+    ([name, demoMode, text]): Screen => ({
+      name: `landing-demo-${name}`,
+      url: '/',
+      signedIn: false,
+      mock: { demoMode },
+      ready: heading(/answers from it/i),
+      act: async (page) => {
+        await ask(page);
+        await expect(page.getByTestId('demo-problem')).toContainText(text);
+        // The example answer stays, and the visitor can try again.
+        await expect(page.getByTestId('demo-thread').locator('.katex').first()).toBeVisible();
+      },
+    }),
+  ),
+  {
+    name: 'landing-demo-error',
+    url: '/',
+    signedIn: false,
+    mock: { demoMode: 'stream_error' },
+    ready: heading(/answers from it/i),
+    act: async (page) => {
+      await ask(page);
+      await expect(page.getByRole('alert')).toContainText('The model is busy.');
+    },
+  },
+];
+
 const SCREENS: Screen[] = [
-  { name: 'landing', url: '/', signedIn: false, ready: heading(/answers from your course materials/i), fullPage: true },
-  { name: 'login', url: '/login', signedIn: false, ready: heading('Sign in'), fullPage: true },
+  {
+    name: 'landing',
+    url: '/',
+    signedIn: false,
+    // The fixed example shows until a visitor asks. Its answer needs the lazy renderer.
+    ready: async (page) => {
+      await heading(/answers from it/i)(page);
+      await expect(page.getByTestId('demo-thread').locator('.katex').first()).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Source 1' })).toBeVisible();
+    },
+    fullPage: true,
+  },
+  {
+    name: 'landing-demo-off',
+    url: '/',
+    signedIn: false,
+    mock: { demo: 'off' },
+    ready: heading(/answers from it/i),
+    act: async (page) => {
+      await expect(page.getByTestId('demo-thread').locator('.katex').first()).toBeVisible();
+      await expect(page.getByRole('textbox')).toHaveCount(0);
+      await expect(page.getByRole('link', { name: 'Ask your own books' })).toBeVisible();
+    },
+    fullPage: true,
+  },
+  ...DEMO_SCREENS,
+  { name: 'signin', url: '/signin', signedIn: false, ready: heading('Sign in'), fullPage: true },
   { name: 'signup', url: '/signup', signedIn: false, ready: heading('Create your account'), fullPage: true },
   { name: 'verify', url: '/verify?email=new%40openbook.test', signedIn: false, ready: heading('Confirm your email'), fullPage: true },
   { name: 'forgot', url: '/forgot', signedIn: false, ready: heading('Reset your password'), fullPage: true },
   { name: 'not-found', url: '/nowhere', signedIn: false, ready: heading('Page not found'), fullPage: true },
-  { name: 'home', url: '/app', signedIn: true, ready: heading('Your courses'), fullPage: true },
+  { name: 'portal-home', url: '/portal', signedIn: true, ready: heading('Courses you manage'), fullPage: true },
+  { name: 'portal-empty', url: '/portal', signedIn: true, ready: heading('You have no courses yet', 2), fullPage: true, mock: { courses: [] } },
+  { name: 'home', url: '/ask', signedIn: true, ready: heading('Your courses'), fullPage: true },
   { name: 'join', url: '/join/K7MQ-4XW2', signedIn: true, ready: async (page) => {
       await heading('Join this course?')(page);
       await expect(page.getByText('and the questions you ask in this course')).toBeVisible();
     },
     fullPage: true },
-  { name: 'home-empty', url: '/app', signedIn: true, ready: heading('You have no courses yet', 2), fullPage: true, mock: { courses: [] } },
+  { name: 'home-empty', url: '/ask', signedIn: true, ready: heading('You have no courses yet', 2), fullPage: true, mock: { courses: [] } },
   {
     name: 'home-personal-dialog',
-    url: '/app',
+    url: '/portal',
     signedIn: true,
-    ready: heading('Your courses'),
+    ready: heading('Courses you manage'),
     act: async (page) => {
       await page.getByRole('button', { name: 'Study on your own' }).click();
       await expect(page.getByLabel('Course name')).toHaveValue('My study course');
@@ -49,9 +174,9 @@ const SCREENS: Screen[] = [
   },
   {
     name: 'personal-first-run',
-    url: '/app',
+    url: '/portal',
     signedIn: true,
-    ready: heading('Your courses'),
+    ready: heading('Courses you manage'),
     mock: {
       override: (path, method) => {
         if (method === 'POST' && path === '/api/courses') return { status: 201, body: { course: OWNER_COURSE } };
@@ -67,9 +192,9 @@ const SCREENS: Screen[] = [
   },
   {
     name: 'home-create-dialog',
-    url: '/app',
+    url: '/portal',
     signedIn: true,
-    ready: heading('Your courses'),
+    ready: heading('Courses you manage'),
     act: async (page) => {
       await page.getByRole('button', { name: 'Create a course for a class' }).first().click();
       await expect(page.getByRole('dialog')).toBeVisible();
@@ -77,7 +202,7 @@ const SCREENS: Screen[] = [
   },
   {
     name: 'chat-empty',
-    url: `/app/c/${COURSE_ID}`,
+    url: `/ask/courses/${COURSE_ID}`,
     signedIn: true,
     // Owners do not see the student note.
     ready: async (page) => {
@@ -88,7 +213,7 @@ const SCREENS: Screen[] = [
   },
   {
     name: 'chat-conversation',
-    url: `/app/c/${COURSE_ID}/chat/${CONVERSATIONS[0].id}`,
+    url: `/ask/courses/${COURSE_ID}/c/${CONVERSATIONS[0].id}`,
     signedIn: true,
     ready: async (page) => {
       await expect(page.locator('.katex').first()).toBeVisible();
@@ -97,7 +222,7 @@ const SCREENS: Screen[] = [
   },
   {
     name: 'chat-citation-popover',
-    url: `/app/c/${COURSE_ID}/chat/${CONVERSATIONS[0].id}`,
+    url: `/ask/courses/${COURSE_ID}/c/${CONVERSATIONS[0].id}`,
     signedIn: true,
     ready: async (page) => {
       await expect(page.getByRole('button', { name: /Source 1/ }).first()).toBeVisible();
@@ -109,7 +234,7 @@ const SCREENS: Screen[] = [
   },
   {
     name: 'chat-sources-many',
-    url: `/app/c/${COURSE_ID}/chat/${CONVERSATIONS[1].id}`,
+    url: `/ask/courses/${COURSE_ID}/c/${CONVERSATIONS[1].id}`,
     signedIn: true,
     ready: async (page) => {
       await expect(page.getByRole('list', { name: 'Sources for this answer' })).toBeVisible();
@@ -139,7 +264,7 @@ const SCREENS: Screen[] = [
   },
   {
     name: 'chat-sources-plain-text',
-    url: `/app/c/${COURSE_ID}/chat/${CONVERSATIONS[1].id}`,
+    url: `/ask/courses/${COURSE_ID}/c/${CONVERSATIONS[1].id}`,
     signedIn: true,
     ready: async (page) => {
       await expect(page.getByRole('list', { name: 'Sources for this answer' })).toBeVisible();
@@ -153,7 +278,7 @@ const SCREENS: Screen[] = [
   },
   {
     name: 'chat-sources-two-of-eight',
-    url: `/app/c/${COURSE_ID}/chat/TWOOFEIGHT`,
+    url: `/ask/courses/${COURSE_ID}/c/TWOOFEIGHT`,
     signedIn: true,
     ready: async (page) => {
       // Eight passages were retrieved. Two are cited, so two are listed and the rest are hidden.
@@ -165,7 +290,7 @@ const SCREENS: Screen[] = [
   },
   {
     name: 'chat-sources-two-of-eight-open',
-    url: `/app/c/${COURSE_ID}/chat/TWOOFEIGHT`,
+    url: `/ask/courses/${COURSE_ID}/c/TWOOFEIGHT`,
     signedIn: true,
     ready: async (page) => {
       await expect(page.getByRole('list', { name: 'Sources for this answer' })).toBeVisible();
@@ -177,7 +302,7 @@ const SCREENS: Screen[] = [
   },
   {
     name: 'chat-sources-disclosure-focus',
-    url: `/app/c/${COURSE_ID}/chat/TWOOFEIGHT`,
+    url: `/ask/courses/${COURSE_ID}/c/TWOOFEIGHT`,
     signedIn: true,
     ready: async (page) => {
       await expect(page.getByRole('list', { name: 'Sources for this answer' })).toBeVisible();
@@ -196,7 +321,7 @@ const SCREENS: Screen[] = [
   },
   {
     name: 'chat-sources-none-used',
-    url: `/app/c/${COURSE_ID}/chat/NONECITED`,
+    url: `/ask/courses/${COURSE_ID}/c/NONECITED`,
     signedIn: true,
     ready: async (page) => {
       await expect(page.getByText('do not seem to cover that question')).toBeVisible();
@@ -206,7 +331,7 @@ const SCREENS: Screen[] = [
   },
   {
     name: 'chat-sources-none-used-open',
-    url: `/app/c/${COURSE_ID}/chat/NONECITED`,
+    url: `/ask/courses/${COURSE_ID}/c/NONECITED`,
     signedIn: true,
     ready: async (page) => {
       await expect(page.getByRole('button', { name: '8 passages found, none cited' })).toBeVisible();
@@ -218,7 +343,7 @@ const SCREENS: Screen[] = [
   },
   {
     name: 'chat-source-one',
-    url: `/app/c/${COURSE_ID}/chat/${CONVERSATIONS[2].id}`,
+    url: `/ask/courses/${COURSE_ID}/c/${CONVERSATIONS[2].id}`,
     signedIn: true,
     ready: async (page) => {
       await expect(page.getByRole('list', { name: 'Sources for this answer' }).getByRole('listitem')).toHaveCount(1);
@@ -226,7 +351,7 @@ const SCREENS: Screen[] = [
   },
   {
     name: 'chat-no-sources',
-    url: `/app/c/${COURSE_ID}/chat/NOSOURCES`,
+    url: `/ask/courses/${COURSE_ID}/c/NOSOURCES`,
     signedIn: true,
     ready: async (page) => {
       await expect(page.getByText('do not seem to cover that question')).toBeVisible();
@@ -235,7 +360,7 @@ const SCREENS: Screen[] = [
   },
   {
     name: 'chat-global-model',
-    url: `/app/c/${COURSE_ID}/chat/${CONVERSATIONS[0].id}`,
+    url: `/ask/courses/${COURSE_ID}/c/${CONVERSATIONS[0].id}`,
     signedIn: true,
     ready: async (page) => {
       await expect(page.getByLabel('Model for your next message')).toBeVisible();
@@ -247,7 +372,7 @@ const SCREENS: Screen[] = [
   },
   {
     name: 'chat-quota-error',
-    url: `/app/c/${COURSE_ID}`,
+    url: `/ask/courses/${COURSE_ID}`,
     signedIn: true,
     ready: heading('What would you like to learn?', 2),
     mock: {
@@ -264,7 +389,7 @@ const SCREENS: Screen[] = [
   },
   {
     name: 'chat-student',
-    url: `/app/c/${STUDENT_COURSE_ID}`,
+    url: `/ask/courses/${STUDENT_COURSE_ID}`,
     signedIn: true,
     // Students are told that their teacher can see their questions.
     ready: async (page) => {
@@ -276,7 +401,7 @@ const SCREENS: Screen[] = [
   },
   {
     name: 'chat-sidebar-open',
-    url: `/app/c/${COURSE_ID}`,
+    url: `/ask/courses/${COURSE_ID}`,
     signedIn: true,
     mobileOnly: true,
     ready: heading('What would you like to learn?', 2),
@@ -287,26 +412,31 @@ const SCREENS: Screen[] = [
   },
   {
     name: 'course-not-found',
-    url: `/app/c/01JZZZZZZZZZZZZZZZZZZZZZZZ`,
+    url: `/ask/courses/01JZZZZZZZZZZZZZZZZZZZZZZZ`,
     signedIn: true,
     ready: heading('Course not found'),
     fullPage: true,
   },
-  { name: 'manage-documents', url: `/app/c/${COURSE_ID}/manage?tab=documents`, signedIn: true, ready: async (p) => {
+  { name: 'manage-documents', url: `/portal/courses/${COURSE_ID}?tab=documents`, signedIn: true, ready: async (p) => {
       await expect(p.getByText('Problem set 2.pdf')).toBeVisible();
       await expect(p.getByText('38 pages')).toBeVisible();
       await expect(p.getByText('Removing the document')).toBeVisible();
       await expect(p.getByText('Page 7 was not transcribed')).toBeVisible();
     } },
-  { name: 'manage-invite', url: `/app/c/${COURSE_ID}/manage?tab=invite`, signedIn: true, ready: (p) => expect(p.getByTestId('invite-code')).toBeVisible() },
-  { name: 'manage-invite-confirm', url: `/app/c/${COURSE_ID}/manage?tab=invite`, signedIn: true, ready: (p) => expect(p.getByTestId('invite-code')).toBeVisible(), act: async (p) => {
+  { name: 'manage-invite', url: `/portal/courses/${COURSE_ID}?tab=invite`, signedIn: true, ready: (p) => expect(p.getByTestId('invite-code')).toBeVisible() },
+  { name: 'manage-invite-confirm', url: `/portal/courses/${COURSE_ID}?tab=invite`, signedIn: true, ready: (p) => expect(p.getByTestId('invite-code')).toBeVisible(), act: async (p) => {
       await p.getByRole('button', { name: 'Make a new code' }).click();
       await expect(p.getByRole('dialog')).toBeVisible();
     } },
-  { name: 'manage-members', url: `/app/c/${COURSE_ID}/manage?tab=members`, signedIn: true, ready: (p) => expect(p.getByText('student.one@openbook.test')).toBeVisible() },
-  { name: 'manage-settings', url: `/app/c/${COURSE_ID}/manage?tab=settings`, signedIn: true, ready: (p) => expect(p.getByLabel('Course name').first()).toBeVisible() },
-  { name: 'manage-insights', url: `/app/c/${COURSE_ID}/manage?tab=insights`, signedIn: true, ready: (p) => expect(p.getByText('Latest student questions')).toBeVisible() },
+  { name: 'manage-members', url: `/portal/courses/${COURSE_ID}?tab=members`, signedIn: true, ready: (p) => expect(p.getByText('student.one@openbook.test')).toBeVisible() },
+  { name: 'manage-settings', url: `/portal/courses/${COURSE_ID}?tab=settings`, signedIn: true, ready: (p) => expect(p.getByLabel('Course name').first()).toBeVisible() },
+  { name: 'manage-insights', url: `/portal/courses/${COURSE_ID}?tab=insights`, signedIn: true, ready: (p) => expect(p.getByText('Latest student questions')).toBeVisible() },
 ];
+
+test.afterEach(async ({ page }) => {
+  // The slow demo route waits. Do not let it answer after the page is gone.
+  await page.unrouteAll({ behavior: 'ignoreErrors' });
+});
 
 for (const theme of ['light', 'dark'] as Theme[]) {
   for (const viewport of VIEWPORTS) {
@@ -319,7 +449,7 @@ for (const theme of ['light', 'dark'] as Theme[]) {
           page.on('pageerror', (e) => errors.push(e.message));
           await page.goto(screen.url);
           await screen.ready(page);
-          if (screen.name === 'landing') await scrollThrough(page);
+          if (screen.name.startsWith('landing')) await scrollThrough(page);
           if (screen.act) await screen.act(page);
           await page.waitForTimeout(250);
           await expectNoHorizontalOverflow(page);
@@ -327,7 +457,7 @@ for (const theme of ['light', 'dark'] as Theme[]) {
           expect(await page.evaluate(() => document.documentElement.classList.contains('dark'))).toBe(theme === 'dark');
           await page.screenshot({
             path: path.join(OUT, `${theme}-${viewport.name}`, `${screen.name}.png`),
-            fullPage: screen.fullPage ?? false,
+            fullPage: screen.fullPage ?? screen.name.startsWith('landing'),
           });
           expect(errors).toEqual([]);
         });

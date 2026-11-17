@@ -58,7 +58,7 @@ export function Composer({ streaming, usage, model, onModelChange, disabledReaso
       <div
         className={clsx(
           'flex items-end gap-2 rounded-2xl border border-border-strong bg-surface p-2 shadow-sm transition-colors',
-          'focus-within:border-accent',
+          'focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/20',
         )}
       >
         <label id={labelId} htmlFor={`${labelId}-input`} className="sr-only">
@@ -74,7 +74,7 @@ export function Composer({ streaming, usage, model, onModelChange, disabledReaso
           maxLength={MAX_LENGTH}
           disabled={blocked}
           placeholder={disabledReason ?? (outOfMessages ? 'You used all of today’s messages' : 'Ask a question')}
-          className="max-h-40 min-h-11 flex-1 resize-none bg-transparent px-3 py-2.5 text-base leading-6 text-text-primary placeholder:text-text-muted focus:outline-none disabled:cursor-not-allowed"
+          className="max-h-40 min-h-11 flex-1 resize-none bg-transparent px-3 py-2.5 font-serif text-lg leading-6 text-text-primary placeholder:text-text-muted focus:outline-none disabled:cursor-not-allowed"
         />
         {streaming ? (
           <button

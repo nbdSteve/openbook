@@ -40,7 +40,7 @@ export function LoginPage() {
       subtitle="Welcome back. Sign in to open your courses."
       footer={
         <>
-          New to Ask?{' '}
+          New to Openbook?{' '}
           <Link className="font-medium text-accent underline" to={authPath('/signup', { next })}>
             Create an account
           </Link>

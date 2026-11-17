@@ -1,16 +1,17 @@
 import { Link } from 'react-router';
 import { cn } from '@/lib/cn';
+import { Mascot } from './Mascot';
 
-/** The "Ask" wordmark. Links home. */
+/** The Openbook wordmark with the mascot. Links home. */
 export function Logo({ className, to = '/' }: { className?: string; to?: string }) {
   return (
     <Link
       to={to}
-      className={cn('inline-flex items-center gap-2 rounded-lg text-xl font-bold text-accent', className)}
-      aria-label="Ask home"
+      className={cn('inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-lg font-serif text-2xl font-semibold tracking-tight text-text-primary', className)}
+      aria-label="Openbook home"
     >
-      <img src="/ask-logo.webp" alt="" className="h-7 w-7 rounded-full object-cover" />
-      <span>Ask</span>
+      <Mascot size={34} />
+      <span>Openbook</span>
     </Link>
   );
 }

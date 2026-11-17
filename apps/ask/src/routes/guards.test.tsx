@@ -20,12 +20,12 @@ function renderGuard(auth: Partial<AuthContextValue>) {
   };
   render(
     <AuthContext.Provider value={value}>
-      <MemoryRouter initialEntries={['/app/c/COURSE1']}>
+      <MemoryRouter initialEntries={['/ask/courses/COURSE1']}>
         <Routes>
           <Route path="/" element={<p>landing page</p>} />
-          <Route path="/login" element={<Where />} />
+          <Route path="/signin" element={<Where />} />
           <Route element={<RequireAuth />}>
-            <Route path="/app/c/:id" element={<p>course</p>} />
+            <Route path="/ask/courses/:id" element={<p>course</p>} />
           </Route>
         </Routes>
       </MemoryRouter>
@@ -41,11 +41,11 @@ describe('RequireAuth', () => {
 
   it('sends an expired session to sign-in and remembers where it was', () => {
     renderGuard({ endedBy: 'expired' });
-    expect(screen.getByText('/login?next=%2Fapp%2Fc%2FCOURSE1')).toBeInTheDocument();
+    expect(screen.getByText('/signin?next=%2Fask%2Fcourses%2FCOURSE1')).toBeInTheDocument();
   });
 
   it('sends a visitor who never signed in to sign-in with next', () => {
     renderGuard({ endedBy: null });
-    expect(screen.getByText('/login?next=%2Fapp%2Fc%2FCOURSE1')).toBeInTheDocument();
+    expect(screen.getByText('/signin?next=%2Fask%2Fcourses%2FCOURSE1')).toBeInTheDocument();
   });
 });

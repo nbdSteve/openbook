@@ -2,6 +2,10 @@ import AxeBuilder from '@axe-core/playwright';
 import { expect, type Page, type Route } from '@playwright/test';
 import {
   CHAT_STREAM,
+  DEMO_ANSWER_STREAM,
+  DEMO_CONFIG,
+  DEMO_ERROR_STREAM,
+  DEMO_NOT_COVERED_STREAM,
   COURSES,
   COURSE_ID,
   CONFIG,
@@ -62,7 +66,13 @@ export async function seedSession(page: Page, email = USER.email) {
   );
 }
 
+/** What POST /api/demo/chat does in a screen. */
+export type DemoMode = 'answer' | 'not_covered' | 'rate_limited' | 'busy' | 'unavailable' | 'invalid' | 'stream_error' | 'slow';
+
 export interface MockOptions {
+  /** `off` removes the demo block from /config.json. */
+  demo?: 'on' | 'off';
+  demoMode?: DemoMode;
   courses?: typeof COURSES;
   /** Return a response to replace the default fixture for a request. */
   override?: (path: string, method: string) => { status: number; body?: unknown } | undefined;
@@ -74,11 +84,39 @@ const json = (route: Route, body: unknown, status = 200) =>
 /** Answer /config.json and every /api/** request from fixtures. */
 export async function mockBackend(page: Page, options: MockOptions = {}) {
   const courses = options.courses ?? COURSES;
-  await page.route('**/config.json', (route) => json(route, CONFIG));
+  await page.route('**/config.json', (route) => json(route, options.demo === 'off' ? CONFIG : { ...CONFIG, demo: DEMO_CONFIG }));
+  await page.route('**/api/demo/chat', async (route) => {
+    // The demo route sets this header on every response. A response without it is not from the demo.
+    const headers = { 'x-openbook-demo': '1' };
+    const stream = (body: string) => route.fulfill({ status: 200, contentType: 'text/event-stream', headers, body });
+    const fail = (status: number, body: unknown) => route.fulfill({ status, contentType: 'application/json', headers, body: JSON.stringify(body) });
+    switch (options.demoMode ?? 'answer') {
+      case 'not_covered':
+        return stream(DEMO_NOT_COVERED_STREAM);
+      case 'stream_error':
+        return stream(DEMO_ERROR_STREAM);
+      case 'rate_limited':
+        return fail(429, { error: { code: 'demo_rate_limited', message: 'Slow down', retryAfterSeconds: 42 } });
+      case 'busy':
+        return fail(503, { error: { code: 'demo_busy', message: 'Daily budget used' } });
+      case 'unavailable':
+        return fail(503, { error: { code: 'demo_unavailable', message: 'Off' } });
+      case 'invalid':
+        return fail(400, { error: { code: 'invalid_request', message: 'The question must be 1 to 300 characters.' } });
+      case 'slow':
+        // Hold the answer so the screen shows the waiting state.
+        await new Promise((resolve) => setTimeout(resolve, 20_000));
+        return stream(DEMO_ANSWER_STREAM);
+      default:
+        return stream(DEMO_ANSWER_STREAM);
+    }
+  });
   await page.route((url) => url.pathname.startsWith('/api/'), async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
     const method = request.method();
+    // The demo route above answers this one.
+    if (path === '/api/demo/chat') return route.fallback();
 
     const replaced = options.override?.(path, method);
     if (replaced) return json(route, replaced.body ?? {}, replaced.status);
@@ -118,7 +156,7 @@ export async function prepare(page: Page, theme: Theme, viewport: (typeof VIEWPO
   await mockBackend(page, options);
 }
 
-/** Scroll the whole page so scroll-triggered animations run, then return to the top. */
+/** Scroll the whole page so the sections below the fold fade in, then return to the top. */
 export async function scrollThrough(page: Page) {
   const height = await page.evaluate(() => document.documentElement.scrollHeight);
   for (let y = 0; y < height; y += 400) {
@@ -126,10 +164,7 @@ export async function scrollThrough(page: Page) {
     await page.waitForTimeout(120);
   }
   await page.evaluate(() => window.scrollTo(0, 0));
-  await page.waitForTimeout(700);
-  await page.getByLabel('Example conversation').scrollIntoViewIfNeeded().catch(() => undefined);
-  await page.waitForTimeout(3500);
-  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.waitForTimeout(900);
 }
 
 /** The page must never scroll sideways. */

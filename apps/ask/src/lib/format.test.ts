@@ -4,7 +4,7 @@ import { formatBytes, normalizeInviteCode, safeNextPath } from './format';
 describe('safeNextPath', () => {
   it('keeps same-origin paths', () => {
     expect(safeNextPath('/join/ABCD2345')).toBe('/join/ABCD2345');
-    expect(safeNextPath('/app/c/X?tab=invite')).toBe('/app/c/X?tab=invite');
+    expect(safeNextPath('/ask/courses/X?tab=invite')).toBe('/ask/courses/X?tab=invite');
   });
 
   it.each([
@@ -15,11 +15,11 @@ describe('safeNextPath', () => {
     ['a newline', '/\n/evil.test'],
     ['an empty value', ''],
   ])('falls back for %s', (_name, value) => {
-    expect(safeNextPath(value)).toBe('/app');
+    expect(safeNextPath(value)).toBe('/ask');
   });
 
   it('falls back for null', () => {
-    expect(safeNextPath(null)).toBe('/app');
+    expect(safeNextPath(null)).toBe('/ask');
   });
 });
 

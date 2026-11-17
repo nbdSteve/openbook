@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ConfigError, loadConfig, parseConfig } from './loadConfig';
+import { ConfigError, loadConfig, parseConfig, parseDemo } from './loadConfig';
 
 const valid = {
   stage: 'dev',
@@ -12,7 +12,7 @@ const respond = (body: BodyInit, status = 200) => vi.fn(async () => new Response
 describe('loadConfig', () => {
   it('loads and returns the config', async () => {
     const fetchFn = respond(JSON.stringify(valid));
-    expect(await loadConfig(fetchFn)).toEqual({ ...valid, demo: { enabled: false, model: { label: '' }, sources: [], examples: [] } });
+    expect(await loadConfig(fetchFn)).toEqual(valid);
     expect(fetchFn).toHaveBeenCalledWith('/config.json', { cache: 'no-store' });
   });
 
@@ -24,11 +24,12 @@ describe('loadConfig', () => {
       examples: ['What is a function?', 'What is federalism?'],
     };
     expect(parseConfig({ ...valid, demo }).demo).toEqual(demo);
-    expect(parseConfig({ ...valid, demo: { ...demo, enabled: false } }).demo).toEqual({ enabled: false, model: { label: '' }, sources: [], examples: [] });
-    expect(parseConfig({ ...valid, demo: 'yes' }).demo.enabled).toBe(false);
+    expect(parseConfig({ ...valid, demo: { ...demo, enabled: false } }).demo).toBeUndefined();
+    expect(parseConfig({ ...valid, demo: 'yes' }).demo).toBeUndefined();
+    expect(parseConfig(valid).demo).toBeUndefined();
     // Entries that are not well formed are dropped, not trusted.
     const messy = { enabled: true, sources: [{ title: 'x' }, demo.sources[0]], examples: ['ok', 3, ''] };
-    expect(parseConfig({ ...valid, demo: messy }).demo).toEqual({ enabled: true, model: { label: '' }, sources: demo.sources, examples: ['ok'] });
+    expect(parseConfig({ ...valid, demo: messy }).demo).toEqual({ enabled: true, sources: demo.sources, examples: ['ok'] });
   });
 
   it('keeps a local Cognito endpoint', async () => {
@@ -60,5 +61,32 @@ describe('loadConfig', () => {
   it('fails when required fields are missing', async () => {
     await expect(loadConfig(respond(JSON.stringify({ stage: 'dev' })))).rejects.toThrow(/wrong shape/);
     await expect(loadConfig(respond(JSON.stringify({ ...valid, cognito: { userPoolId: 'x' } })))).rejects.toThrow(/missing/);
+  });
+});
+
+describe('parseDemo', () => {
+  it('reads an enabled demo block', () => {
+    const demo = parseDemo({
+      enabled: true,
+      sources: [{ title: 'College Algebra', license: 'CC BY 4.0', url: 'https://openstax.org/details/books/college-algebra' }, { nope: 1 }],
+      examples: ['Factor x^2 - 5x + 6', 7],
+      model: { label: 'Claude Sonnet 4.6' },
+    });
+    expect(demo).toEqual({
+      enabled: true,
+      sources: [{ title: 'College Algebra', license: 'CC BY 4.0', url: 'https://openstax.org/details/books/college-algebra' }],
+      examples: ['Factor x^2 - 5x + 6'],
+      model: { label: 'Claude Sonnet 4.6' },
+    });
+  });
+
+  it('turns the demo off when it is disabled, missing, or not an object', () => {
+    expect(parseDemo({ enabled: false, sources: [], examples: [] })).toBeUndefined();
+    expect(parseDemo(undefined)).toBeUndefined();
+    expect(parseDemo('yes')).toBeUndefined();
+  });
+
+  it('keeps the config valid when the demo block is bad', () => {
+    expect(parseConfig({ ...valid, demo: 12 }).demo).toBeUndefined();
   });
 });

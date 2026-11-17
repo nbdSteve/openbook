@@ -30,12 +30,12 @@ for (const viewport of VIEWPORTS) {
       await expectVisibleAtFirstPaint(
         page,
         page.getByRole('heading', { level: 1 }),
-        page.getByRole('main').getByRole('link', { name: 'Create a free account' }).first(),
+        page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Get started' }),
       );
     });
 
     for (const [name, url, button] of [
-      ['sign-in', '/login', 'Sign in'],
+      ['sign-in', '/signin', 'Sign in'],
       ['sign-up', '/signup', 'Create account'],
     ] as const) {
       test(`the ${name} page is fully opaque 100 ms after load`, async ({ page }) => {
