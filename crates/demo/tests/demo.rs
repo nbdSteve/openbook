@@ -103,7 +103,7 @@ fn write_manifest(dir: &Path, biology_pages: &[&[&str]]) {
             "What is a right triangle?", "What do chloroplasts do?"
         ],
         "sources": [
-            { "files": ["geometry.pdf"], "attribution": attribution("Geometry Book") },
+            { "files": ["geometry.pdf"], "documentName": "Geometry Book.pdf", "attribution": attribution("Geometry Book") },
             { "files": ["biology.pdf"], "attribution": attribution("Biology Book") }
         ]
     });
@@ -566,7 +566,13 @@ async fn a_demo_question_streams_an_answer_with_sources_and_credits() {
     assert_eq!(meta["attribution"].as_array().unwrap().len(), 2);
     assert_eq!(meta["attribution"][0]["license"], "CC BY 4.0");
     let sources = sse[1].1["sources"].as_array().unwrap();
-    assert!(sources.iter().any(|s| s["documentName"] == "geometry.pdf"));
+    // The document has the name of the manifest, not the name of the file.
+    assert!(
+        sources
+            .iter()
+            .any(|s| s["documentName"] == "Geometry Book.pdf")
+    );
+    assert!(sources.iter().all(|s| s["documentName"] != "geometry.pdf"));
     assert!(text_of(&reply).contains("Pythagorean"));
     assert!(sse.last().unwrap().1["stopReason"].is_string());
 

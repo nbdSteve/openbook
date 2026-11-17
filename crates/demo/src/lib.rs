@@ -67,6 +67,11 @@ pub struct SourceSpec {
     /// Paths relative to the manifest file. The first file that exists is used, so a move of the
     /// evaluation corpora does not break the demo.
     pub files: Vec<String>,
+    /// The name that the document has in the course (the UI shows it as the source name), for
+    /// example "College Algebra.pdf". Without it, the name of the file. It is part of the fingerprint,
+    /// so a new name makes the next `make demo-provision` build the course again.
+    #[serde(default)]
+    pub document_name: Option<String>,
     pub attribution: Attribution,
 }
 
@@ -108,11 +113,12 @@ impl Loaded {
             };
             let bytes = std::fs::read(&file)
                 .map_err(|e| bad(format!("cannot read {}: {e}", file.display())))?;
-            let filename = file
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or_default()
-                .to_owned();
+            let filename = source.document_name.clone().unwrap_or_else(|| {
+                file.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or_default()
+                    .to_owned()
+            });
             pdfs.push(Pdf { filename, bytes });
         }
         let loaded = Loaded { manifest, pdfs };
@@ -395,6 +401,7 @@ mod tests {
                 examples: ["One?", "Two?", "Three?", "Four?"].map(Into::into).to_vec(),
                 sources: vec![SourceSpec {
                     files: vec!["a.pdf".into()],
+                    document_name: None,
                     attribution: attribution(),
                 }],
             },
@@ -419,6 +426,10 @@ mod tests {
         let mut other_bytes = loaded();
         other_bytes.pdfs[0].bytes.push(b'x');
         assert_ne!(base.fingerprint(), other_bytes.fingerprint());
+        // The name of the document is part of the content: the UI shows it.
+        let mut other_name = loaded();
+        other_name.pdfs[0].filename = "A Book.pdf".into();
+        assert_ne!(base.fingerprint(), other_name.fingerprint());
         let mut other_text = loaded();
         other_text.manifest.description = "Other things.".into();
         assert_ne!(base.fingerprint(), other_text.fingerprint());
@@ -474,6 +485,9 @@ mod tests {
         // Alternating books: the even ones are from the first book (College Algebra), the odd ones
         // from the second (American Government).
         assert_eq!(loaded.manifest.examples.len() % 2, 0, "half from each book");
+        // The documents have the titles of the books as names, not the names of the files.
+        let names: Vec<_> = loaded.pdfs.iter().map(|p| p.filename.as_str()).collect();
+        assert_eq!(names, ["College Algebra.pdf", "American Government 2e.pdf"]);
         for source in &loaded.manifest.sources {
             assert_eq!(source.attribution.license, "CC BY 4.0");
             assert!(source.attribution.source_url.contains("openstax.org"));

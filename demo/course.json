@@ -3,18 +3,19 @@
   "description": "Short excerpts from two OpenStax open textbooks: College Algebra (exponents, quadratic equations, functions, and exponential functions) and American Government 2e (the roots of the Constitution and federalism).",
   "tutoringStyle": "direct",
   "examples": [
-    "What is a function?",
-    "What was the Great Compromise?",
-    "What is the quadratic formula?",
-    "What is federalism?",
-    "What is scientific notation?",
-    "What was Shays' Rebellion?"
+    "Product rule of exponents?",
+    "What was Shays' Rebellion?",
+    "Zero-product property?",
+    "What is the Great Compromise?",
+    "Vertex form of a quadratic?",
+    "What is dual federalism?"
   ],
   "sources": [
     {
       "files": [
         "../evals/corpora/college-algebra/college-algebra-excerpt.pdf"
       ],
+      "documentName": "College Algebra.pdf",
       "attribution": {
         "title": "College Algebra (first edition)",
         "authors": "Jay Abramson (Arizona State University, senior contributing author), with contributing authors Valeree Falduto, Rachael Gross, David Lippman, Melonie Rasmussen, Rick Norwood, Nicholas Belloit, Jean-Marie Magnier, Harold Whipple, and Christina Fernandez",
@@ -30,6 +31,7 @@
       "files": [
         "../evals/corpora/american-government/american-government-excerpt.pdf"
       ],
+      "documentName": "American Government 2e.pdf",
       "attribution": {
         "title": "American Government 2e",
         "authors": "Glen Krutz (University of Oklahoma, senior contributing author), with contributing authors Prosper Bernard Jr., Jennifer Danley-Scott, Ann Kordas, Christopher Lawrence, Tonya Neaves, Adam Newmark, Brooks D. Simpson, Joel Webb, Shawn Williams, and Rhonda Wrzenski",
