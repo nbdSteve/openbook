@@ -444,12 +444,13 @@ fn running_headers_are_stripped_from_the_committed_pages() {
         // at excerpt page 26 are the chapter opener and the first page; 27 and 28 follow): the
         // header of page 27 has a title at its end, and page 28 has the title alone.
         if id == "college-algebra" {
-            let stripped = openbook_search::headers::strip_running_lines(
+            let stripped = openbook_search::headers::strip_running_lines_with(
                 &cache.pages[25..37]
                     .iter()
                     .enumerate()
                     .map(|(i, (_, t))| (u32::try_from(i + 1).unwrap(), t.clone()))
                     .collect::<Vec<_>>(),
+                openbook_search::headers::HeaderMode::KeepFirst,
             );
             for (_, text) in &stripped.pages {
                 assert!(!text.lines().any(|l| l.trim() == "# SECTION"), "{text}");
@@ -457,7 +458,13 @@ fn running_headers_are_stripped_from_the_committed_pages() {
             }
         }
         // The phrase is gone from the chunks, except for its first occurrence in each section.
-        let chunks = offline::build_chunks(&sections, &cache.pages, 1600).unwrap();
+        let chunks = offline::build_chunks_with(
+            &sections,
+            &cache.pages,
+            1600,
+            openbook_search::headers::HeaderMode::KeepFirst,
+        )
+        .unwrap();
         let in_chunks = chunks
             .iter()
             .filter(|c| c.text.to_lowercase().contains(phrase))
@@ -490,9 +497,10 @@ fn the_grid_runs_on_the_dev_cache_and_writes_a_table() {
         serde_json::from_str(&std::fs::read_to_string(dir.path().join("grid.json")).unwrap())
             .unwrap();
     let rows = grid["rows"].as_array().unwrap();
-    assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0]["knobs"]["dropAllHeaders"], false);
-    assert_eq!(rows[1]["knobs"]["dropAllHeaders"], true);
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0]["knobs"]["headerMode"], "off");
+    assert_eq!(rows[1]["knobs"]["headerMode"], "keep-first");
+    assert_eq!(rows[2]["knobs"]["headerMode"], "drop-all");
     // Every row has the pooled numbers and the numbers of each corpus.
     assert!(rows[0]["combined"]["sectioned"]["hybrid"].is_object());
     assert_eq!(rows[0]["corpora"].as_object().unwrap().len(), 2);

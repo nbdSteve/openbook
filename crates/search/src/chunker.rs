@@ -345,7 +345,7 @@ pub fn chunk_pages_with(pages: &[(u32, String)], target: usize) -> Vec<Chunk> {
 pub fn chunk_pages_variant(
     pages: &[(u32, String)],
     target: usize,
-    variant: crate::headers::FirstOccurrence,
+    variant: crate::headers::HeaderMode,
 ) -> Vec<Chunk> {
     // The running headers and footers of the book go first, so no heading path, embedded text, or
     // BM25 field holds them. The ingestion worker and the evaluation both come through here.
@@ -488,7 +488,7 @@ mod tests {
     }
 
     #[test]
-    fn running_headers_do_not_reach_the_heading_path() {
+    fn production_chunks_the_pages_as_they_are_and_the_experiment_removes_running_headers() {
         let pages = pages(&[
             "# BOOK SECTION ONE\n\n## Rules\n\nFirst rule text.",
             "# BOOK CHAPTER ONE\n\nMore about the rules of grammar.",
@@ -497,7 +497,14 @@ mod tests {
             "# BOOK SECTION ONE\n\nAn extra page.",
             "# BOOK CHAPTER ONE\n\nAnd one more page.",
         ]);
-        let clean = chunk_pages(&pages);
+        // Production does not strip: the text is chunked as it is.
+        assert_eq!(
+            chunk_pages(&pages),
+            chunk_stripped_pages(&pages, TARGET_CHARS)
+        );
+        // The experimental rule (only the evaluation grid uses it).
+        let clean =
+            chunk_pages_variant(&pages, TARGET_CHARS, crate::headers::HeaderMode::KeepFirst);
         let paths: Vec<&str> = clean.iter().map(|c| c.heading_path.as_str()).collect();
         assert!(
             paths

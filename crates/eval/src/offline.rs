@@ -12,10 +12,10 @@ use std::time::Duration;
 use async_trait::async_trait;
 use openbook_search::bm25::{Bm25Chunk, Bm25Reader, Bm25Writer};
 use openbook_search::chunker::{
-    TARGET_CHARS, chunk_pages_variant, chunk_pages_with, chunk_stripped_pages, embed_text,
+    TARGET_CHARS, chunk_pages_variant, chunk_stripped_pages, embed_text,
 };
 use openbook_search::headers::{
-    FirstOccurrence, PRODUCTION_VARIANT, phrase_key, strip_running_lines_with,
+    HeaderMode, PRODUCTION_VARIANT, phrase_key, strip_running_lines_with,
 };
 use openbook_search::retrieval::{
     DENSE_TOP_K, DenseResult, DenseSearch, Fused, GateRule, Hit, LEXICAL_TOP_K, LexicalResult,
@@ -52,7 +52,7 @@ pub struct Options {
     pub dense_top_k: usize,
     pub lexical_top_k: usize,
     /// What the removal of running headers does with the first occurrence.
-    pub header_variant: FirstOccurrence,
+    pub header_variant: HeaderMode,
 }
 
 impl Options {
@@ -153,7 +153,7 @@ pub struct Tuning {
     pub chunk_tokens: Option<usize>,
     pub dense_top_k: Option<usize>,
     pub lexical_top_k: Option<usize>,
-    pub header_variant: Option<FirstOccurrence>,
+    pub header_variant: Option<HeaderMode>,
     pub cap_off: bool,
 }
 
@@ -261,7 +261,7 @@ pub fn build_chunks_with(
     sections: &[Section],
     pages: &[(u32, String)],
     target_chars: usize,
-    variant: FirstOccurrence,
+    variant: HeaderMode,
 ) -> Result<Vec<EvalChunk>, Error> {
     let by_number: HashMap<u32, &str> = pages.iter().map(|(n, t)| (*n, t.as_str())).collect();
     let mut out = Vec::new();
@@ -393,7 +393,7 @@ impl Index {
         cache: &Cache,
         chunk_chars: usize,
         cap_off: bool,
-        variant: FirstOccurrence,
+        variant: HeaderMode,
     ) -> Result<Index, Error> {
         let chunks = build_chunks_with(sections, &cache.pages, chunk_chars, variant)?;
         if chunks.is_empty() {
@@ -917,7 +917,7 @@ pub fn header_stats(
     let mut stats = HeaderStats::default();
     for section in sections {
         let local = section_pages(section, &by_number)?;
-        let stripped = strip_running_lines_with(&local, PRODUCTION_VARIANT);
+        let stripped = strip_running_lines_with(&local, HeaderMode::KeepFirst);
         let keys: HashSet<&str> = stripped.lines.iter().map(|l| l.key.as_str()).collect();
         let carries = |chunk: &openbook_search::chunker::Chunk| {
             chunk
@@ -942,7 +942,8 @@ pub fn header_stats(
             })
         };
         let before = chunk_stripped_pages(&local, chunk_chars);
-        let after = chunk_pages_with(&local, chunk_chars);
+        // What the experimental rule would do (production does not strip).
+        let after = chunk_pages_variant(&local, chunk_chars, HeaderMode::KeepFirst);
         stats.running_lines += stripped.lines.len();
         stats.removed_lines += stripped
             .lines

@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::Error;
 use crate::corpus::Corpus;
 use crate::metrics::{self, Metrics};
-use openbook_search::headers::FirstOccurrence;
+use openbook_search::headers::HeaderMode;
 
 use crate::offline::{
     CHARS_PER_TOKEN, Candidates, Index, Options, Run, Tuning, cache_dir_of, judge_all, load,
@@ -45,8 +45,8 @@ pub struct Knobs {
     pub candidates: usize,
     pub max_per_document: usize,
     pub lexical_weight: f64,
-    /// True when the removal of running headers drops the first occurrence too (`drop-all`).
-    pub drop_all_headers: bool,
+    /// What the removal of running headers does (production: `off`).
+    pub header_mode: HeaderMode,
 }
 
 impl Knobs {
@@ -59,7 +59,7 @@ impl Knobs {
             candidates: options.dense_top_k,
             max_per_document: options.params.max_per_document,
             lexical_weight: options.params.lexical_weight,
-            drop_all_headers: options.header_variant == FirstOccurrence::Drop,
+            header_mode: options.header_variant,
         }
     }
 }
@@ -119,7 +119,7 @@ pub struct Axes {
     pub candidates: Vec<usize>,
     pub max_per_document: Vec<usize>,
     pub lexical_weight: Vec<f64>,
-    pub drop_all_headers: Vec<bool>,
+    pub header_modes: Vec<HeaderMode>,
 }
 
 impl Axes {
@@ -132,11 +132,11 @@ impl Axes {
             candidates: CANDIDATES.to_vec(),
             max_per_document: MAX_PER_DOCUMENT.to_vec(),
             lexical_weight: LEXICAL_WEIGHTS.to_vec(),
-            drop_all_headers: vec![false, true],
+            header_modes: HeaderMode::ALL.to_vec(),
         }
     }
 
-    /// Two rows (the production setting with both header variants). The tests use it to show that
+    /// Three rows (the production setting with each header mode). The tests use it to show that
     /// the grid code works. It is fast.
     pub fn tiny() -> Self {
         Self {
@@ -146,7 +146,7 @@ impl Axes {
             candidates: vec![40],
             max_per_document: vec![6],
             lexical_weight: vec![1.0],
-            drop_all_headers: vec![false, true],
+            header_modes: HeaderMode::ALL.to_vec(),
         }
     }
 }
@@ -172,12 +172,7 @@ pub async fn run(
     let base = tuning.options(&model);
     let mut rows = Vec::new();
     for &tokens in &axes.chunk_tokens {
-        for &drop_all in &axes.drop_all_headers {
-            let variant = if drop_all {
-                FirstOccurrence::Drop
-            } else {
-                FirstOccurrence::Keep
-            };
+        for &variant in &axes.header_modes {
             // Two indexes (document modes) for each corpus, chunk target, and header variant.
             let mut indexes: Vec<[Index; 2]> = Vec::new();
             for l in &loaded {
@@ -246,7 +241,7 @@ pub async fn run(
                                         candidates,
                                         max_per_document,
                                         lexical_weight,
-                                        drop_all_headers: drop_all,
+                                        header_mode: variant,
                                     },
                                     combined: Pair {
                                         sectioned: pooled(0),
@@ -414,10 +409,10 @@ impl Grid {
                 |k, v| k.chunk_tokens = v as usize,
             ),
             (
-                "Running headers (0 = keep-first, 1 = drop-all)",
-                vec![0.0, 1.0],
-                f64::from(u8::from(production.drop_all_headers)),
-                |k, v| k.drop_all_headers = v > 0.5,
+                "Running headers (0 = off, 1 = keep-first, 2 = drop-all)",
+                vec![0.0, 1.0, 2.0],
+                f64::from(production.header_mode as u8),
+                |k, v| k.header_mode = HeaderMode::ALL[v as usize],
             ),
         ];
         let _ = writeln!(out);

@@ -1,4 +1,8 @@
-//! Running headers and footers.
+//! Running headers and footers: an EXPERIMENT. Production does not use it (`HeaderMode::Off`).
+//!
+//! The word rule below is kept for the evaluation grid and as a baseline for the next approach. It
+//! fails on short pages (see `HeaderMode`). Read the rest of this comment as a description of the
+//! experiment.
 //!
 //! A book repeats a phrase at the top or at the bottom of many pages: "SECTION 1.2 EXPONENTS AND
 //! SCIENTIFIC NOTATION", "Chapter 2 | The Constitution and Its Origins", "This OpenStax book is
@@ -24,8 +28,9 @@
 //!    sentence is never cut. The pass runs twice, so that a header that is next to a footer (the
 //!    footer is the last words of the page, and the header ends where the footer starts) is found
 //!    in the second pass.
-//! 3. It has `MIN_PHRASE_WORDS` to `MAX_PHRASE_WORDS` words, at most one fifth of the page (at least
-//!    `MIN_PHRASE_WORDS`, at most `EDGE_WORDS`), in one line, and at least two words with letters.
+//! 3. It has `MIN_PHRASE_WORDS` to `MAX_PHRASE_WORDS` (20) words, at most one fifth of the page
+//!    (the window is at least `MIN_PHRASE_WORDS` and at most `EDGE_WORDS`, so 30, but the cap of 20
+//!    words comes first), in one line, and at least two words with letters.
 //! 4. It is not a sentence: no word in it ends a sentence (`.`, `?`, `!`), and the last word does not
 //!    either, unless the phrase holds a web address or a copyright sign (the licence line that
 //!    OpenStax asks for on every page ends in an address and a full stop). It does not start with a
@@ -65,11 +70,15 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-/// How many words at most a phrase of a page edge can have (and the most words that are looked at).
+use serde::{Deserialize, Serialize};
+
+/// The widest edge window of a page, in words. A phrase is also capped by `MAX_PHRASE_WORDS`, so it
+/// has at most 20 words, whatever the window.
 pub const EDGE_WORDS: usize = 30;
 /// A phrase has at least this many words (so "Try It" and "Chapter Review" are never removed).
 pub const MIN_PHRASE_WORDS: usize = 3;
-/// A longer phrase is text, not a header.
+/// A longer phrase is text, not a header. This is the cap of a phrase (the window is at most
+/// `EDGE_WORDS`, but a phrase never has more than this many words).
 pub const MAX_PHRASE_WORDS: usize = 20;
 /// The least number of pages that a running phrase must be on.
 pub const MIN_PAGES: usize = 3;
@@ -425,28 +434,35 @@ fn occurrences(page: &Page, phrase: &[&str]) -> Vec<usize> {
     found
 }
 
-/// What happens to the first occurrence of a running phrase.
+/// What the removal of running headers does. Production uses `Off`.
 ///
-/// Round 2 compared the two (`evals/results/2026-11-18.md`) and production uses `Keep`: it keeps one
-/// copy of a phrase that may be a real heading, so it is the safer choice when the data cannot tell
-/// the two apart (the gate accuracy is a little higher with it, by one question of 107). `Drop` stays
-/// only so that the evaluation grid can show the comparison. Nothing in the ingestion worker or the
-/// API uses it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum FirstOccurrence {
-    /// It stays when it is at the top of its page (it may be the real section heading).
-    Keep,
-    /// It goes with the others.
-    Drop,
+/// The word rule of this module is EXPERIMENTAL. It does not know where a phrase sits on the page,
+/// and on short pages (8 pages of 40 to 80 words) it cuts sentence starts, turns `## MATH1051
+/// Tutorial Sheet 2` into a stray `2`, and deletes the only copy of content at the bottom of a page.
+/// So the ingestion worker and the API chunk the page text as it is. `KeepFirst` and `DropAll` stay
+/// only for the evaluation grid and for the scenario tests, as a baseline for the next approach (see
+/// `docs/retrieval.md`, "Running headers: the next approach"). Do not turn them on in production
+/// without a new comparison and a pass of the scenario tests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum HeaderMode {
+    /// No removal (production).
+    Off,
+    /// Remove running phrases. The first occurrence stays when it is at the top of its page (it may
+    /// be the real section heading).
+    KeepFirst,
+    /// Remove running phrases, the first occurrence included.
+    DropAll,
 }
 
-impl FirstOccurrence {
-    pub const ALL: [FirstOccurrence; 2] = [FirstOccurrence::Keep, FirstOccurrence::Drop];
+impl HeaderMode {
+    pub const ALL: [HeaderMode; 3] = [HeaderMode::Off, HeaderMode::KeepFirst, HeaderMode::DropAll];
 
     pub fn name(self) -> &'static str {
         match self {
-            FirstOccurrence::Keep => "keep-first",
-            FirstOccurrence::Drop => "drop-all",
+            HeaderMode::Off => "off",
+            HeaderMode::KeepFirst => "keep-first",
+            HeaderMode::DropAll => "drop-all",
         }
     }
 
@@ -455,18 +471,19 @@ impl FirstOccurrence {
     }
 }
 
-/// The variant of production. Do not change it without a new comparison in the grid.
-pub const PRODUCTION_VARIANT: FirstOccurrence = FirstOccurrence::Keep;
+/// The mode of production: no removal.
+pub const PRODUCTION_VARIANT: HeaderMode = HeaderMode::Off;
 
-/// Removes the running headers and footers of a document. `pages` has `(page number, Markdown)` in
-/// page order. A page that has nothing to remove comes back unchanged, byte for byte.
+/// The page text of production: the pages as they are (`HeaderMode::Off`).
 pub fn strip_running_lines(pages: &[(u32, String)]) -> Stripped {
     strip_running_lines_with(pages, PRODUCTION_VARIANT)
 }
 
-/// `strip_running_lines` with a choice for the first occurrence. The evaluation compares both.
-pub fn strip_running_lines_with(pages: &[(u32, String)], variant: FirstOccurrence) -> Stripped {
-    if pages.len() < MIN_DOCUMENT_PAGES {
+/// Removes the running headers and footers of a document with the experimental word rule.
+/// `pages` has `(page number, Markdown)` in page order. A page that has nothing to remove comes back
+/// unchanged, byte for byte. `HeaderMode::Off` removes nothing.
+pub fn strip_running_lines_with(pages: &[(u32, String)], variant: HeaderMode) -> Stripped {
+    if variant == HeaderMode::Off || pages.len() < MIN_DOCUMENT_PAGES {
         return Stripped {
             pages: pages.to_vec(),
             lines: Vec::new(),
@@ -511,7 +528,7 @@ struct Hit {
     kept: bool,
 }
 
-fn strip_pass(pages: &[(u32, String)], variant: FirstOccurrence) -> Stripped {
+fn strip_pass(pages: &[(u32, String)], variant: HeaderMode) -> Stripped {
     let pages_t: Vec<Page> = pages.iter().map(|(n, t)| Page::new(*n, t)).collect();
     let all = candidates(&pages_t);
     let mut ranked: Vec<&Candidate> = all
@@ -598,7 +615,7 @@ fn strip_pass(pages: &[(u32, String)], variant: FirstOccurrence) -> Stripped {
             // At the top of its page: nearer to the start of the page than to its end.
             let at_top = from <= page.seq.len() - (to + 1);
             let keep =
-                variant == FirstOccurrence::Keep && pi == first_page && at_top && !kept_first;
+                variant == HeaderMode::KeepFirst && pi == first_page && at_top && !kept_first;
             if keep {
                 kept_first = true;
             } else {
@@ -843,6 +860,11 @@ mod tests {
             .join(" ")
     }
 
+    /// The experimental rule (production does not strip).
+    fn strip_running_lines(pages: &[(u32, String)]) -> Stripped {
+        strip_running_lines_with(pages, HeaderMode::KeepFirst)
+    }
+
     fn unchanged(pages: &[(u32, String)]) {
         let out = strip_running_lines(pages);
         assert_eq!(out.pages, pages, "{:?}", out.lines);
@@ -879,22 +901,20 @@ mod tests {
     #[test]
     fn the_drop_all_variant_removes_the_first_occurrence_too() {
         let pages = make(8, |i| format!("# THE RUNNING TITLE\n\n{}", body(i)));
-        let out = strip_running_lines_with(&pages, FirstOccurrence::Drop);
+        let out = strip_running_lines_with(&pages, HeaderMode::DropAll);
         for (i, (_, text)) in out.pages.iter().enumerate() {
             assert_eq!(text, &body(i));
         }
         assert_eq!(out.lines[0].removed_from.len(), 8);
-        // The default is keep-first.
+        // Production does not strip at all.
+        assert_eq!(super::strip_running_lines(&pages).pages, pages);
         assert_eq!(
-            strip_running_lines(&pages),
-            strip_running_lines_with(&pages, FirstOccurrence::Keep)
+            strip_running_lines_with(&pages, HeaderMode::Off).pages,
+            pages
         );
         assert_eq!(strip_running_lines(&pages).pages[0], pages[0]);
-        assert_eq!(
-            FirstOccurrence::parse("drop-all"),
-            Some(FirstOccurrence::Drop)
-        );
-        assert_eq!(FirstOccurrence::parse("x"), None);
+        assert_eq!(HeaderMode::parse("drop-all"), Some(HeaderMode::DropAll));
+        assert_eq!(HeaderMode::parse("x"), None);
     }
 
     #[test]
@@ -1281,6 +1301,52 @@ mod tests {
             assert_eq!(out.pages[i].1, format!("{text} 77"), "page {}", i + 1);
         }
         assert_eq!(out.lines.len(), 2);
+    }
+
+    // The scenarios of the second review: 8 pages of 40 to 80 words. The word rule fails them, which
+    // is why production does not strip. They are `#[ignore]`d, and the next approach (the position
+    // of a phrase in the page geometry for text-layer pages, a transcription prompt rule for
+    // transcribed pages) must make them pass: `cargo test -p openbook-search -- --ignored`.
+
+    fn short_body(i: usize) -> String {
+        (0..45)
+            .map(|k| format!("s{i}y{k}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    #[test]
+    #[ignore = "known failure of the word rule: it cuts the start of a sentence that every page has"]
+    fn scenario_the_start_of_a_sentence_that_every_short_page_has_stays() {
+        unchanged(&make(8, |i| {
+            format!(
+                "Consider the following graph{i} and name its centre. {}",
+                short_body(i)
+            )
+        }));
+    }
+
+    #[test]
+    #[ignore = "known failure of the word rule: it turns a real heading into a stray number"]
+    fn scenario_a_heading_that_differs_only_by_its_last_number_stays() {
+        unchanged(&make(8, |i| {
+            format!(
+                "## MATH1051 Tutorial Sheet {}\n\n{}",
+                1 + i / 4,
+                short_body(i)
+            )
+        }));
+    }
+
+    #[test]
+    #[ignore = "known failure of the word rule: it deletes the only copy of content at the bottom of a page"]
+    fn scenario_content_at_the_bottom_of_a_short_page_stays() {
+        unchanged(&make(8, |i| {
+            format!("{}\n\n(D) None of the above", short_body(i))
+        }));
+        unchanged(&make(8, |i| {
+            format!("{}\n\n(Total for Question 3 is 6 marks)", short_body(i))
+        }));
     }
 
     #[test]

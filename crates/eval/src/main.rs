@@ -8,7 +8,7 @@ use openbook_eval::cache::{Cache, CacheKind};
 use openbook_eval::offline::{GateKind, Tuning};
 use openbook_eval::report::{Baseline, check_suite, suite_improved};
 use openbook_eval::{Error, corpus, default_evals_dir, grid, offline, refresh};
-use openbook_search::headers::FirstOccurrence;
+use openbook_search::headers::HeaderMode;
 
 const USAGE: &str = "\
 Usage:
@@ -25,7 +25,7 @@ TUNING (changes the numbers for one run; not allowed with --check or --write-bas
   --rrf-k N  --lexical-weight X  --final-sources N  --max-per-document N
   --dense-candidates N  --lexical-candidates N  --chunk-tokens N  --cap-off
   --gate any|dense|combined  --gate-distance X  --gate-coverage X  --gate-matched N
-  --header-variant keep-first|drop-all
+  --header-variant off|keep-first|drop-all
 
 offline   Runs the evaluation from the caches. No network, no AWS. Prints a Markdown table.
           --check            compares with evals/baseline.json (every corpus and all pooled) and
@@ -111,10 +111,9 @@ fn parse(argv: impl Iterator<Item = String>) -> Result<Args, String> {
             "--readme" => args.readme = Some(value(&mut argv, &flag)?.into()),
             "--header-variant" => {
                 let text = value(&mut argv, &flag)?;
-                t.header_variant =
-                    Some(FirstOccurrence::parse(&text).ok_or_else(|| {
-                        "--header-variant needs keep-first or drop-all".to_owned()
-                    })?);
+                t.header_variant = Some(HeaderMode::parse(&text).ok_or_else(|| {
+                    "--header-variant needs off, keep-first, or drop-all".to_owned()
+                })?);
             }
             "--gate" => {
                 let text = value(&mut argv, &flag)?;
