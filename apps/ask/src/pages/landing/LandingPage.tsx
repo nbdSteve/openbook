@@ -6,6 +6,7 @@ import { Mascot } from '@/components/ui/Mascot';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
 import { getConfig } from '@/config/loadConfig';
 import { cn } from '@/lib/cn';
+import { useDocumentTitle } from '@/lib/useDocumentTitle';
 import { BenchmarksSection } from './BenchmarksSection';
 import { DemoCard } from './DemoCard';
 import { AskVignette, SeeVignette, UploadVignette } from './Vignettes';
@@ -56,13 +57,27 @@ const STEPS = [
 ];
 
 export function LandingPage() {
+  useDocumentTitle();
   const demo = getConfig().demo;
   return (
     <div className="min-h-dvh bg-bg-primary">
       <header className="border-b border-border">
         <nav aria-label="Main" className="mx-auto flex h-16 max-w-6xl items-center justify-between px-5 sm:px-8">
-          <Logo />
-          <div className="flex items-center gap-1.5 sm:gap-2">
+          <Logo className="[&_span]:hidden min-[420px]:[&_span]:inline" />
+          <div className="flex items-center gap-1 sm:gap-2">
+            <div className="mr-2 hidden items-center gap-1 md:flex">
+              {[
+                { to: '/ask', label: 'Ask' },
+                { to: '/portal', label: 'Portal' },
+              ].map((link) => (
+                <Link key={link.to} to={link.to} className="rounded-lg px-3 py-2 text-sm text-text-secondary transition-colors hover:text-text-primary">
+                  {link.label}
+                </Link>
+              ))}
+              <a href={GITHUB_URL} target="_blank" rel="noopener noreferrer" className="rounded-lg px-3 py-2 text-sm text-text-secondary transition-colors hover:text-text-primary">
+                GitHub
+              </a>
+            </div>
             <ThemeToggle />
             <Link to="/login" className={buttonStyles('ghost', 'sm')}>
               Sign in
@@ -78,7 +93,7 @@ export function LandingPage() {
         {/* The hero has no fade-in: it is the largest thing on the page, so it must show at first paint. */}
         <section className="mx-auto max-w-6xl px-5 pb-16 pt-12 sm:px-8 sm:pb-24 sm:pt-16">
           <h1 className="max-w-5xl font-serif text-display font-medium tracking-[-0.02em] text-text-primary">
-            Upload your course. <em className="block text-accent">The tutor answers from it.</em>
+            Upload your material. <em className="block text-accent">The tutor answers from it.</em>
           </h1>
           <div className="mt-10 sm:mt-12">
             <DemoCard demo={demo} />
@@ -122,9 +137,15 @@ export function LandingPage() {
       </main>
 
       <footer className="border-t border-border">
-        <div className="mx-auto max-w-6xl px-5 py-6 text-sm text-text-muted sm:px-8">
-          <span>
-            <span className="font-serif font-semibold text-text-primary">Ask</span> by Openbook
+        <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-x-6 gap-y-2 px-5 py-6 text-sm text-text-muted sm:px-8">
+          <span className="font-serif text-base font-semibold text-text-primary">Openbook</span>
+          <span className="flex items-center gap-5">
+            <a href={GITHUB_URL} target="_blank" rel="noopener noreferrer" className="rounded underline-offset-2 hover:text-text-primary hover:underline">
+              GitHub
+            </a>
+            <a href={`${GITHUB_URL}/blob/main/LICENSE`} target="_blank" rel="noopener noreferrer" className="rounded underline-offset-2 hover:text-text-primary hover:underline">
+              AGPL-3.0
+            </a>
           </span>
         </div>
       </footer>

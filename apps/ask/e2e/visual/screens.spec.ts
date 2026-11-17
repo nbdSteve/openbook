@@ -133,21 +133,23 @@ const SCREENS: Screen[] = [
     fullPage: true,
   },
   ...DEMO_SCREENS,
-  { name: 'login', url: '/login', signedIn: false, ready: heading('Sign in'), fullPage: true },
+  { name: 'signin', url: '/signin', signedIn: false, ready: heading('Sign in'), fullPage: true },
   { name: 'signup', url: '/signup', signedIn: false, ready: heading('Create your account'), fullPage: true },
   { name: 'verify', url: '/verify?email=new%40openbook.test', signedIn: false, ready: heading('Confirm your email'), fullPage: true },
   { name: 'forgot', url: '/forgot', signedIn: false, ready: heading('Reset your password'), fullPage: true },
   { name: 'not-found', url: '/nowhere', signedIn: false, ready: heading('Page not found'), fullPage: true },
-  { name: 'home', url: '/app', signedIn: true, ready: heading('Your courses'), fullPage: true },
+  { name: 'portal-home', url: '/portal', signedIn: true, ready: heading('Your courses'), fullPage: true },
+  { name: 'portal-empty', url: '/portal', signedIn: true, ready: heading('You have no courses yet', 2), fullPage: true, mock: { courses: [] } },
+  { name: 'home', url: '/ask', signedIn: true, ready: heading('Your courses'), fullPage: true },
   { name: 'join', url: '/join/K7MQ-4XW2', signedIn: true, ready: async (page) => {
       await heading('Join this course?')(page);
       await expect(page.getByText('and the questions you ask in this course')).toBeVisible();
     },
     fullPage: true },
-  { name: 'home-empty', url: '/app', signedIn: true, ready: heading('You have no courses yet', 2), fullPage: true, mock: { courses: [] } },
+  { name: 'home-empty', url: '/ask', signedIn: true, ready: heading('You have no courses yet', 2), fullPage: true, mock: { courses: [] } },
   {
     name: 'home-personal-dialog',
-    url: '/app',
+    url: '/portal',
     signedIn: true,
     ready: heading('Your courses'),
     act: async (page) => {
@@ -157,7 +159,7 @@ const SCREENS: Screen[] = [
   },
   {
     name: 'personal-first-run',
-    url: '/app',
+    url: '/portal',
     signedIn: true,
     ready: heading('Your courses'),
     mock: {
@@ -175,7 +177,7 @@ const SCREENS: Screen[] = [
   },
   {
     name: 'home-create-dialog',
-    url: '/app',
+    url: '/portal',
     signedIn: true,
     ready: heading('Your courses'),
     act: async (page) => {
@@ -185,7 +187,7 @@ const SCREENS: Screen[] = [
   },
   {
     name: 'chat-empty',
-    url: `/app/c/${COURSE_ID}`,
+    url: `/ask/courses/${COURSE_ID}`,
     signedIn: true,
     // Owners do not see the student note.
     ready: async (page) => {
@@ -196,7 +198,7 @@ const SCREENS: Screen[] = [
   },
   {
     name: 'chat-conversation',
-    url: `/app/c/${COURSE_ID}/chat/${CONVERSATIONS[0].id}`,
+    url: `/ask/courses/${COURSE_ID}/c/${CONVERSATIONS[0].id}`,
     signedIn: true,
     ready: async (page) => {
       await expect(page.locator('.katex').first()).toBeVisible();
@@ -205,7 +207,7 @@ const SCREENS: Screen[] = [
   },
   {
     name: 'chat-citation-popover',
-    url: `/app/c/${COURSE_ID}/chat/${CONVERSATIONS[0].id}`,
+    url: `/ask/courses/${COURSE_ID}/c/${CONVERSATIONS[0].id}`,
     signedIn: true,
     ready: async (page) => {
       await expect(page.getByRole('button', { name: /Source 1/ }).first()).toBeVisible();
@@ -217,7 +219,7 @@ const SCREENS: Screen[] = [
   },
   {
     name: 'chat-sources-many',
-    url: `/app/c/${COURSE_ID}/chat/${CONVERSATIONS[1].id}`,
+    url: `/ask/courses/${COURSE_ID}/c/${CONVERSATIONS[1].id}`,
     signedIn: true,
     ready: async (page) => {
       await expect(page.getByRole('list', { name: 'Sources for this answer' })).toBeVisible();
@@ -247,7 +249,7 @@ const SCREENS: Screen[] = [
   },
   {
     name: 'chat-sources-plain-text',
-    url: `/app/c/${COURSE_ID}/chat/${CONVERSATIONS[1].id}`,
+    url: `/ask/courses/${COURSE_ID}/c/${CONVERSATIONS[1].id}`,
     signedIn: true,
     ready: async (page) => {
       await expect(page.getByRole('list', { name: 'Sources for this answer' })).toBeVisible();
@@ -261,7 +263,7 @@ const SCREENS: Screen[] = [
   },
   {
     name: 'chat-sources-two-of-eight',
-    url: `/app/c/${COURSE_ID}/chat/TWOOFEIGHT`,
+    url: `/ask/courses/${COURSE_ID}/c/TWOOFEIGHT`,
     signedIn: true,
     ready: async (page) => {
       // Eight passages were retrieved. Two are cited, so two are listed and the rest are hidden.
@@ -273,7 +275,7 @@ const SCREENS: Screen[] = [
   },
   {
     name: 'chat-sources-two-of-eight-open',
-    url: `/app/c/${COURSE_ID}/chat/TWOOFEIGHT`,
+    url: `/ask/courses/${COURSE_ID}/c/TWOOFEIGHT`,
     signedIn: true,
     ready: async (page) => {
       await expect(page.getByRole('list', { name: 'Sources for this answer' })).toBeVisible();
@@ -285,7 +287,7 @@ const SCREENS: Screen[] = [
   },
   {
     name: 'chat-sources-disclosure-focus',
-    url: `/app/c/${COURSE_ID}/chat/TWOOFEIGHT`,
+    url: `/ask/courses/${COURSE_ID}/c/TWOOFEIGHT`,
     signedIn: true,
     ready: async (page) => {
       await expect(page.getByRole('list', { name: 'Sources for this answer' })).toBeVisible();
@@ -304,7 +306,7 @@ const SCREENS: Screen[] = [
   },
   {
     name: 'chat-sources-none-used',
-    url: `/app/c/${COURSE_ID}/chat/NONECITED`,
+    url: `/ask/courses/${COURSE_ID}/c/NONECITED`,
     signedIn: true,
     ready: async (page) => {
       await expect(page.getByText('do not seem to cover that question')).toBeVisible();
@@ -314,7 +316,7 @@ const SCREENS: Screen[] = [
   },
   {
     name: 'chat-sources-none-used-open',
-    url: `/app/c/${COURSE_ID}/chat/NONECITED`,
+    url: `/ask/courses/${COURSE_ID}/c/NONECITED`,
     signedIn: true,
     ready: async (page) => {
       await expect(page.getByRole('button', { name: '8 passages found, none cited' })).toBeVisible();
@@ -326,7 +328,7 @@ const SCREENS: Screen[] = [
   },
   {
     name: 'chat-source-one',
-    url: `/app/c/${COURSE_ID}/chat/${CONVERSATIONS[2].id}`,
+    url: `/ask/courses/${COURSE_ID}/c/${CONVERSATIONS[2].id}`,
     signedIn: true,
     ready: async (page) => {
       await expect(page.getByRole('list', { name: 'Sources for this answer' }).getByRole('listitem')).toHaveCount(1);
@@ -334,7 +336,7 @@ const SCREENS: Screen[] = [
   },
   {
     name: 'chat-no-sources',
-    url: `/app/c/${COURSE_ID}/chat/NOSOURCES`,
+    url: `/ask/courses/${COURSE_ID}/c/NOSOURCES`,
     signedIn: true,
     ready: async (page) => {
       await expect(page.getByText('do not seem to cover that question')).toBeVisible();
@@ -343,7 +345,7 @@ const SCREENS: Screen[] = [
   },
   {
     name: 'chat-global-model',
-    url: `/app/c/${COURSE_ID}/chat/${CONVERSATIONS[0].id}`,
+    url: `/ask/courses/${COURSE_ID}/c/${CONVERSATIONS[0].id}`,
     signedIn: true,
     ready: async (page) => {
       await expect(page.getByLabel('Model for your next message')).toBeVisible();
@@ -355,7 +357,7 @@ const SCREENS: Screen[] = [
   },
   {
     name: 'chat-quota-error',
-    url: `/app/c/${COURSE_ID}`,
+    url: `/ask/courses/${COURSE_ID}`,
     signedIn: true,
     ready: heading('What would you like to learn?', 2),
     mock: {
@@ -372,7 +374,7 @@ const SCREENS: Screen[] = [
   },
   {
     name: 'chat-student',
-    url: `/app/c/${STUDENT_COURSE_ID}`,
+    url: `/ask/courses/${STUDENT_COURSE_ID}`,
     signedIn: true,
     // Students are told that their teacher can see their questions.
     ready: async (page) => {
@@ -384,7 +386,7 @@ const SCREENS: Screen[] = [
   },
   {
     name: 'chat-sidebar-open',
-    url: `/app/c/${COURSE_ID}`,
+    url: `/ask/courses/${COURSE_ID}`,
     signedIn: true,
     mobileOnly: true,
     ready: heading('What would you like to learn?', 2),
@@ -395,25 +397,25 @@ const SCREENS: Screen[] = [
   },
   {
     name: 'course-not-found',
-    url: `/app/c/01JZZZZZZZZZZZZZZZZZZZZZZZ`,
+    url: `/ask/courses/01JZZZZZZZZZZZZZZZZZZZZZZZ`,
     signedIn: true,
     ready: heading('Course not found'),
     fullPage: true,
   },
-  { name: 'manage-documents', url: `/app/c/${COURSE_ID}/manage?tab=documents`, signedIn: true, ready: async (p) => {
+  { name: 'manage-documents', url: `/portal/courses/${COURSE_ID}?tab=documents`, signedIn: true, ready: async (p) => {
       await expect(p.getByText('Problem set 2.pdf')).toBeVisible();
       await expect(p.getByText('38 pages')).toBeVisible();
       await expect(p.getByText('Removing the document')).toBeVisible();
       await expect(p.getByText('Page 7 was not transcribed')).toBeVisible();
     } },
-  { name: 'manage-invite', url: `/app/c/${COURSE_ID}/manage?tab=invite`, signedIn: true, ready: (p) => expect(p.getByTestId('invite-code')).toBeVisible() },
-  { name: 'manage-invite-confirm', url: `/app/c/${COURSE_ID}/manage?tab=invite`, signedIn: true, ready: (p) => expect(p.getByTestId('invite-code')).toBeVisible(), act: async (p) => {
+  { name: 'manage-invite', url: `/portal/courses/${COURSE_ID}?tab=invite`, signedIn: true, ready: (p) => expect(p.getByTestId('invite-code')).toBeVisible() },
+  { name: 'manage-invite-confirm', url: `/portal/courses/${COURSE_ID}?tab=invite`, signedIn: true, ready: (p) => expect(p.getByTestId('invite-code')).toBeVisible(), act: async (p) => {
       await p.getByRole('button', { name: 'Make a new code' }).click();
       await expect(p.getByRole('dialog')).toBeVisible();
     } },
-  { name: 'manage-members', url: `/app/c/${COURSE_ID}/manage?tab=members`, signedIn: true, ready: (p) => expect(p.getByText('student.one@openbook.test')).toBeVisible() },
-  { name: 'manage-settings', url: `/app/c/${COURSE_ID}/manage?tab=settings`, signedIn: true, ready: (p) => expect(p.getByLabel('Course name').first()).toBeVisible() },
-  { name: 'manage-insights', url: `/app/c/${COURSE_ID}/manage?tab=insights`, signedIn: true, ready: (p) => expect(p.getByText('Latest student questions')).toBeVisible() },
+  { name: 'manage-members', url: `/portal/courses/${COURSE_ID}?tab=members`, signedIn: true, ready: (p) => expect(p.getByText('student.one@openbook.test')).toBeVisible() },
+  { name: 'manage-settings', url: `/portal/courses/${COURSE_ID}?tab=settings`, signedIn: true, ready: (p) => expect(p.getByLabel('Course name').first()).toBeVisible() },
+  { name: 'manage-insights', url: `/portal/courses/${COURSE_ID}?tab=insights`, signedIn: true, ready: (p) => expect(p.getByText('Latest student questions')).toBeVisible() },
 ];
 
 for (const theme of ['light', 'dark'] as Theme[]) {

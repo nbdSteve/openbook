@@ -15,7 +15,7 @@ export function RequireAuth() {
     // The user chose to sign out: show the landing page. Otherwise the session ended (it expired,
     // or another tab signed out): sign in again and come back here.
     if (endedBy === 'user') return <Navigate to="/" replace />;
-    return <Navigate to={authPath('/login', { next: location.pathname + location.search })} replace />;
+    return <Navigate to={authPath('/signin', { next: location.pathname + location.search })} replace />;
   }
   return (
     <MeProvider>

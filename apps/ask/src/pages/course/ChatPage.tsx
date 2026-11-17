@@ -10,7 +10,7 @@ import { styleName } from '@/lib/constants';
 import { useResource } from '@/lib/useResource';
 import { listDocuments } from '@/services/api/routes';
 import { useMe } from '@/services/me/MeContext';
-import { useCourse } from './CourseContext';
+import { useChatCourse } from './CourseContext';
 
 const NEAR_BOTTOM_PX = 120;
 
@@ -36,7 +36,7 @@ function CourseMaterials({ courseId, role }: { courseId: string; role: 'owner' |
     return (
       <p className={cls} data-testid="materials">
         This course has no documents yet.{' '}
-        <Link to={`/app/c/${courseId}/manage`} className="font-medium text-accent underline">
+        <Link to={`/portal/courses/${courseId}`} className="font-medium text-accent underline">
           Add PDFs
         </Link>
       </p>
@@ -51,7 +51,7 @@ function CourseMaterials({ courseId, role }: { courseId: string; role: 'owner' |
 }
 
 export function ChatPage() {
-  const { course, chat } = useCourse();
+  const { course, chat } = useChatCourse();
   const { me } = useMe();
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
@@ -101,7 +101,7 @@ export function ChatPage() {
           {chat.loadError && (
             <Alert tone="error" className="mt-4">
               {chat.loadError}{' '}
-              <Link to={`/app/c/${course.id}`} className="font-medium underline">
+              <Link to={`/ask/courses/${course.id}`} className="font-medium underline">
                 Start a new chat
               </Link>
             </Alert>

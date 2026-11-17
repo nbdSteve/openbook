@@ -1,6 +1,7 @@
 import { Link, NavLink } from 'react-router';
 import { clsx } from 'clsx';
 import { ArrowLeft, LogOut, MessageSquare, Plus, Settings2, Trash2, UserMinus, X } from 'lucide-react';
+import { AreaSwitch } from '@/components/layout/AreaSwitch';
 import { Logo } from '@/components/ui/Logo';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
 import { buttonStyles } from '@/components/ui/buttonStyles';
@@ -44,7 +45,7 @@ export function CourseSidebar({
       )}
     >
       <div className="flex h-14 shrink-0 items-center justify-between border-b border-border px-4">
-        <Logo to="/app" />
+        <Logo to="/ask" />
         <button
           type="button"
           onClick={onClose}
@@ -57,21 +58,22 @@ export function CourseSidebar({
       </div>
 
       <div className="shrink-0 space-y-1 p-3">
+        <AreaSwitch className="mb-2 flex w-full [&>a]:flex-1 [&>a]:justify-center" />
         <Link
-          to="/app"
+          to="/ask"
           onClick={onClose}
           className="flex items-center gap-2 rounded-xl px-3 py-2 text-sm text-text-secondary hover:bg-surface-hover hover:text-text-primary"
         >
           <ArrowLeft className="h-4 w-4" aria-hidden="true" />
           All courses
         </Link>
-        <Link to={`/app/c/${course.id}`} onClick={onClose} className={buttonStyles('primary', 'md', 'w-full')}>
+        <Link to={`/ask/courses/${course.id}`} onClick={onClose} className={buttonStyles('primary', 'md', 'w-full')}>
           <Plus className="h-4 w-4" aria-hidden="true" />
           New chat
         </Link>
         {course.role === 'owner' && (
           <NavLink
-            to={`/app/c/${course.id}/manage`}
+            to={`/portal/courses/${course.id}`}
             onClick={onClose}
             className={({ isActive }) =>
               clsx(
@@ -97,7 +99,7 @@ export function CourseSidebar({
               return (
                 <li key={conversation.id} className="group relative">
                   <Link
-                    to={`/app/c/${course.id}/chat/${conversation.id}`}
+                    to={`/ask/courses/${course.id}/c/${conversation.id}`}
                     onClick={onClose}
                     aria-current={active ? 'page' : undefined}
                     className={clsx(

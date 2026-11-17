@@ -24,7 +24,7 @@ export function VerifyPage() {
     setBusy(true);
     try {
       await confirmSignUp(email, code);
-      navigate(authPath('/login', { next, notice: 'verified' }), { replace: true, state: emailState(email) });
+      navigate(authPath('/signin', { next, notice: 'verified' }), { replace: true, state: emailState(email) });
     } catch (err) {
       setError(describeAuthError(err));
       setBusy(false);
@@ -54,7 +54,7 @@ export function VerifyPage() {
       title="Confirm your email"
       subtitle="Enter the code we sent to your email address."
       footer={
-        <Link className="font-medium text-accent underline" to={authPath('/login', { next })} state={emailState(email)}>
+        <Link className="font-medium text-accent underline" to={authPath('/signin', { next })} state={emailState(email)}>
           Back to sign in
         </Link>
       }

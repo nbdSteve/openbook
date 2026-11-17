@@ -11,7 +11,7 @@ export function formatDateTime(iso: string): string {
 }
 
 /** Only allow same-origin relative paths as a post-login target. Blocks open redirects. */
-export function safeNextPath(next: string | null | undefined, fallback = '/app'): string {
+export function safeNextPath(next: string | null | undefined, fallback = '/ask'): string {
   // Control characters (a tab, for example) are dropped by URL parsers, so '/\t/host' would read as '//host'.
   // eslint-disable-next-line no-control-regex
   if (!next || !next.startsWith('/') || next.startsWith('//') || /[\\\u0000-\u001f\u007f]/.test(next)) return fallback;

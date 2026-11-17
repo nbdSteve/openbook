@@ -128,20 +128,20 @@ export async function signIn(page: Page, email: string): Promise<void> {
 export async function provisionUser(page: Page, email: string): Promise<void> {
   if (DEPLOYED) {
     await createDeployedUser(email);
-    await page.goto('/login');
+    await page.goto('/signin');
     return;
   }
   await page.goto('/signup');
   await signUp(page, email);
   await confirmUser(email);
-  await page.goto('/login');
+  await page.goto('/signin');
 }
 
-/** The full path for a new user, ending on /app. */
+/** The full path for a new user, ending on /ask. */
 export async function createSignedInUser(page: Page, email: string): Promise<void> {
   await provisionUser(page, email);
   await signIn(page, email);
-  await expect(page).toHaveURL(/\/app$/);
+  await expect(page).toHaveURL(/\/portal$/);
 }
 
 /**
@@ -209,17 +209,17 @@ export async function newUserPage(browser: Browser, label: string): Promise<{ pa
 }
 
 export function courseIdFromUrl(url: string): string {
-  const match = url.match(/\/app\/c\/([0-9A-Z]{26})/);
+  const match = url.match(/\/ask\/courses\/([0-9A-Z]{26})/);
   if (!match) throw new Error(`No course ID in ${url}`);
   return match[1];
 }
 
 /** Delete a course through the UI as its owner (Settings, typed confirmation). */
 export async function deleteCourseInUi(page: Page, courseId: string, name: string): Promise<void> {
-  await page.goto(`/app/c/${courseId}/manage?tab=settings`);
+  await page.goto(`/portal/courses/${courseId}?tab=settings`);
   await page.getByRole('button', { name: 'Delete course' }).click();
   const dialog = page.getByRole('dialog');
   await dialog.getByLabel('Course name').fill(name);
   await dialog.getByRole('button', { name: 'Delete course forever' }).click();
-  await expect(page).toHaveURL(/\/app$/);
+  await expect(page).toHaveURL(/\/portal$/);
 }

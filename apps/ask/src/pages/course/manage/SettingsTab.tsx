@@ -58,7 +58,7 @@ export function SettingsTab() {
     try {
       await deleteCourse(course.id);
       toast.success('Course deleted');
-      navigate('/app', { replace: true });
+      navigate('/portal', { replace: true });
     } catch (err) {
       toast.error(describeApiError(err));
       setBusy(false);

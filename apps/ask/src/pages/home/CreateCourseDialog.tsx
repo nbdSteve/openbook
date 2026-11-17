@@ -32,7 +32,7 @@ export function CreateCourseDialog({ open, mode, onClose }: { open: boolean; mod
         ...(description.trim() ? { description: description.trim() } : {}),
         tutoringStyle: style,
       });
-      navigate(`/app/c/${course.id}/manage?tab=documents`, { state: { first: mode } });
+      navigate(`/portal/courses/${course.id}?tab=documents`, { state: { first: mode } });
     } catch (err) {
       setError(describeApiError(err, me.limits));
       setBusy(false);

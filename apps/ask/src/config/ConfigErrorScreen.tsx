@@ -2,13 +2,13 @@
 export function ConfigErrorScreen({ message }: { message: string }) {
   return (
     <div className="flex min-h-dvh flex-col items-center justify-center bg-bg-primary px-6 text-center">
-      <h1 className="text-2xl font-bold text-text-primary">Ask could not start</h1>
+      <h1 className="text-2xl font-bold text-text-primary">Openbook could not start</h1>
       <p role="alert" className="mt-3 max-w-md text-text-secondary">
         {message}
       </p>
       {import.meta.env.DEV && (
         <p className="mt-2 max-w-md text-sm text-text-tertiary">
-          If you run Ask locally, start the stack with <code className="rounded bg-bg-tertiary px-1.5 py-0.5">make dev</code>. It writes the configuration file.
+          If you run Openbook locally, start the stack with <code className="rounded bg-bg-tertiary px-1.5 py-0.5">make dev</code>. It writes the configuration file.
         </p>
       )}
       <button

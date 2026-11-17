@@ -28,7 +28,7 @@ export function JoinPage() {
     setBusy(true);
     try {
       const course = await joinCourse(normalizeInviteCode(inviteCode));
-      navigate(`/app/c/${course.id}`, { replace: true });
+      navigate(`/ask/courses/${course.id}`, { replace: true });
     } catch (err) {
       setBusy(false);
       if (err instanceof ApiError && err.code === 'not_found') {
@@ -44,7 +44,7 @@ export function JoinPage() {
   return (
     <div className="flex min-h-dvh flex-col bg-bg-primary">
       <header className="flex h-16 items-center justify-between px-4 sm:px-6">
-        <Logo to="/app" />
+        <Logo to="/ask" />
         <ThemeToggle />
       </header>
       <main className="flex flex-1 items-start justify-center px-4 pb-16 pt-6 sm:items-center sm:pt-0">
@@ -61,7 +61,7 @@ export function JoinPage() {
             </Alert>
           )}
           <div className="mt-6 flex flex-col gap-2 sm:flex-row sm:justify-center">
-            <Link to="/app" className={buttonStyles('secondary', 'md')}>
+            <Link to="/ask" className={buttonStyles('secondary', 'md')}>
               Not now
             </Link>
             <Button onClick={join} isLoading={busy} autoFocus>

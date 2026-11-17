@@ -35,7 +35,7 @@ for (const viewport of VIEWPORTS) {
     });
 
     for (const [name, url, button] of [
-      ['sign-in', '/login', 'Sign in'],
+      ['sign-in', '/signin', 'Sign in'],
       ['sign-up', '/signup', 'Create account'],
     ] as const) {
       test(`the ${name} page is fully opaque 100 ms after load`, async ({ page }) => {

@@ -102,5 +102,5 @@ const MOOD_CAPTION: Record<MascotMood, string> = {
   idle: '',
   thinking: 'Reading your pages...',
   happy: 'Found it in your pages.',
-  puzzled: 'I did not find this in your pages.',
+  puzzled: 'No pages used for this one.',
 };

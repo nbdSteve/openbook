@@ -79,7 +79,7 @@ test('a teacher signs up, confirms, signs in, and creates a course', async () =>
   if (DEPLOYED) {
     // The deployed pool sends email, so users come from the admin API and sign in through the UI.
     await createDeployedUser(teacherEmail);
-    await teacher.goto('/login');
+    await teacher.goto('/signin');
   } else {
     await teacher.goto('/');
     await teacher.getByRole('link', { name: 'Get started' }).click();
@@ -88,16 +88,19 @@ test('a teacher signs up, confirms, signs in, and creates a course', async () =>
     await teacher.getByRole('link', { name: 'Back to sign in' }).click();
   }
   await signIn(teacher, teacherEmail);
-  await expect(teacher).toHaveURL(/\/app$/);
+  await expect(teacher).toHaveURL(/\/ask$/);
   await expect(teacher.getByRole('heading', { name: 'You have no courses yet' })).toBeVisible();
 
-  await teacher.getByRole('button', { name: 'Create a course' }).first().click();
+  // A new user has no course yet. Ask points to Portal, where courses are made.
+  await teacher.getByRole('link', { name: 'Create a course' }).click();
+  await expect(teacher).toHaveURL(/\/portal$/);
+  await teacher.getByRole('button', { name: 'Create a course for a class' }).first().click();
   await teacher.getByLabel('Course name').fill(COURSE_NAME);
   await teacher.getByLabel('Description (optional)').fill('Created by the end-to-end suite');
   await teacher.getByLabel('Tutoring style').selectOption('step_by_step');
   await teacher.getByRole('button', { name: 'Create course' }).click();
 
-  await expect(teacher).toHaveURL(/\/app\/c\/[0-9A-Z]{26}\/manage/);
+  await expect(teacher).toHaveURL(/\/portal\/courses\/[0-9A-Z]{26}/);
   courseId = courseIdFromUrl(teacher.url());
   await expect(teacher.getByRole('heading', { name: COURSE_NAME, level: 1 })).toBeVisible();
   await expect(teacher.getByText('Step by step').first()).toBeVisible();
@@ -124,7 +127,7 @@ test('the teacher reads the invite code and the invite link', async () => {
 test('a student signs in from the invite link and joins the course after a click', async () => {
   await student.goto(`/join/${inviteCode}`);
   // Signed out: the invite link sends the student to sign in and keeps the way back.
-  await expect(student).toHaveURL(/\/login\?next=%2Fjoin%2F/);
+  await expect(student).toHaveURL(/\/signin\?next=%2Fjoin%2F/);
   if (DEPLOYED) {
     await createDeployedUser(studentEmail);
   } else {
@@ -140,19 +143,19 @@ test('a student signs in from the invite link and joins the course after a click
   await expect(student.getByText('and the questions you ask in this course')).toBeVisible();
   await student.getByRole('button', { name: 'Join course' }).click();
 
-  await expect(student).toHaveURL(new RegExp(`/app/c/${courseId}$`));
+  await expect(student).toHaveURL(new RegExp(`/ask/courses/${courseId}$`));
   await expect(student.getByRole('heading', { name: COURSE_NAME, level: 1 })).toBeVisible();
   // Students see chat only, and a note that the teacher sees their questions.
   await expect(student.getByTestId('composer-note')).toBeVisible();
   await expect(student.getByRole('link', { name: 'Manage course' })).toHaveCount(0);
   await expect(student.getByRole('button', { name: 'Leave course' })).toBeVisible();
-  await student.goto(`/app/c/${courseId}/manage`);
-  await expect(student).toHaveURL(new RegExp(`/app/c/${courseId}$`));
+  await student.goto(`/portal/courses/${courseId}`);
+  await expect(student).toHaveURL(new RegExp(`/ask/courses/${courseId}$`));
 });
 
 test('the teacher uploads a PDF and sees it become ready with its page count', async () => {
   test.setTimeout(READY_TIMEOUT + 60_000);
-  await teacher.goto(`/app/c/${courseId}/manage?tab=documents`);
+  await teacher.goto(`/portal/courses/${courseId}?tab=documents`);
   await teacher.getByLabel('Choose PDF files').setInputFiles(SAMPLE_PDF);
   const row = teacher.getByRole('listitem').filter({ hasText: 'sample.pdf' });
   await expect(row).toBeVisible();
@@ -162,12 +165,12 @@ test('the teacher uploads a PDF and sees it become ready with its page count', a
 });
 
 test('a student sees how many documents the course has', async () => {
-  await student.goto(`/app/c/${courseId}`);
+  await student.goto(`/ask/courses/${courseId}`);
   await expect(student.getByTestId('materials')).toContainText('1 document');
 });
 
 test('the teacher is told when a file is not a PDF', async () => {
-  await teacher.goto(`/app/c/${courseId}/manage?tab=documents`);
+  await teacher.goto(`/portal/courses/${courseId}?tab=documents`);
   await teacher.getByLabel('Choose PDF files').setInputFiles({ name: 'notes.txt', mimeType: 'text/plain', buffer: Buffer.from('hello') });
   await expect(teacher.getByRole('alert')).toContainText('not a PDF');
 });
@@ -177,7 +180,7 @@ test('the student chats and sees a streamed answer with math, and it survives a 
   await student.getByLabel('Message to Ask').fill(QUESTION);
   await student.getByRole('button', { name: 'Send message' }).click();
 
-  await expect(student).toHaveURL(new RegExp(`/app/c/${courseId}/chat/[0-9A-Z]{26}$`));
+  await expect(student).toHaveURL(new RegExp(`/ask/courses/${courseId}/c/[0-9A-Z]{26}$`));
   conversationUrl = student.url();
   const main = student.getByRole('main');
   await expect(main.getByText(QUESTION).first()).toBeVisible();
@@ -197,11 +200,11 @@ test('the student chats and sees a streamed answer with math, and it survives a 
 });
 
 test('an answer from the uploaded PDF shows citations and sources, also after a reload', async () => {
-  await student.goto(`/app/c/${courseId}`);
+  await student.goto(`/ask/courses/${courseId}`);
   await expect(student.getByRole('heading', { name: 'What would you like to learn?' })).toBeVisible();
   await student.getByLabel('Message to Ask').fill(SOURCE_QUESTION);
   await student.getByRole('button', { name: 'Send message' }).click();
-  await expect(student).toHaveURL(new RegExp(`/app/c/${courseId}/chat/[0-9A-Z]{26}$`));
+  await expect(student).toHaveURL(new RegExp(`/ask/courses/${courseId}/c/[0-9A-Z]{26}$`));
   await expect(student.getByRole('button', { name: 'Stop answer' })).toHaveCount(0, { timeout: CHAT_TIMEOUT });
 
   const checkSources = async () => {
@@ -243,7 +246,7 @@ test('an answer from the uploaded PDF shows citations and sources, also after a 
 });
 
 test('a member can switch the model for a chat', async () => {
-  await student.goto(`/app/c/${courseId}`);
+  await student.goto(`/ask/courses/${courseId}`);
   await expect(student.getByRole('heading', { name: 'What would you like to learn?' })).toBeVisible();
   const picker = student.getByLabel('Model for your next message');
   await expect(picker).toBeVisible();
@@ -263,7 +266,7 @@ test('a member can switch the model for a chat', async () => {
 });
 
 test('the teacher sees the student question in Insights', async () => {
-  await teacher.goto(`/app/c/${courseId}/manage?tab=insights`);
+  await teacher.goto(`/portal/courses/${courseId}?tab=insights`);
   const row = teacher.getByRole('listitem').filter({ hasText: QUESTION });
   await expect(row).toBeVisible();
   await expect(row.getByText(studentEmail)).toBeVisible();
@@ -271,7 +274,7 @@ test('the teacher sees the student question in Insights', async () => {
 
 test('the teacher deletes the document, sees it deleting, and it disappears', async () => {
   test.setTimeout(READY_TIMEOUT + 60_000);
-  await teacher.goto(`/app/c/${courseId}/manage?tab=documents`);
+  await teacher.goto(`/portal/courses/${courseId}?tab=documents`);
   const row = teacher.getByRole('listitem').filter({ hasText: 'sample.pdf' });
   await row.getByRole('button', { name: 'Delete sample.pdf' }).click();
   await teacher.getByRole('dialog').getByRole('button', { name: 'Delete document' }).click();
@@ -280,7 +283,7 @@ test('the teacher deletes the document, sees it deleting, and it disappears', as
   await expect(row.getByRole('button', { name: 'Delete sample.pdf' })).toHaveCount(0);
   await expect(row).toHaveCount(0, { timeout: READY_TIMEOUT });
 
-  await student.goto(`/app/c/${courseId}`);
+  await student.goto(`/ask/courses/${courseId}`);
   await expect(student.getByTestId('materials')).toContainText('has not added any documents yet');
 
   // With no ready document there is nothing to cite: the answer shows no sources.
@@ -295,15 +298,15 @@ test('the teacher deletes the document, sees it deleting, and it disappears', as
 
 test('a user who is not a member gets the not-found screen', async ({ browser }) => {
   const { page, context } = await newUserPage(browser, 'outsider');
-  await page.goto(`/app/c/${courseId}`);
+  await page.goto(`/ask/courses/${courseId}`);
   await expect(page.getByRole('heading', { name: 'Course not found' })).toBeVisible();
-  await page.goto(`/app/c/${courseId}/manage`);
+  await page.goto(`/portal/courses/${courseId}`);
   await expect(page.getByRole('heading', { name: 'Course not found' })).toBeVisible();
   await context.close();
 });
 
 test('a rotated invite code stops working', async ({ browser }) => {
-  await teacher.goto(`/app/c/${courseId}/manage?tab=invite`);
+  await teacher.goto(`/portal/courses/${courseId}?tab=invite`);
   const oldCode = inviteCode;
   await teacher.getByRole('button', { name: 'Make a new code' }).click();
   await teacher.getByRole('dialog').getByRole('button', { name: 'Make a new code' }).click();
@@ -319,17 +322,17 @@ test('a rotated invite code stops working', async ({ browser }) => {
   const spaced = `${inviteCode.slice(0, 4)}-${inviteCode.slice(4)}`.toLowerCase();
   await page.goto(`/join/${spaced}`);
   await page.getByRole('button', { name: 'Join course' }).click();
-  await expect(page).toHaveURL(new RegExp(`/app/c/${courseId}$`));
+  await expect(page).toHaveURL(new RegExp(`/ask/courses/${courseId}$`));
   await context.close();
 });
 
 test('a removed student loses access', async () => {
-  await teacher.goto(`/app/c/${courseId}/manage?tab=members`);
+  await teacher.goto(`/portal/courses/${courseId}?tab=members`);
   await teacher.getByRole('button', { name: `Remove ${studentEmail}` }).click();
   await teacher.getByRole('dialog').getByRole('button', { name: 'Remove student' }).click();
   await expect(teacher.getByText(studentEmail)).toHaveCount(0);
 
-  await student.goto(`/app/c/${courseId}`);
+  await student.goto(`/ask/courses/${courseId}`);
   await expect(student.getByRole('heading', { name: 'Course not found' })).toBeVisible();
 });
 
@@ -337,12 +340,14 @@ test('a learner studies on their own: create a personal course, upload, and ask'
   test.setTimeout(READY_TIMEOUT + 120_000);
   const { page, context } = await newUserPage(browser, 'solo');
   await expect(page.getByRole('heading', { name: 'You have no courses yet' })).toBeVisible();
+  await page.getByRole('navigation', { name: 'Areas' }).getByRole('link', { name: 'Portal' }).click();
+  await expect(page).toHaveURL(/\/portal$/);
   await page.getByRole('button', { name: 'Study on your own' }).first().click();
   // The name is preset, and the copy talks to one learner.
   await expect(page.getByLabel('Course name')).toHaveValue('My study course');
   await page.getByRole('button', { name: 'Start studying' }).click();
 
-  await expect(page).toHaveURL(/\/app\/c\/[0-9A-Z]{26}\/manage/);
+  await expect(page).toHaveURL(/\/portal\/courses\/[0-9A-Z]{26}/);
   const id = courseIdFromUrl(page.url());
   await expect(page.getByText('Your study course is ready')).toBeVisible();
   await expect(page.getByText(/invite code/i).first()).toBeHidden();
@@ -351,7 +356,7 @@ test('a learner studies on their own: create a personal course, upload, and ask'
   const row = page.getByRole('listitem').filter({ hasText: 'sample.pdf' });
   await expect(row.getByText('Ready', { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
 
-  await page.goto(`/app/c/${id}`);
+  await page.goto(`/ask/courses/${id}`);
   await expect(page.getByTestId('materials')).toContainText('1 document');
   // A single learner sees no note about a teacher reading their questions.
   await expect(page.getByTestId('composer-note')).toHaveCount(0);
@@ -367,11 +372,12 @@ test('a learner studies on their own: create a personal course, upload, and ask'
 test('the daily quota stops chat with a clear message', async ({ browser }) => {
   test.skip(DEPLOYED, 'The deployed stack has a limit of 50 messages. This flow needs the local limit of 8.');
   const { page, context } = await newUserPage(browser, 'quota');
-  await page.getByRole('button', { name: 'Create a course' }).first().click();
+  await page.goto('/portal');
+  await page.getByRole('button', { name: 'Create a course for a class' }).first().click();
   await page.getByLabel('Course name').fill('Quota check');
   await page.getByRole('button', { name: 'Create course' }).click();
-  await expect(page).toHaveURL(/\/manage/);
-  const url = `/app/c/${courseIdFromUrl(page.url())}`;
+  await expect(page).toHaveURL(/\/portal\/courses\//);
+  const url = `/ask/courses/${courseIdFromUrl(page.url())}`;
 
   // A second tab keeps a stale usage count, so it still lets the user try after the limit.
   const stale = await context.newPage();
@@ -403,16 +409,16 @@ test('signing out returns to the landing page and locks the app', async ({ brows
   // A second session for the teacher, so the first one stays signed in for the cleanup.
   const context = await newContext(browser);
   const page = await context.newPage();
-  await page.goto('/login');
+  await page.goto('/signin');
   await signIn(page, teacherEmail);
-  await expect(page).toHaveURL(/\/app$/);
-  const url = `/app/c/${courseId}`;
+  await expect(page).toHaveURL(/\/ask$/);
+  const url = `/ask/courses/${courseId}`;
 
   await page.goto(url);
   await page.getByRole('button', { name: 'Sign out' }).click();
   await expect(page.getByRole('heading', { name: /answers from your course materials/i })).toBeVisible();
   await expect(page).toHaveURL(/\/$/);
   await page.goto(url);
-  await expect(page).toHaveURL(/\/login\?next=/);
+  await expect(page).toHaveURL(/\/signin\?next=/);
   await context.close();
 });
