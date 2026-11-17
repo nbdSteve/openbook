@@ -1,6 +1,8 @@
+import { createHash } from 'node:crypto';
 import { defineConfig, devices } from '@playwright/test';
 
-const port = Number(process.env.OPENBOOK_VISUAL_PORT ?? 5190);
+const portForThisCheckout = 5200 + (createHash('sha1').update(process.cwd()).digest().readUInt16BE(0) % 500);
+const port = Number(process.env.OPENBOOK_VISUAL_PORT ?? portForThisCheckout);
 
 /**
  * The visual suite needs no backend. `page.route` fixtures answer /config.json and /api/**. It

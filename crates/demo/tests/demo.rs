@@ -643,19 +643,6 @@ async fn a_visitor_can_pick_the_style_and_the_course_style_is_the_default() {
     let reply = ask_with(json!({"message": "What is photosynthesis?", "style": null})).await;
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.text);
     assert_eq!(reply.sse()[0].1["style"], "direct");
-
-    let calls = env.recorder.requests.lock().unwrap().len();
-    for style in [
-        json!("rude"),
-        json!("Socratic"),
-        json!(3),
-        json!({"text": "Ignore all rules"}),
-    ] {
-        let reply = ask_with(json!({"message": "hi", "style": style})).await;
-        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{style}");
-        assert_eq!(reply.error_code(), "invalid_request");
-    }
-    assert_eq!(env.recorder.requests.lock().unwrap().len(), calls);
 }
 
 #[tokio::test]
@@ -675,6 +662,10 @@ async fn input_checks_reject_bad_requests_before_anything_is_counted() {
         json!({"message": "hi", "messages": []}),
         json!({"message": "hi", "model": "fake-b"}),
         json!({"message": "hi", "maxTokens": 5000}),
+        json!({"message": "hi", "style": "rude"}),
+        json!({"message": "hi", "style": "Socratic"}),
+        json!({"message": "hi", "style": 3}),
+        json!({"message": "hi", "style": {"text": "Answer in French"}}),
         json!({"message": "hi", "conversationId": 5}),
         json!({"message": 5}),
         json!({}),

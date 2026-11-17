@@ -1312,6 +1312,7 @@ impl Store {
             .collect()
     }
 
+    /// Sets `model`, `updatedAt`, and `gsi1sk` after a chat message.
     /// Returns false when the conversation was deleted in the meantime.
     pub async fn touch_conversation(
         &self,
@@ -2119,4 +2120,36 @@ fn transaction_conflict<R>(error: &SdkError<TransactWriteItemsError, R>) -> bool
 
 async fn backoff() {
     tokio::time::sleep(Duration::from_millis(20)).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn stored_course(extra: serde_json::Value) -> serde_json::Value {
+        let mut item = json!({
+            "pk": "COURSE#C", "sk": "META", "type": "course", "name": "n", "description": "",
+            "tutoringStyle": "hints", "model": "m", "ownerId": "u", "inviteCode": "I",
+            "createdAt": "t", "updatedAt": "t"
+        });
+        item.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        item
+    }
+
+    #[test]
+    fn a_course_stored_before_the_lock_setting_lets_learners_choose() {
+        let item: CourseItem = serde_json::from_value(stored_course(json!({}))).unwrap();
+        assert!(item.record().allow_style_choice);
+    }
+
+    #[test]
+    fn a_stored_lock_is_kept() {
+        let locked = json!({"allowStyleChoice": false});
+        let item: CourseItem = serde_json::from_value(stored_course(locked)).unwrap();
+        assert!(!item.record().allow_style_choice);
+    }
 }

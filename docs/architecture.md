@@ -93,7 +93,7 @@ There are five styles: Socratic, Hints, Step by step, Concepts, and Direct. The 
 
 The course `tutoringStyle` is the default style. The owner can lock it with the course setting `allowStyleChoice` ("Let learners change the style", on by default). When it is on, a member picks the style for each message in the chat composer. The style of an answer is chosen by `effective_style` in `crates/core/src/domain.rs`: the course style when the course is locked, else the style in the request, else the style of the conversation, else the course default. The conversation keeps the style of its last answer, so follow-ups keep it, and each assistant message stores the style it used, for insights. A new conversation starts with the course default.
 
-The public demo takes the same optional `style`. Without it, it uses the style of the demo course. Because a visitor can pick any style, the demo reserves its worst-case cost for the longest of the five prompts.
+The public demo takes the same optional `style`. Without it, it uses the style of the demo course. The demo reserves its worst-case cost for the prompt of the effective style, which it knows before the reservation.
 
 The local fake model names the style that reached it in its answer ("Tutoring style in use"), so the tests can check the style end to end. Real models never do that.
 

@@ -198,4 +198,17 @@ describe('useDemoChat', () => {
     await act(async () => void (await result.current.ask('fourth')));
     expect(bodies[3]).toEqual({ message: 'fourth' });
   });
+
+  it('shows the style that the server used until the visitor picks one', async () => {
+    const withStyle = sse('meta', { conversationId: 'C1', model: 'm', style: 'hints' }) + sse('delta', { text: 'Hi' }) + sse('done', { usage: { inputTokens: 1, outputTokens: 1 }, stopReason: 'end_turn' });
+    fakeEndpoint([new Response(withStyle)]);
+    const { result } = renderHook(() => useDemoChat());
+    expect(result.current.style).toBe('direct');
+    await act(async () => void (await result.current.ask('first')));
+    expect(result.current.style).toBe('hints');
+    act(() => result.current.setStyle('concepts'));
+    expect(result.current.style).toBe('concepts');
+    act(() => result.current.reset());
+    expect(result.current.style).toBe('direct');
+  });
 });

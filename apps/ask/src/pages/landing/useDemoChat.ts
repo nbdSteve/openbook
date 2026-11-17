@@ -43,8 +43,8 @@ export function useDemoChat(): DemoChat {
   const conversation = useRef<{ id: string; turns: number; startedAt: number } | null>(null);
   const abort = useRef<AbortController | null>(null);
   const [picked, setPicked] = useState<TutoringStyle | null>(null);
+  const [served, setServed] = useState<TutoringStyle | null>(null);
   const pickedRef = useRef<TutoringStyle | null>(null);
-  pickedRef.current = picked;
 
   useEffect(() => () => abort.current?.abort(), []);
 
@@ -92,6 +92,7 @@ export function useDemoChat(): DemoChat {
             };
             // The server forgot the old conversation (it expired, or it is not known): this is a new one.
             if (current && !continued) setNotice('That conversation ended, so this is a fresh one.');
+            if (event.style) setServed(event.style);
             if (event.attribution && event.attribution.length > 0) setAttribution(event.attribution);
             break;
           }
@@ -148,9 +149,16 @@ export function useDemoChat(): DemoChat {
     setMessages([]);
     setProblem(null);
     setNotice(null);
+    pickedRef.current = null;
     setPicked(null);
+    setServed(null);
     setStatus('idle');
   }, []);
 
-  return { messages, status, problem, notice, attribution, style: picked ?? DEMO_DEFAULT_STYLE, setStyle: setPicked, ask, stop, reset };
+  const setStyle = useCallback((style: TutoringStyle) => {
+    pickedRef.current = style;
+    setPicked(style);
+  }, []);
+
+  return { messages, status, problem, notice, attribution, style: picked ?? served ?? DEMO_DEFAULT_STYLE, setStyle, ask, stop, reset };
 }

@@ -151,6 +151,11 @@ export async function mockBackend(page: Page, options: MockOptions = {}) {
 
 export async function prepare(page: Page, theme: Theme, viewport: (typeof VIEWPORTS)[number], signedIn: boolean, options?: MockOptions) {
   await page.setViewportSize({ width: viewport.width, height: viewport.height });
+  const throttle = Number(process.env.OPENBOOK_VISUAL_CPU_THROTTLE ?? 1);
+  if (throttle > 1) {
+    const session = await page.context().newCDPSession(page);
+    await session.send('Emulation.setCPUThrottlingRate', { rate: throttle });
+  }
   await page.emulateMedia({ colorScheme: theme, reducedMotion: 'reduce' });
   await page.addInitScript((t) => localStorage.setItem('ask_theme', t), theme);
   if (signedIn) await seedSession(page);

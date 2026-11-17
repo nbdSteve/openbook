@@ -179,12 +179,31 @@ async fn course_creation_makes_the_caller_the_owner() {
     // Defaults.
     let plain = app.course(&owner, "Plain").await;
     assert_eq!(plain["tutoringStyle"], "socratic");
+    assert_eq!(plain["allowStyleChoice"], true);
     assert_eq!(plain["description"], "");
     assert_eq!(plain["model"], "fake-a");
     // Newest membership first.
     let listed = app.get("/api/courses", &owner).await.json();
     assert_eq!(listed["courses"][0]["id"], plain["id"]);
     assert_eq!(listed["courses"][1]["id"], course["id"]);
+
+    let locked = app
+        .post(
+            "/api/courses",
+            &owner,
+            json!({"name": "Locked", "allowStyleChoice": false}),
+        )
+        .await;
+    assert_eq!(locked.status, StatusCode::CREATED, "{}", locked.text);
+    assert_eq!(locked.json()["course"]["allowStyleChoice"], false);
+    let bad = app
+        .post(
+            "/api/courses",
+            &owner,
+            json!({"name": "Bad", "allowStyleChoice": "no"}),
+        )
+        .await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]

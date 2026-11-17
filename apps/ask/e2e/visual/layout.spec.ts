@@ -2,8 +2,8 @@ import { expect, test, type Page } from '@playwright/test';
 import { COURSE_ID, LONG_CHAT_STREAM, STUDENT_COURSE_ID } from './data';
 import { prepare } from './fixtures';
 
-
 const DESKTOP = { name: '1628', width: 1628, height: 891 };
+const PHONE = { name: '375', width: 375, height: 812 };
 
 async function metrics(page: Page) {
   return page.evaluate(() => {
@@ -13,6 +13,7 @@ async function metrics(page: Page) {
       scrollHeight: document.scrollingElement?.scrollHeight ?? 0,
       innerHeight: window.innerHeight,
       shellBottom: shell?.getBoundingClientRect().bottom ?? 0,
+      shellPosition: shell ? getComputedStyle(shell).position : '',
     };
   });
 }
@@ -22,10 +23,12 @@ async function expectFilled(page: Page, label: string) {
   expect(m.scrollY, `${label}: the window scrolled`).toBe(0);
   expect(m.scrollHeight, `${label}: the document is taller than the window`).toBe(m.innerHeight);
   expect(m.shellBottom, `${label}: the shell ends above the bottom of the window`).toBe(m.innerHeight);
+  expect(m.shellPosition, `${label}: the shell must be the positioned parent of hidden text`).toBe('relative');
 }
 
-test('the chat shell fills the window after two long answers and wheel scrolling', async ({ page }) => {
-  await prepare(page, 'dark', DESKTOP, true, { chatStream: LONG_CHAT_STREAM });
+for (const viewport of [DESKTOP, PHONE]) {
+  test(`the chat shell fills the window after two long answers and wheel scrolling at ${viewport.name} px`, async ({ page }) => {
+  await prepare(page, 'dark', viewport, true, { chatStream: LONG_CHAT_STREAM });
   await page.goto(`/ask/courses/${COURSE_ID}`);
   const input = page.getByLabel('Message to Ask');
   let answers = 0;
@@ -38,13 +41,14 @@ test('the chat shell fills the window after two long answers and wheel scrolling
   }
   await expectFilled(page, 'after the answers');
 
-  for (const [x, y] of [
-    [800, 450],
-    [60, 400],
-    [700, 30],
-    [1620, 450],
-    [800, 880],
-  ] as const) {
+  const points = [
+    [viewport.width / 2, viewport.height / 2],
+    [viewport.width / 2, 30],
+    [viewport.width - 4, viewport.height / 2],
+    [viewport.width / 2, viewport.height - 10],
+    ...(viewport.width > 1000 ? [[60, 400]] : []),
+  ];
+  for (const [x, y] of points) {
     await page.mouse.move(x, y);
     for (const dy of [-4000, 600, 4000]) {
       await page.mouse.wheel(0, dy);
@@ -52,9 +56,24 @@ test('the chat shell fills the window after two long answers and wheel scrolling
     }
     await expectFilled(page, `wheel at ${x},${y}`);
   }
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   await page.keyboard.press('End');
   await page.keyboard.press('PageDown');
   await expectFilled(page, 'after the keyboard');
+});
+}
+
+test('the loading skeleton is a positioned shell that fills the window', async ({ page }) => {
+  await prepare(page, 'dark', DESKTOP, true);
+  await page.route(`**/api/courses/${COURSE_ID}`, async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await route.fallback();
+  });
+  await page.goto(`/ask/courses/${COURSE_ID}`);
+  await expect(page.getByText('Loading course')).toBeAttached();
+  await expectFilled(page, 'skeleton');
+  await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+  await expectFilled(page, 'loaded shell');
 });
 
 async function expectNoEscapingContent(page: Page, label: string) {

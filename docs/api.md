@@ -105,7 +105,7 @@ interface Document {
   updatedAt: string;
 }
 
-interface Conversation { id: string; courseId: string; title: string; model: string /* catalog ID of the last answer */; style?: TutoringStyle /* style of the last answer; absent on older conversations */; createdAt: string; updatedAt: string }
+interface Conversation { id: string; courseId: string; title: string; model: string /* catalog ID of the last answer */; style?: TutoringStyle /* the effective style of the last message; absent on older conversations */; createdAt: string; updatedAt: string }
 
 interface Source {          // phase 3; the API sends none before then
   n: number;               // citation number used in the answer text, starting at 1
@@ -164,7 +164,7 @@ The first call for a user creates their profile.
 
 `GET /api/courses` → `200 { "courses": Course[] }`: every course the caller is a member of, newest membership first.
 
-`POST /api/courses` body `{ "name": string, "description"?: string, "tutoringStyle"?: TutoringStyle, "model"?: string }` → `201 { "course": Course }`.
+`POST /api/courses` body `{ "name": string, "description"?: string, "tutoringStyle"?: TutoringStyle, "allowStyleChoice"?: boolean, "model"?: string }` → `201 { "course": Course }`.
 The caller becomes the owner. Default style is `socratic`. Default model is the catalog default. An unknown `model` → `400`. `409 limit_reached` when the caller already owns `maxCoursesOwned` courses.
 
 `GET /api/courses/{courseId}` → `200 { "course": Course }` for members, else `404`.

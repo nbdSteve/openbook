@@ -84,6 +84,16 @@ pub fn client_ip(
     }
 }
 
+pub fn system_prompt_tokens(course: &CourseRecord, style: TutoringStyle) -> u64 {
+    token_bound(&build_system_prompt_for(
+        &course.name,
+        &course.description,
+        style,
+        SourceMode::NotUsed,
+    )) + token_bound(NOT_COVERED_NOTICE)
+        + token_bound(DEMO_PROMPT_NOTE)
+}
+
 /// The most that one turn can cost, in millionths of a US dollar. It is an upper bound:
 /// - the answer: the course prompt (`system_tokens`), the most sources that retrieval can return,
 ///   the history (`history_tokens`: the real output tokens of the stored answers and a safe bound for
@@ -242,23 +252,11 @@ pub async fn chat(State(state): State<AppState>, request: Request) -> Result<Res
             }
         };
 
+    let style = effective_style(&course, body.style, None);
     // From here on, a failure must give the visitor's question back.
     let prepared = async {
         let resumed = demo::resume(&state.store, body.conversation_id.as_deref(), now).await?;
-        let system_tokens = TutoringStyle::ALL
-            .into_iter()
-            .map(|style| {
-                token_bound(&build_system_prompt_for(
-                    &course.name,
-                    &course.description,
-                    style,
-                    SourceMode::NotUsed,
-                ))
-            })
-            .max()
-            .unwrap_or(0)
-            + token_bound(NOT_COVERED_NOTICE)
-            + token_bound(DEMO_PROMPT_NOTE);
+        let system_tokens = system_prompt_tokens(&course, style);
         let cost = worst_case_cost(
             &chat_entry,
             &fast_entry,
@@ -311,7 +309,6 @@ pub async fn chat(State(state): State<AppState>, request: Request) -> Result<Res
         }
     };
 
-    let style = effective_style(&course, body.style, None);
     let run = DemoRun {
         store: state.store.clone(),
         provider,
@@ -552,6 +549,44 @@ mod tests {
 
     fn socket(text: &str) -> Option<SocketAddr> {
         Some(text.parse().unwrap())
+    }
+
+    fn course(allow_style_choice: bool) -> CourseRecord {
+        CourseRecord {
+            id: "demo".into(),
+            name: "Demo".into(),
+            description: String::new(),
+            tutoring_style: TutoringStyle::Direct,
+            allow_style_choice,
+            model: "m".into(),
+            owner_id: "o".into(),
+            invite_code: String::new(),
+            bm25_version: None,
+            bm25_key: None,
+            deleting: false,
+            created_at: "t".into(),
+            updated_at: "t".into(),
+        }
+    }
+
+    #[test]
+    fn the_reservation_follows_the_prompt_of_the_effective_style() {
+        let open = course(true);
+        let direct = system_prompt_tokens(&open, effective_style(&open, None, None));
+        let hints = system_prompt_tokens(
+            &open,
+            effective_style(&open, Some(TutoringStyle::Hints), None),
+        );
+        assert_eq!(direct, system_prompt_tokens(&open, TutoringStyle::Direct));
+        assert_eq!(hints, system_prompt_tokens(&open, TutoringStyle::Hints));
+        assert_ne!(direct, hints, "the styles have prompts of different length");
+        let locked = course(false);
+        let asked = effective_style(&locked, Some(TutoringStyle::Hints), None);
+        assert_eq!(
+            system_prompt_tokens(&locked, asked),
+            direct,
+            "a locked course reserves for its own style"
+        );
     }
 
     #[test]

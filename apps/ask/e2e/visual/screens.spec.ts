@@ -485,7 +485,24 @@ const SCREENS: Screen[] = [
       await expect(p.getByRole('dialog')).toBeVisible();
     } },
   { name: 'manage-members', url: `/portal/courses/${COURSE_ID}?tab=members`, signedIn: true, ready: (p) => expect(p.getByText('student.one@openbook.test')).toBeVisible() },
-  { name: 'manage-settings', url: `/portal/courses/${COURSE_ID}?tab=settings`, signedIn: true, ready: (p) => expect(p.getByLabel('Course name').first()).toBeVisible() },
+  { name: 'manage-settings', url: `/portal/courses/${COURSE_ID}?tab=settings`, signedIn: true, ready: async (p) => {
+      await expect(p.getByLabel('Course name').first()).toBeVisible();
+      await expect(p.getByText('Default style: Socratic')).toBeVisible();
+      await expect(p.getByLabel('Let learners change the style')).toBeChecked();
+    } },
+  {
+    name: 'manage-settings-locked',
+    url: `/portal/courses/${COURSE_ID}?tab=settings`,
+    signedIn: true,
+    mock: {
+      override: (path, method) =>
+        method === 'GET' && path === `/api/courses/${COURSE_ID}` ? { status: 200, body: { course: { ...OWNER_COURSE, allowStyleChoice: false } } } : undefined,
+    },
+    ready: async (p) => {
+      await expect(p.getByText(/Style: Socratic/)).toBeVisible();
+      await expect(p.getByLabel('Let learners change the style')).not.toBeChecked();
+    },
+  },
   { name: 'manage-insights', url: `/portal/courses/${COURSE_ID}?tab=insights`, signedIn: true, ready: (p) => expect(p.getByText('Latest student questions')).toBeVisible() },
 ];
 
@@ -507,11 +524,12 @@ for (const theme of ['light', 'dark'] as Theme[]) {
           await screen.ready(page);
           if (screen.name.startsWith('landing')) await scrollThrough(page);
           if (screen.act) await screen.act(page);
-          await page.waitForTimeout(250);
-          await expect(async () => {
-            await expectNoHorizontalOverflow(page);
-            await expectNoSeriousA11yViolations(page);
-          }).toPass({ timeout: 10_000 });
+          await page.evaluate(async () => {
+            await document.fonts.ready;
+            await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          });
+          await expectNoHorizontalOverflow(page);
+          await expectNoSeriousA11yViolations(page);
           expect(await page.evaluate(() => document.documentElement.classList.contains('dark'))).toBe(theme === 'dark');
           await page.screenshot({
             path: path.join(OUT, `${theme}-${viewport.name}`, `${screen.name}.png`),

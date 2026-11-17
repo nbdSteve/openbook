@@ -22,6 +22,7 @@ pub struct CreateCourse {
     name: String,
     description: Option<String>,
     tutoring_style: Option<TutoringStyle>,
+    allow_style_choice: Option<bool>,
     model: Option<String>,
 }
 
@@ -100,6 +101,20 @@ pub async fn create(
             }
             other => other.into(),
         })?;
+    let course = match body.allow_style_choice {
+        Some(allow) => state
+            .store
+            .update_course(
+                &course.id,
+                &CoursePatch {
+                    allow_style_choice: Some(allow),
+                    ..CoursePatch::default()
+                },
+            )
+            .await?
+            .ok_or_else(|| ApiError::not_found("Course"))?,
+        None => course,
+    };
     Ok((
         StatusCode::CREATED,
         Json(json!({ "course": state.course_view(&course, Role::Owner) })),

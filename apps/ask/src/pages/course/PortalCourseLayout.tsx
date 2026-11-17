@@ -1,5 +1,5 @@
 import { Link, Navigate, Outlet, useParams } from 'react-router';
-import { ArrowLeft, MessageSquare } from 'lucide-react';
+import { ArrowLeft, Lock, MessageSquare } from 'lucide-react';
 import { AppHeader } from '@/components/layout/AppHeader';
 import { NotFoundScreen } from '@/components/layout/NotFoundScreen';
 import { ShellSkeleton } from '@/components/layout/ShellSkeleton';
@@ -59,7 +59,9 @@ export function PortalCourseLayout() {
           <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
             <h1 className="min-w-0 break-words font-serif text-title font-medium text-text-primary">{course.data.name}</h1>
             <Badge tone="accent">
-              Default: {styleName(course.data.tutoringStyle)}
+              {course.data.allowStyleChoice ? null : <Lock className="mr-1 h-3 w-3" aria-hidden="true" />}
+              <span className="sr-only">Tutoring style. </span>
+              {course.data.allowStyleChoice ? 'Default style' : 'Style'}: {styleName(course.data.tutoringStyle)}
             </Badge>
           </div>
           <Link to={`/ask/courses/${course.data.id}`} className={buttonStyles('secondary', 'sm')}>

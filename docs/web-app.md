@@ -45,7 +45,7 @@ The demo asks `POST /api/demo/chat` and shows a small version of the course chat
 - **The state** is in `useChatController`: the style of the next message is the picked style, else the style of the conversation (from `GET /api/conversations/{id}` and the `meta` event), else the course default. The choice applies from the next message, and the conversation keeps it. A new chat starts with the course default. The picker is off while an answer streams, like the model picker.
 - **The lock.** When the course has `allowStyleChoice: false`, the picker shows the course style with a lock icon and the reason ("Fixed by your teacher", or "Fixed in course settings" for the owner). It does not open. It uses `aria-disabled`, not `disabled`, so it stays in the tab order and a screen reader reads the reason. The chat then sends no `style`.
 - **Portal, Settings** has the checkbox "Let learners change the style". The style field above it is the default.
-- **The demo** starts in `DEMO_DEFAULT_STYLE` (`src/lib/constants.ts`), which a test keeps equal to `tutoringStyle` in `demo/course.json`. It sends `style` only after the visitor picks one, and forgets the pick on Start over. The control has no extra text, and it sits before the example questions.
+- **The demo** starts in `DEMO_DEFAULT_STYLE` (`src/lib/constants.ts`), which a test keeps equal to `tutoringStyle` in `demo/course.json`. It sends `style` only after the visitor picks one. Until then the picker shows the style of the last `meta` event, so it always matches what the server used. Start over forgets both. The control has no extra text, and it sits before the example questions.
 
 ## Benchmarks on the landing page
 
