@@ -42,21 +42,26 @@ pub const MAX_PER_DOCUMENT: usize = 6;
 pub const TITAN_V2_MODEL_ID: &str = openbook_core::config::DEFAULT_EMBEDDING_MODEL_ID;
 /// The hashed bag-of-words embedder of local runs and tests.
 pub const FAKE_MODEL_ID: &str = openbook_core::config::FAKE_EMBEDDING_MODEL_ID;
-/// The gate distance for Titan v2 (see `GateRule`). "No false gate" is in-sample: on the 123 covered
-/// golden questions of both corpora the worst best dense distance is 0.764 (a college-algebra paraphrase), and the limit is 0.016
-/// above it. A real course can have a covered question that is farther, and then the student gets no sources. The
-/// trace of every turn records the real distances (`trace.gate`), so the next round can re-measure.
-/// The adjacent math topics of `not_covered` are close to the course (0.56 to 0.86), so this limit
-/// catches few of them (see `evals/results/2026-11-17.md`). Off-topic questions are 0.82 and farther.
-/// The distance is only valid for Titan v2.
+/// The gate distance for Titan v2 (see `GateRule`): 0.79 since round 2 (it was 0.78).
 ///
-/// Round 2 re-measured it on a prose corpus (American Government, 47 covered questions): no false gate,
-/// the worst covered question is 0.758 (a margin of 0.022), 8 of 14 `not_covered` questions are gated,
-/// and all 12 `off_topic` questions are gated. But the margin over both corpora is 0.016, under the
-/// 0.02 that the rule asks for (the lowest limit that passes on both is 0.79, with a gate accuracy of
-/// 0.8722 against 0.9000). The limit stays until `trace.gate` gives real distances
-/// (see `evals/results/2026-11-18.md`).
-pub const GATE_TITAN_V2_MAX_DISTANCE: f32 = 0.78;
+/// The rule that chose it: no false gate on the golden questions, and a margin of at least 0.02
+/// between the limit and the worst covered question; among the limits that pass, the highest gate
+/// accuracy. The margin is a safety condition and it comes first: a false gate (a student with a
+/// real course question gets no sources) costs more than a missed gate (the question gets sources
+/// that the answer may not cite, and the UI shows only the cited ones).
+///
+/// The numbers (`evals/results/2026-11-18.md`), over both corpora and 123 covered questions: the
+/// worst covered question is 0.764 (a college-algebra paraphrase), so 0.78 has a margin of 0.016 and
+/// fails, and 0.79 has 0.026 and passes. 0.79 costs gate accuracy (0.9000 to 0.8722: five more
+/// `not_covered` questions get through, because the adjacent topics of a course look like the course).
+/// All 24 `off_topic` questions (distances 0.82 and farther) are still gated. The false-gate rate is
+/// 0 on both corpora.
+///
+/// "No false gate" is in-sample: the limit was chosen on the golden questions that the retrieval was
+/// tuned on. A real course can have a covered question that is farther, and then the student gets no
+/// sources. The trace of every turn records the real distances (`trace.gate`), so the next round can
+/// re-measure. The distance is only valid for Titan v2.
+pub const GATE_TITAN_V2_MAX_DISTANCE: f32 = 0.79;
 
 /// What the relevance gate reads about the words of a query (see `Bm25Reader::search_with_stats`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

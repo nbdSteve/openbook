@@ -95,23 +95,23 @@
   },
   "gate": {
     "combined": {
-      "accuracy": 0.9,
+      "accuracy": 0.8722,
       "falseGateRate": 0.0,
       "offTopicCaught": 1.0,
-      "notCoveredCaught": 0.4545
+      "notCoveredCaught": 0.303
     },
     "corpora": {
       "american-government": {
-        "accuracy": 0.9178,
+        "accuracy": 0.8904,
         "falseGateRate": 0.0,
         "offTopicCaught": 1.0,
-        "notCoveredCaught": 0.5714
+        "notCoveredCaught": 0.4286
       },
       "college-algebra": {
-        "accuracy": 0.8879,
+        "accuracy": 0.8598,
         "falseGateRate": 0.0,
         "offTopicCaught": 1.0,
-        "notCoveredCaught": 0.3684
+        "notCoveredCaught": 0.2105
       }
     }
   }

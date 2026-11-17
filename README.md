@@ -40,9 +40,9 @@ Retrieval is measured offline on excerpts of two openly licensed OpenStax books,
 
 | Corpus | Gate accuracy | False-gate rate | Off-topic questions caught | Not-covered questions caught |
 |---|---|---|---|---|
-| All corpora | 0.9000 | 0.0000 | 1.0000 | 0.4545 |
-| American Government 2e (OpenStax) | 0.9178 | 0.0000 | 1.0000 | 0.5714 |
-| College Algebra (OpenStax) | 0.8879 | 0.0000 | 1.0000 | 0.3684 |
+| All corpora | 0.8722 | 0.0000 | 1.0000 | 0.3030 |
+| American Government 2e (OpenStax) | 0.8904 | 0.0000 | 1.0000 | 0.4286 |
+| College Algebra (OpenStax) | 0.8598 | 0.0000 | 1.0000 | 0.2105 |
 <!-- benchmarks:end -->
 
 ## License
