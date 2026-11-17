@@ -282,7 +282,9 @@ describe('the demo function', () => {
     expect(demo.OPENBOOK_DEMO_BUDGET_USD_PER_DAY).toBe('2');
     expect(demo.OPENBOOK_DEMO_VISITOR_BUDGET_USD_PER_DAY).toBe('0.3');
     expect(demo.OPENBOOK_DEMO_MAX_OUTPUT_TOKENS).toBe('1000');
-    expect(demo.OPENBOOK_DEMO_ENABLED).toBe(_stage === 'dev' ? 'true' : 'false');
+    // The switch comes from stageDemo in cdk.json, so turning the demo on or off is a one-line change there.
+    const stageDemo = (cdkJsonContext.stageDemo as Record<string, { enabled: boolean }>)[_stage];
+    expect(demo.OPENBOOK_DEMO_ENABLED).toBe(String(stageDemo.enabled));
     expect(Object.keys(api).filter((k) => k.startsWith('OPENBOOK_DEMO'))).toEqual([]);
     expect(JSON.stringify(demo).length).toBeLessThan(4096);
     expect(JSON.stringify(api).length).toBeLessThan(4096);

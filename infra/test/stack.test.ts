@@ -398,8 +398,8 @@ describe.each([
       region: 'ap-southeast-2',
       cognito: { userPoolId: 'x', clientId: 'x', endpoint: null },
       demo: {
-        // Dev has the demo on. Prod stays off until the demo course is provisioned (stageDemo in cdk.json).
-        enabled: _stage === 'dev',
+        // The switch comes from stageDemo in cdk.json. Turn it on only after the demo course is provisioned.
+        enabled: (cdkJsonContext.stageDemo as Record<string, { enabled: boolean }>)[_stage].enabled,
         model: { label: 'Claude Sonnet 4.6' },
         sources: demo.sources,
         examples: demo.examples,
