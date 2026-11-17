@@ -1,0 +1,13 @@
+{
+  "format": 1,
+  "kind": "dev",
+  "corpus": "american-government-excerpt.pdf",
+  "corpusSha256": "b6e855933fdcc454c4956643ab7fa64eb059870865fce1d8a91199da8cb2143c",
+  "embeddingModel": "fake",
+  "transcribeModel": null,
+  "rewriteModel": "dev-concat",
+  "pages": 39,
+  "transcribedPages": 0,
+  "fallbackPages": [],
+  "latency": null
+}

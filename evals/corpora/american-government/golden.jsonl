@@ -1,0 +1,73 @@
+{"id": "lookup-01", "question": "What is the social contract according to John Locke?", "relevantPages": [3], "kind": "lookup"}
+{"id": "lookup-02", "question": "What did Magna Carta promise to the people of England?", "relevantPages": [2], "kind": "lookup"}
+{"id": "lookup-03", "question": "What was the Stamp Act of 1765?", "relevantPages": [4], "kind": "lookup"}
+{"id": "lookup-04", "question": "What happened at the Boston Tea Party?", "relevantPages": [5], "kind": "lookup"}
+{"id": "lookup-05", "question": "What were the Coercive Acts?", "relevantPages": [6], "kind": "lookup"}
+{"id": "lookup-06", "question": "Who drafted the Declaration of Independence?", "relevantPages": [6], "kind": "lookup"}
+{"id": "lookup-07", "question": "How many votes did the central government need before it could act under the Articles of Confederation?", "relevantPages": [8], "kind": "lookup"}
+{"id": "lookup-08", "question": "What was Shays' Rebellion?", "relevantPages": [10, 11], "kind": "lookup"}
+{"id": "lookup-09", "question": "What was the Virginia Plan?", "relevantPages": [12], "kind": "lookup"}
+{"id": "lookup-10", "question": "What is the Great Compromise?", "relevantPages": [15], "kind": "lookup"}
+{"id": "lookup-11", "question": "What was the Three-Fifths Compromise?", "relevantPages": [15, 16], "kind": "lookup"}
+{"id": "lookup-12", "question": "What is judicial review, and which case established it?", "relevantPages": [17], "kind": "lookup"}
+{"id": "lookup-13", "question": "What are enumerated powers and reserved powers?", "relevantPages": [18], "kind": "lookup"}
+{"id": "lookup-14", "question": "What does the supremacy clause of Article VI say?", "relevantPages": [18, 24], "kind": "lookup"}
+{"id": "lookup-15", "question": "What do all federal systems have in common?", "relevantPages": [20, 21], "kind": "lookup"}
+{"id": "lookup-16", "question": "What is the elastic clause?", "relevantPages": [22, 38], "kind": "lookup"}
+{"id": "lookup-17", "question": "What did the Supreme Court decide in McCulloch v. Maryland?", "relevantPages": [31], "kind": "lookup"}
+{"id": "lookup-18", "question": "What is dual federalism?", "relevantPages": [32, 38], "kind": "lookup"}
+{"id": "paraphrase-01", "question": "Why did the colonists object to being taxed by a Parliament where they had no elected members?", "relevantPages": [4], "kind": "paraphrase"}
+{"id": "paraphrase-02", "question": "Which English law of 1689 listed the liberties of citizens and later shaped the American Constitution?", "relevantPages": [3], "kind": "paraphrase"}
+{"id": "paraphrase-03", "question": "Why could the Confederation Congress not pay the debts of the nation?", "relevantPages": [8, 9], "kind": "paraphrase"}
+{"id": "paraphrase-04", "question": "Why did the founders build a weak central government in the Articles of Confederation?", "relevantPages": [8], "kind": "paraphrase"}
+{"id": "paraphrase-05", "question": "How did the delegates settle the fight between large and small states over seats in Congress?", "relevantPages": [15], "kind": "paraphrase"}
+{"id": "paraphrase-06", "question": "Which parts of the Constitution protected slavery?", "relevantPages": [16], "kind": "paraphrase"}
+{"id": "paraphrase-07", "question": "How can Congress remove a president from office?", "relevantPages": [17], "kind": "paraphrase"}
+{"id": "paraphrase-08", "question": "What happens when the president vetoes a bill that both houses passed?", "relevantPages": [17], "kind": "paraphrase"}
+{"id": "paraphrase-09", "question": "Which powers stay with the states because the national government was not given them?", "relevantPages": [18, 23], "kind": "paraphrase"}
+{"id": "paraphrase-10", "question": "How is a federal system different from a unitary system, and what is devolution?", "relevantPages": [21, 22], "kind": "paraphrase"}
+{"id": "paraphrase-11", "question": "Why does the U.S. Senate matter for the balance between the states and the national government?", "relevantPages": [21], "kind": "paraphrase"}
+{"id": "paraphrase-12", "question": "What may states not do under the Constitution?", "relevantPages": [24], "kind": "paraphrase"}
+{"id": "paraphrase-13", "question": "Why is a driver's license from one state valid in every other state?", "relevantPages": [24], "kind": "paraphrase"}
+{"id": "paraphrase-14", "question": "Where do local governments get most of their tax money?", "relevantPages": [27], "kind": "paraphrase"}
+{"id": "paraphrase-15", "question": "How did the Supreme Court settle the dispute over steamboat licenses between New York and the federal government?", "relevantPages": [31, 32], "kind": "paraphrase"}
+{"id": "paraphrase-16", "question": "How did the Great Depression change the way that the federal and state governments share work?", "relevantPages": [34, 35], "kind": "paraphrase"}
+{"id": "paraphrase-17", "question": "What was the nullification crisis of the 1830s about?", "relevantPages": [32], "kind": "paraphrase"}
+{"id": "paraphrase-18", "question": "What are the benefits and the drawbacks of federalism?", "relevantPages": [39], "kind": "paraphrase"}
+{"id": "followup-01", "question": "Who suggested it?", "context": "What is the Great Compromise?", "relevantPages": [15], "kind": "followup"}
+{"id": "followup-02", "question": "Why did the national government not help the governor?", "context": "What was Shays' Rebellion?", "relevantPages": [10, 11], "kind": "followup"}
+{"id": "followup-03", "question": "In which year did the Supreme Court first claim that power?", "context": "What is judicial review?", "relevantPages": [17], "kind": "followup"}
+{"id": "followup-04", "question": "And which powers are left to the states?", "context": "What are enumerated powers?", "relevantPages": [18], "kind": "followup"}
+{"id": "followup-05", "question": "Why did the Anti-Federalists ask for it?", "context": "What is the Tenth Amendment?", "relevantPages": [23], "kind": "followup"}
+{"id": "followup-06", "question": "How did the debate about same-sex marriage test it?", "context": "What is the full faith and credit clause?", "relevantPages": [24], "kind": "followup"}
+{"id": "followup-07", "question": "What did the Court say about the power to tax?", "context": "What happened in McCulloch v. Maryland?", "relevantPages": [31], "kind": "followup"}
+{"id": "followup-08", "question": "What cake picture is used for it?", "context": "What is cooperative federalism?", "relevantPages": [34, 37], "kind": "followup"}
+{"id": "followup-09", "question": "Which presidents tried it?", "context": "What is new federalism?", "relevantPages": [36], "kind": "followup"}
+{"id": "followup-10", "question": "What did the national government do to get money instead?", "context": "What did the Articles of Confederation say about taxes?", "relevantPages": [8, 9], "kind": "followup"}
+{"id": "followup-11", "question": "What did he think about property?", "context": "Who was John Locke?", "relevantPages": [2, 3], "kind": "followup"}
+{"id": "not-covered-01", "question": "What were the Federalist Papers, and who wrote them?", "relevantPages": [], "kind": "not_covered"}
+{"id": "not-covered-02", "question": "What does the First Amendment say about freedom of speech?", "relevantPages": [], "kind": "not_covered"}
+{"id": "not-covered-03", "question": "How does the Electoral College choose the president?", "relevantPages": [], "kind": "not_covered"}
+{"id": "not-covered-04", "question": "What does the Senate filibuster do?", "relevantPages": [], "kind": "not_covered"}
+{"id": "not-covered-05", "question": "What does the Speaker of the House do?", "relevantPages": [], "kind": "not_covered"}
+{"id": "not-covered-06", "question": "What are political action committees and how do they affect elections?", "relevantPages": [], "kind": "not_covered"}
+{"id": "not-covered-07", "question": "What is gerrymandering?", "relevantPages": [], "kind": "not_covered"}
+{"id": "not-covered-08", "question": "What did the Supreme Court decide in Brown v. Board of Education?", "relevantPages": [], "kind": "not_covered"}
+{"id": "not-covered-09", "question": "What did the Supreme Court decide in Miranda v. Arizona?", "relevantPages": [], "kind": "not_covered"}
+{"id": "not-covered-10", "question": "What does the Fourth Amendment say about searches and warrants?", "relevantPages": [], "kind": "not_covered"}
+{"id": "not-covered-11", "question": "What was the Missouri Compromise of 1820?", "relevantPages": [], "kind": "not_covered"}
+{"id": "not-covered-12", "question": "What is an executive order and how do presidents use it?", "relevantPages": [], "kind": "not_covered"}
+{"id": "not-covered-13", "question": "Why does California set its own vehicle emissions standards?", "relevantPages": [], "kind": "not_covered"}
+{"id": "not-covered-14", "question": "How did the Supreme Court decide Roe v. Wade?", "relevantPages": [], "kind": "not_covered"}
+{"id": "off-topic-01", "question": "hi", "relevantPages": [], "kind": "off_topic"}
+{"id": "off-topic-02", "question": "thanks, that makes sense", "relevantPages": [], "kind": "off_topic"}
+{"id": "off-topic-03", "question": "ok cool", "relevantPages": [], "kind": "off_topic"}
+{"id": "off-topic-04", "question": "What is the capital of France?", "relevantPages": [], "kind": "off_topic"}
+{"id": "off-topic-05", "question": "Write a haiku about autumn.", "relevantPages": [], "kind": "off_topic"}
+{"id": "off-topic-06", "question": "How do I bake sourdough bread?", "relevantPages": [], "kind": "off_topic"}
+{"id": "off-topic-07", "question": "What is the boiling point of water in degrees Fahrenheit?", "relevantPages": [], "kind": "off_topic"}
+{"id": "off-topic-08", "question": "Who won the football World Cup in 2018?", "relevantPages": [], "kind": "off_topic"}
+{"id": "off-topic-09", "question": "Explain how photosynthesis works.", "relevantPages": [], "kind": "off_topic"}
+{"id": "off-topic-10", "question": "Can you recommend a laptop for programming?", "relevantPages": [], "kind": "off_topic"}
+{"id": "off-topic-11", "question": "How do you say good morning in Spanish?", "relevantPages": [], "kind": "off_topic"}
+{"id": "off-topic-12", "question": "What is the derivative of x squared?", "relevantPages": [], "kind": "off_topic"}
