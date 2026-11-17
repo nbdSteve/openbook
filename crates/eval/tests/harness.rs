@@ -453,7 +453,15 @@ fn running_headers_are_stripped_from_the_committed_pages() {
 #[test]
 fn the_grid_runs_on_the_dev_cache_and_writes_a_table() {
     let dir = tempfile::tempdir().unwrap();
-    let out = eval(&["grid", "--dev-cache", "--out", dir.path().to_str().unwrap()]);
+    // The tiny grid has two rows: the production setting with both header variants. The whole grid
+    // (`make eval-grid`) is a tool and not a test.
+    let out = eval(&[
+        "grid",
+        "--dev-cache",
+        "--tiny",
+        "--out",
+        dir.path().to_str().unwrap(),
+    ]);
     assert!(out.status.success(), "{}", text(&out.stderr));
     let md = std::fs::read_to_string(dir.path().join("grid.md")).unwrap();
     for name in ["RRF k", "Final sources", "Max per document", "Chunk target"] {
@@ -462,9 +470,10 @@ fn the_grid_runs_on_the_dev_cache_and_writes_a_table() {
     let grid: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(dir.path().join("grid.json")).unwrap())
             .unwrap();
-    // 3 chunk targets x 3 k x 3 final x 2 candidates x 5 max per document x 4 weights.
     let rows = grid["rows"].as_array().unwrap();
-    assert_eq!(rows.len(), 1080);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["knobs"]["dropAllHeaders"], false);
+    assert_eq!(rows[1]["knobs"]["dropAllHeaders"], true);
     // Every row has the pooled numbers and the numbers of each corpus.
     assert!(rows[0]["combined"]["sectioned"]["hybrid"].is_object());
     assert_eq!(rows[0]["corpora"].as_object().unwrap().len(), 2);

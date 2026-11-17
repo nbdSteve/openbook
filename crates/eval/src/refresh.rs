@@ -34,7 +34,8 @@ use crate::Error;
 use crate::cache::{Cache, CacheKind, EmbeddingStore, FORMAT, Latency, Meta, rewrite_key};
 use crate::corpus::Corpus;
 use crate::data::{self, Kind, Question, Section};
-use crate::offline::{CHARS_PER_TOKEN, build_chunks};
+use crate::offline::{CHARS_PER_TOKEN, build_chunks_with};
+use openbook_search::headers::FirstOccurrence;
 
 /// The model for page transcription and for the follow-up rewrite, unless `OPENBOOK_EVAL_MODEL_ID`
 /// says another one. It is the fast model of the stack.
@@ -98,9 +99,12 @@ pub fn texts_to_embed(
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     for tokens in targets {
-        for chunk in build_chunks(sections, pages, tokens * CHARS_PER_TOKEN)? {
-            if seen.insert(chunk.embed_text.clone()) {
-                out.push(chunk.embed_text);
+        // Both variants of the removal of running headers, so that the grid runs offline.
+        for variant in FirstOccurrence::ALL {
+            for chunk in build_chunks_with(sections, pages, tokens * CHARS_PER_TOKEN, variant)? {
+                if seen.insert(chunk.embed_text.clone()) {
+                    out.push(chunk.embed_text);
+                }
             }
         }
     }

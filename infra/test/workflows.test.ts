@@ -165,7 +165,7 @@ describe('the deploy workflow', () => {
     expect(Object.keys(deploy.wf.on)).toContain('workflow_dispatch');
     // The ignore list names no code, workflow, script, infrastructure, or evaluation input.
     for (const pattern of push['paths-ignore'] ?? []) {
-      expect(pattern).not.toMatch(/^(crates|apps|infra|scripts|\.github|evals\/(cache|corpus|golden|baseline))/);
+      expect(pattern).not.toMatch(/^(crates|apps|infra|scripts|\.github|evals\/(corpora|baseline))/);
     }
   });
 

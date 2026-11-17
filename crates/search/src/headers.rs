@@ -265,9 +265,41 @@ fn occurrences(page: &Page, phrase: &[&str]) -> Vec<usize> {
     found
 }
 
+/// What happens to the first occurrence of a running phrase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum FirstOccurrence {
+    /// It stays when it is at the top of its page (it may be the real section heading).
+    Keep,
+    /// It goes with the others.
+    Drop,
+}
+
+impl FirstOccurrence {
+    pub const ALL: [FirstOccurrence; 2] = [FirstOccurrence::Keep, FirstOccurrence::Drop];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            FirstOccurrence::Keep => "keep-first",
+            FirstOccurrence::Drop => "drop-all",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|v| v.name() == text)
+    }
+}
+
+/// The variant of production.
+pub const PRODUCTION_VARIANT: FirstOccurrence = FirstOccurrence::Keep;
+
 /// Removes the running headers and footers of a document. `pages` has `(page number, Markdown)` in
 /// page order. A page that has nothing to remove comes back unchanged, byte for byte.
 pub fn strip_running_lines(pages: &[(u32, String)]) -> Stripped {
+    strip_running_lines_with(pages, PRODUCTION_VARIANT)
+}
+
+/// `strip_running_lines` with a choice for the first occurrence. The evaluation compares both.
+pub fn strip_running_lines_with(pages: &[(u32, String)], variant: FirstOccurrence) -> Stripped {
     if pages.len() < MIN_PAGES {
         return Stripped {
             pages: pages.to_vec(),
@@ -352,7 +384,8 @@ pub fn strip_running_lines(pages: &[(u32, String)]) -> Stripped {
             consumed[*pi][*start..*start + cand.len].fill(true);
             // At the top of its page: nearer to the start of the page than to its end.
             let at_top = *start <= page.seq.len() - (*start + cand.len);
-            let keep = *pi == first_page && at_top && !kept_first;
+            let keep =
+                variant == FirstOccurrence::Keep && *pi == first_page && at_top && !kept_first;
             if keep {
                 kept_first = true;
                 continue;
@@ -571,6 +604,41 @@ mod tests {
         assert_eq!(section.first_page, 1);
         assert_eq!(section.removed_from, [3, 5]);
         assert_eq!(section.first_text, "SECTION 1.2 EXPONENTS");
+    }
+
+    #[test]
+    fn the_drop_all_variant_removes_the_first_occurrence_too() {
+        let pages = doc(&[
+            "# SECTION 1.2 EXPONENTS\n\nBody one.",
+            "# CHAPTER 1 PREREQUISITES\n\nBody two.",
+            "# SECTION 1.2 EXPONENTS\n\nBody three.",
+            "# CHAPTER 1 PREREQUISITES\n\nBody four.",
+            "# SECTION 1.2 EXPONENTS\n\nBody five.",
+            "# CHAPTER 1 PREREQUISITES\n\nBody six.",
+        ]);
+        let out = strip_running_lines_with(&pages, FirstOccurrence::Drop);
+        assert_eq!(
+            texts(&out),
+            [
+                "Body one.",
+                "Body two.",
+                "Body three.",
+                "Body four.",
+                "Body five.",
+                "Body six."
+            ]
+        );
+        assert_eq!(out.lines[0].removed_from.len(), 3);
+        // The default is keep-first.
+        assert_eq!(
+            strip_running_lines(&pages),
+            strip_running_lines_with(&pages, FirstOccurrence::Keep)
+        );
+        assert_eq!(
+            FirstOccurrence::parse("drop-all"),
+            Some(FirstOccurrence::Drop)
+        );
+        assert_eq!(FirstOccurrence::parse("x"), None);
     }
 
     #[test]

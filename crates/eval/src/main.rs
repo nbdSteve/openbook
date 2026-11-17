@@ -7,6 +7,7 @@ use openbook_eval::cache::{Cache, CacheKind};
 use openbook_eval::offline::{GateKind, Tuning};
 use openbook_eval::report::{Baseline, check_suite, suite_improved};
 use openbook_eval::{Error, corpus, default_evals_dir, grid, offline, refresh};
+use openbook_search::headers::FirstOccurrence;
 
 const USAGE: &str = "\
 Usage:
@@ -22,6 +23,7 @@ TUNING (changes the numbers for one run; not allowed with --check or --write-bas
   --rrf-k N  --lexical-weight X  --final-sources N  --max-per-document N
   --dense-candidates N  --lexical-candidates N  --chunk-tokens N  --cap-off
   --gate any|dense|combined  --gate-distance X  --gate-coverage X  --gate-matched N
+  --header-variant keep-first|drop-all
 
 offline   Runs the evaluation from the caches. No network, no AWS. Prints a Markdown table.
           --check            compares with evals/baseline.json (every corpus and all pooled) and
@@ -49,6 +51,8 @@ struct Args {
     check: bool,
     write_baseline: bool,
     missing_only: bool,
+    /// `grid` only: two rows, for the tests.
+    tiny: bool,
     yes: bool,
     corpus: Option<String>,
     cache: Option<PathBuf>,
@@ -97,6 +101,14 @@ fn parse(argv: impl Iterator<Item = String>) -> Result<Args, String> {
             }
             "--chunk-tokens" => t.chunk_tokens = Some(number(value(&mut argv, &flag)?, &flag)?),
             "--cap-off" => t.cap_off = true,
+            "--tiny" => args.tiny = true,
+            "--header-variant" => {
+                let text = value(&mut argv, &flag)?;
+                t.header_variant =
+                    Some(FirstOccurrence::parse(&text).ok_or_else(|| {
+                        "--header-variant needs keep-first or drop-all".to_owned()
+                    })?);
+            }
             "--gate" => {
                 let text = value(&mut argv, &flag)?;
                 t.gate_kind = Some(
@@ -285,6 +297,11 @@ async fn grid_command(args: &Args, evals: &Path) -> Result<ExitCode, Error> {
         args.dev_cache,
         args.cache.as_deref(),
         &args.tuning,
+        &if args.tiny {
+            grid::Axes::tiny()
+        } else {
+            grid::Axes::full()
+        },
     )
     .await?;
     let production = grid::Knobs::production(&args.tuning.options(&grid.embedding_model));

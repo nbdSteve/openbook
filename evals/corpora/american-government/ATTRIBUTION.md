@@ -13,7 +13,7 @@
 
 ## Changes
 
-Page selection only. The 39 pages are copied from the full PDF with `qpdf --pages`, in this order, and nothing on the pages is edited.
+Page selection and image compression. The 39 pages are copied from the full PDF with `qpdf --pages`, in this order. Then the file was rewritten with Ghostscript (`gs -sDEVICE=pdfwrite -dPDFSETTINGS=/ebook -dColorConversionStrategy=/sRGB`) to shrink the images from 7.9 MB to 1.6 MB. The words on the pages are not edited, and the text layer that pdfium reads is byte for byte the same as before the compression.
 
 | Excerpt pages | Section | Pages in the full PDF file |
 |---|---|---|

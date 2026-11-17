@@ -337,9 +337,21 @@ pub fn chunk_pages(pages: &[(u32, String)]) -> Vec<Chunk> {
 /// `chunk_pages` with another target size in characters. Production uses `TARGET_CHARS`. The
 /// evaluation tries other sizes. The hard limit `MAX_CHARS` stays the same.
 pub fn chunk_pages_with(pages: &[(u32, String)], target: usize) -> Vec<Chunk> {
+    chunk_pages_variant(pages, target, crate::headers::PRODUCTION_VARIANT)
+}
+
+/// `chunk_pages_with` with a choice for the first occurrence of a running header.
+pub fn chunk_pages_variant(
+    pages: &[(u32, String)],
+    target: usize,
+    variant: crate::headers::FirstOccurrence,
+) -> Vec<Chunk> {
     // The running headers and footers of the book go first, so no heading path, embedded text, or
     // BM25 field holds them. The ingestion worker and the evaluation both come through here.
-    chunk_stripped_pages(&crate::headers::strip_running_lines(pages).pages, target)
+    chunk_stripped_pages(
+        &crate::headers::strip_running_lines_with(pages, variant).pages,
+        target,
+    )
 }
 
 /// Chunks pages as they are, with no removal of running lines. The evaluation uses it to measure

@@ -11,8 +11,12 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use openbook_search::bm25::{Bm25Chunk, Bm25Reader, Bm25Writer};
-use openbook_search::chunker::{TARGET_CHARS, chunk_pages_with, chunk_stripped_pages, embed_text};
-use openbook_search::headers::{phrase_key, strip_running_lines};
+use openbook_search::chunker::{
+    TARGET_CHARS, chunk_pages_variant, chunk_pages_with, chunk_stripped_pages, embed_text,
+};
+use openbook_search::headers::{
+    FirstOccurrence, PRODUCTION_VARIANT, phrase_key, strip_running_lines_with,
+};
 use openbook_search::retrieval::{
     DENSE_TOP_K, DenseResult, DenseSearch, Fused, GateRule, Hit, LEXICAL_TOP_K, LexicalResult,
     LexicalSearch, MAX_QUERY_CHARS, Outcome, Params, Passage, clip, decide_with, fuse_with,
@@ -47,6 +51,8 @@ pub struct Options {
     pub cap_off: bool,
     pub dense_top_k: usize,
     pub lexical_top_k: usize,
+    /// What the removal of running headers does with the first occurrence.
+    pub header_variant: FirstOccurrence,
 }
 
 impl Options {
@@ -58,6 +64,7 @@ impl Options {
             cap_off: false,
             dense_top_k: DENSE_TOP_K as usize,
             lexical_top_k: LEXICAL_TOP_K,
+            header_variant: PRODUCTION_VARIANT,
         }
     }
 
@@ -75,7 +82,7 @@ impl Options {
     /// The settings in words, for the report.
     pub fn describe(&self) -> String {
         format!(
-            "{}; RRF k {}, BM25 weight {}; {} sources, at most {} per document; {} dense and {} BM25 candidates; chunk target {} tokens; {}",
+            "{}; RRF k {}, BM25 weight {}; {} sources, at most {} per document; {} dense and {} BM25 candidates; chunk target {} tokens; running headers: {}; {}",
             describe_rule(&self.params.gate),
             self.params.rrf_k,
             self.params.lexical_weight,
@@ -84,6 +91,7 @@ impl Options {
             self.dense_top_k,
             self.lexical_top_k,
             self.chunk_tokens(),
+            self.header_variant.name(),
             if self.cap_off {
                 "cap off"
             } else {
@@ -145,6 +153,7 @@ pub struct Tuning {
     pub chunk_tokens: Option<usize>,
     pub dense_top_k: Option<usize>,
     pub lexical_top_k: Option<usize>,
+    pub header_variant: Option<FirstOccurrence>,
     pub cap_off: bool,
 }
 
@@ -197,6 +206,7 @@ impl Tuning {
         }
         o.dense_top_k = self.dense_top_k.unwrap_or(o.dense_top_k);
         o.lexical_top_k = self.lexical_top_k.unwrap_or(o.lexical_top_k);
+        o.header_variant = self.header_variant.unwrap_or(o.header_variant);
         o.cap_off = self.cap_off;
         o
     }
@@ -243,12 +253,22 @@ pub fn build_chunks(
     pages: &[(u32, String)],
     target_chars: usize,
 ) -> Result<Vec<EvalChunk>, Error> {
+    build_chunks_with(sections, pages, target_chars, PRODUCTION_VARIANT)
+}
+
+/// `build_chunks` with a choice for the first occurrence of a running header.
+pub fn build_chunks_with(
+    sections: &[Section],
+    pages: &[(u32, String)],
+    target_chars: usize,
+    variant: FirstOccurrence,
+) -> Result<Vec<EvalChunk>, Error> {
     let by_number: HashMap<u32, &str> = pages.iter().map(|(n, t)| (*n, t.as_str())).collect();
     let mut out = Vec::new();
     for section in sections {
         let offset = section.first_page - 1;
         let local = section_pages(section, &by_number)?;
-        for chunk in chunk_pages_with(&local, target_chars) {
+        for chunk in chunk_pages_variant(&local, target_chars, variant) {
             out.push(EvalChunk {
                 key: vector_key(&section.id, chunk.index),
                 document_id: section.id.clone(),
@@ -373,8 +393,9 @@ impl Index {
         cache: &Cache,
         chunk_chars: usize,
         cap_off: bool,
+        variant: FirstOccurrence,
     ) -> Result<Index, Error> {
-        let chunks = build_chunks(sections, &cache.pages, chunk_chars)?;
+        let chunks = build_chunks_with(sections, &cache.pages, chunk_chars, variant)?;
         if chunks.is_empty() {
             return Err(Error::Cache("the cached pages give no chunks".into()));
         }
@@ -841,13 +862,20 @@ pub async fn evaluate(
     cache: &Cache,
     opts: &Options,
 ) -> Result<Evaluated, Error> {
-    let mut index = Index::build(sections, cache, opts.chunk_chars, opts.cap_off)?;
+    let mut index = Index::build(
+        sections,
+        cache,
+        opts.chunk_chars,
+        opts.cap_off,
+        opts.header_variant,
+    )?;
     index.set_candidates(opts.dense_top_k, opts.lexical_top_k);
     let main = run_questions(&index, questions, cache, &opts.params).await?;
     let single = if opts.cap_off {
         None
     } else {
-        let mut single = Index::build(sections, cache, opts.chunk_chars, true)?;
+        let mut single =
+            Index::build(sections, cache, opts.chunk_chars, true, opts.header_variant)?;
         single.set_candidates(opts.dense_top_k, opts.lexical_top_k);
         Some(run_questions(&single, questions, cache, &opts.params).await?)
     };
@@ -889,7 +917,7 @@ pub fn header_stats(
     let mut stats = HeaderStats::default();
     for section in sections {
         let local = section_pages(section, &by_number)?;
-        let stripped = strip_running_lines(&local);
+        let stripped = strip_running_lines_with(&local, PRODUCTION_VARIANT);
         let keys: HashSet<&str> = stripped.lines.iter().map(|l| l.key.as_str()).collect();
         let carries = |chunk: &openbook_search::chunker::Chunk| {
             chunk

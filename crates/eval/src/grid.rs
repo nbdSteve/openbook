@@ -14,6 +14,8 @@ use serde::{Deserialize, Serialize};
 use crate::Error;
 use crate::corpus::Corpus;
 use crate::metrics::{self, Metrics};
+use openbook_search::headers::FirstOccurrence;
+
 use crate::offline::{
     CHARS_PER_TOKEN, Candidates, Index, Options, Run, Tuning, cache_dir_of, judge_all, load,
     search_all,
@@ -43,6 +45,8 @@ pub struct Knobs {
     pub candidates: usize,
     pub max_per_document: usize,
     pub lexical_weight: f64,
+    /// True when the removal of running headers drops the first occurrence too (`drop-all`).
+    pub drop_all_headers: bool,
 }
 
 impl Knobs {
@@ -55,6 +59,7 @@ impl Knobs {
             candidates: options.dense_top_k,
             max_per_document: options.params.max_per_document,
             lexical_weight: options.params.lexical_weight,
+            drop_all_headers: options.header_variant == FirstOccurrence::Drop,
         }
     }
 }
@@ -105,12 +110,54 @@ pub struct Grid {
     pub rows: Vec<GridRow>,
 }
 
-/// Runs the whole grid. `tuning` fixes what the grid does not vary (the gate rule above all).
+/// The values of each knob that a grid runs.
+#[derive(Debug, Clone)]
+pub struct Axes {
+    pub chunk_tokens: Vec<usize>,
+    pub rrf_k: Vec<f64>,
+    pub final_sources: Vec<usize>,
+    pub candidates: Vec<usize>,
+    pub max_per_document: Vec<usize>,
+    pub lexical_weight: Vec<f64>,
+    pub drop_all_headers: Vec<bool>,
+}
+
+impl Axes {
+    /// The whole grid: `make eval-grid`.
+    pub fn full() -> Self {
+        Self {
+            chunk_tokens: CHUNK_TARGET_TOKENS.to_vec(),
+            rrf_k: RRF_KS.to_vec(),
+            final_sources: FINAL_SOURCES.to_vec(),
+            candidates: CANDIDATES.to_vec(),
+            max_per_document: MAX_PER_DOCUMENT.to_vec(),
+            lexical_weight: LEXICAL_WEIGHTS.to_vec(),
+            drop_all_headers: vec![false, true],
+        }
+    }
+
+    /// Two rows (the production setting with both header variants). The tests use it to show that
+    /// the grid code works. It is fast.
+    pub fn tiny() -> Self {
+        Self {
+            chunk_tokens: vec![PRODUCTION_CHUNK_TOKENS],
+            rrf_k: vec![60.0],
+            final_sources: vec![8],
+            candidates: vec![40],
+            max_per_document: vec![6],
+            lexical_weight: vec![1.0],
+            drop_all_headers: vec![false, true],
+        }
+    }
+}
+
+/// Runs the grid. `tuning` fixes what the grid does not vary (the gate rule above all).
 pub async fn run(
     corpora: &[Corpus],
     dev: bool,
     named_cache: Option<&Path>,
     tuning: &Tuning,
+    axes: &Axes,
 ) -> Result<Grid, Error> {
     let mut loaded = Vec::new();
     for corpus in corpora {
@@ -124,75 +171,90 @@ pub async fn run(
     }
     let base = tuning.options(&model);
     let mut rows = Vec::new();
-    for tokens in CHUNK_TARGET_TOKENS {
-        // Two indexes (document modes) for each corpus and chunk target.
-        let mut indexes: Vec<[Index; 2]> = Vec::new();
-        for l in &loaded {
-            let build =
-                |single| Index::build(&l.sections, &l.cache, tokens * CHARS_PER_TOKEN, single);
-            indexes.push([build(false)?, build(true)?]);
-        }
-        for candidates in CANDIDATES {
-            // found[corpus][mode]
-            let mut found: Vec<[Vec<Candidates>; 2]> = Vec::new();
-            for (l, pair) in loaded.iter().zip(&mut indexes) {
-                let mut both = [Vec::new(), Vec::new()];
-                for (mode, index) in pair.iter_mut().enumerate() {
-                    index.set_candidates(candidates, candidates);
-                    both[mode] = search_all(index, &l.questions, &l.cache).await?;
-                }
-                found.push(both);
+    for &tokens in &axes.chunk_tokens {
+        for &drop_all in &axes.drop_all_headers {
+            let variant = if drop_all {
+                FirstOccurrence::Drop
+            } else {
+                FirstOccurrence::Keep
+            };
+            // Two indexes (document modes) for each corpus, chunk target, and header variant.
+            let mut indexes: Vec<[Index; 2]> = Vec::new();
+            for l in &loaded {
+                let build = |single| {
+                    Index::build(
+                        &l.sections,
+                        &l.cache,
+                        tokens * CHARS_PER_TOKEN,
+                        single,
+                        variant,
+                    )
+                };
+                indexes.push([build(false)?, build(true)?]);
             }
-            for k in RRF_KS {
-                for final_sources in FINAL_SOURCES {
-                    for max_per_document in MAX_PER_DOCUMENT {
-                        for lexical_weight in LEXICAL_WEIGHTS {
-                            let mut params = base.params;
-                            params.rrf_k = k;
-                            params.final_sources = final_sources;
-                            params.max_per_document = max_per_document;
-                            params.lexical_weight = lexical_weight;
-                            // runs[corpus][mode]
-                            let mut runs: Vec<[Run; 2]> = Vec::new();
-                            for ((l, pair), seen) in loaded.iter().zip(&indexes).zip(&found) {
-                                runs.push([
-                                    judge_all(&pair[0], &l.questions, &seen[0], &params)?,
-                                    judge_all(&pair[1], &l.questions, &seen[1], &params)?,
-                                ]);
-                            }
-                            let mut per_corpus = BTreeMap::new();
-                            for (l, run) in loaded.iter().zip(&runs) {
-                                per_corpus.insert(
-                                    l.corpus.id.clone(),
-                                    Pair {
-                                        sectioned: ModeResult::of(&run[0]),
-                                        cap_off: ModeResult::of(&run[1]),
+            for &candidates in &axes.candidates {
+                // found[corpus][mode]
+                let mut found: Vec<[Vec<Candidates>; 2]> = Vec::new();
+                for (l, pair) in loaded.iter().zip(&mut indexes) {
+                    let mut both = [Vec::new(), Vec::new()];
+                    for (mode, index) in pair.iter_mut().enumerate() {
+                        index.set_candidates(candidates, candidates);
+                        both[mode] = search_all(index, &l.questions, &l.cache).await?;
+                    }
+                    found.push(both);
+                }
+                for &k in &axes.rrf_k {
+                    for &final_sources in &axes.final_sources {
+                        for &max_per_document in &axes.max_per_document {
+                            for &lexical_weight in &axes.lexical_weight {
+                                let mut params = base.params;
+                                params.rrf_k = k;
+                                params.final_sources = final_sources;
+                                params.max_per_document = max_per_document;
+                                params.lexical_weight = lexical_weight;
+                                // runs[corpus][mode]
+                                let mut runs: Vec<[Run; 2]> = Vec::new();
+                                for ((l, pair), seen) in loaded.iter().zip(&indexes).zip(&found) {
+                                    runs.push([
+                                        judge_all(&pair[0], &l.questions, &seen[0], &params)?,
+                                        judge_all(&pair[1], &l.questions, &seen[1], &params)?,
+                                    ]);
+                                }
+                                let mut per_corpus = BTreeMap::new();
+                                for (l, run) in loaded.iter().zip(&runs) {
+                                    per_corpus.insert(
+                                        l.corpus.id.clone(),
+                                        Pair {
+                                            sectioned: ModeResult::of(&run[0]),
+                                            cap_off: ModeResult::of(&run[1]),
+                                        },
+                                    );
+                                }
+                                let pooled = |mode: usize| {
+                                    let parts: Vec<(&str, &Run)> = loaded
+                                        .iter()
+                                        .zip(&runs)
+                                        .map(|(l, r)| (l.corpus.id.as_str(), &r[mode]))
+                                        .collect();
+                                    ModeResult::of(&Run::merged(&parts))
+                                };
+                                rows.push(GridRow {
+                                    knobs: Knobs {
+                                        chunk_tokens: tokens,
+                                        rrf_k: k,
+                                        final_sources,
+                                        candidates,
+                                        max_per_document,
+                                        lexical_weight,
+                                        drop_all_headers: drop_all,
                                     },
-                                );
+                                    combined: Pair {
+                                        sectioned: pooled(0),
+                                        cap_off: pooled(1),
+                                    },
+                                    corpora: per_corpus,
+                                });
                             }
-                            let pooled = |mode: usize| {
-                                let parts: Vec<(&str, &Run)> = loaded
-                                    .iter()
-                                    .zip(&runs)
-                                    .map(|(l, r)| (l.corpus.id.as_str(), &r[mode]))
-                                    .collect();
-                                ModeResult::of(&Run::merged(&parts))
-                            };
-                            rows.push(GridRow {
-                                knobs: Knobs {
-                                    chunk_tokens: tokens,
-                                    rrf_k: k,
-                                    final_sources,
-                                    candidates,
-                                    max_per_document,
-                                    lexical_weight,
-                                },
-                                combined: Pair {
-                                    sectioned: pooled(0),
-                                    cap_off: pooled(1),
-                                },
-                                corpora: per_corpus,
-                            });
                         }
                     }
                 }
@@ -317,7 +379,7 @@ impl Grid {
         production: &Knobs,
     ) {
         type Set = fn(&mut Knobs, f64);
-        let experiments: [(&str, Vec<f64>, f64, Set); 6] = [
+        let experiments: [(&str, Vec<f64>, f64, Set); 7] = [
             ("RRF k", RRF_KS.to_vec(), production.rrf_k, |k, v| {
                 k.rrf_k = v
             }),
@@ -350,6 +412,12 @@ impl Grid {
                 CHUNK_TARGET_TOKENS.iter().map(|v| *v as f64).collect(),
                 production.chunk_tokens as f64,
                 |k, v| k.chunk_tokens = v as usize,
+            ),
+            (
+                "Running headers (0 = keep-first, 1 = drop-all)",
+                vec![0.0, 1.0],
+                f64::from(u8::from(production.drop_all_headers)),
+                |k, v| k.drop_all_headers = v > 0.5,
             ),
         ];
         let _ = writeln!(out);
@@ -519,6 +587,7 @@ mod tests {
             "Max per document",
             "BM25 weight in the fusion",
             "Chunk target (tokens)",
+            "Running headers",
         ] {
             assert!(text.contains(name), "{name}");
         }
