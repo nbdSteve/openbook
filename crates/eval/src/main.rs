@@ -3,36 +3,50 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use openbook_eval::benchmarks::{self, Benchmarks};
 use openbook_eval::cache::{Cache, CacheKind};
 use openbook_eval::offline::{GateKind, Tuning};
-use openbook_eval::report::{Baseline, check_report, improved};
-use openbook_eval::{Error, default_evals_dir, grid, offline, refresh};
+use openbook_eval::report::{Baseline, check_suite, suite_improved};
+use openbook_eval::{Error, corpus, default_evals_dir, grid, offline, refresh};
+use openbook_search::headers::HeaderMode;
 
 const USAGE: &str = "\
 Usage:
-  openbook-eval offline [--dev-cache] [--check] [--write-baseline]
+  openbook-eval offline [--dev-cache] [--check] [--write-baseline] [--corpus ID]
                         [--cache DIR] [--evals DIR] [--json FILE] [--markdown FILE] [TUNING]
-  openbook-eval grid    [--dev-cache] [--cache DIR] [--evals DIR] [--out DIR] [TUNING]
-  openbook-eval refresh [--dev-cache] [--missing-only] [--yes] [--evals DIR]
+  openbook-eval grid    [--dev-cache] [--corpus ID] [--cache DIR] [--evals DIR] [--out DIR] [TUNING]
+  openbook-eval refresh [--dev-cache] [--missing-only] [--yes] [--corpus ID] [--cache DIR] [--evals DIR]
+  openbook-eval readme  [--check] [--evals DIR] [--readme FILE]
+
+The corpora are the directories of evals/corpora. Without --corpus every command works on all of
+them, and the report shows each corpus and all of them pooled. --cache needs --corpus.
 
 TUNING (changes the numbers for one run; not allowed with --check or --write-baseline):
   --rrf-k N  --lexical-weight X  --final-sources N  --max-per-document N
   --dense-candidates N  --lexical-candidates N  --chunk-tokens N  --cap-off
   --gate any|dense|combined  --gate-distance X  --gate-coverage X  --gate-matched N
+  --header-variant off|keep-first|drop-all
 
-offline   Runs the evaluation from the cache. No network, no AWS. Prints a Markdown table.
-          --check            compares with evals/baseline.json and exits 1 on a regression
-          --write-baseline   writes evals/baseline.json from a live cache
-          --dev-cache        uses evals/cache-dev (a development cache; never a baseline)
+offline   Runs the evaluation from the caches. No network, no AWS. Prints a Markdown table.
+          --check            compares with evals/baseline.json (every corpus and all pooled) and
+                             exits 1 on a regression
+          --write-baseline   writes evals/baseline.json and evals/benchmarks.json from the live
+                             caches of all corpora (--check fails when benchmarks.json is stale)
+          --dev-cache        uses the cache-dev of each corpus (a development cache; never a baseline)
           --cap-off  treats the whole PDF as one document (the report always shows both)
+readme    Writes the benchmark tables of evals/benchmarks.json between the markers of README.md.
+          --check            writes nothing and exits 1 when the README block is stale
 grid      Runs the whole tuning grid offline and writes grid.md and grid.json (default: target/eval).
           Chunk targets other than the production one need their chunk embeddings in the cache.
-refresh   Builds the cache.
-          --dev-cache        no AWS: the PDF text layer and fake embeddings, into evals/cache-dev
-          --missing-only     LIVE: reuses evals/cache/pages, does no transcription, and calls Bedrock
-                             only for the embeddings and rewrites that the cache lacks
-          (no flag)          LIVE: real Bedrock calls. It prints the calls and the cost, and starts
+refresh   Builds the caches.
+          --dev-cache        no AWS: the PDF text layer and fake embeddings, into each cache-dev
+          --missing-only     LIVE: fills what the caches lack, for all corpora in one plan. A corpus
+                             with a cache gets only the embeddings and rewrites that it lacks. A
+                             corpus without a cache gets the full live refresh, with page
+                             transcription. It prints the calls and a cost bound first, and starts
                              only with --yes.
+          (no flag)          LIVE: the full refresh of every corpus, with real Bedrock calls. It
+                             prints the calls and the cost, and starts only with --yes.
 ";
 
 #[derive(Default)]
@@ -42,7 +56,11 @@ struct Args {
     check: bool,
     write_baseline: bool,
     missing_only: bool,
+    readme: Option<PathBuf>,
+    /// `grid` only: two rows, for the tests.
+    tiny: bool,
     yes: bool,
+    corpus: Option<String>,
     cache: Option<PathBuf>,
     evals: Option<PathBuf>,
     json: Option<PathBuf>,
@@ -69,6 +87,7 @@ fn parse(argv: impl Iterator<Item = String>) -> Result<Args, String> {
             "--write-baseline" => args.write_baseline = true,
             "--missing-only" => args.missing_only = true,
             "--yes" => args.yes = true,
+            "--corpus" => args.corpus = Some(value(&mut argv, &flag)?),
             "--cache" => args.cache = Some(value(&mut argv, &flag)?.into()),
             "--evals" => args.evals = Some(value(&mut argv, &flag)?.into()),
             "--json" => args.json = Some(value(&mut argv, &flag)?.into()),
@@ -88,6 +107,14 @@ fn parse(argv: impl Iterator<Item = String>) -> Result<Args, String> {
             }
             "--chunk-tokens" => t.chunk_tokens = Some(number(value(&mut argv, &flag)?, &flag)?),
             "--cap-off" => t.cap_off = true,
+            "--tiny" => args.tiny = true,
+            "--readme" => args.readme = Some(value(&mut argv, &flag)?.into()),
+            "--header-variant" => {
+                let text = value(&mut argv, &flag)?;
+                t.header_variant = Some(HeaderMode::parse(&text).ok_or_else(|| {
+                    "--header-variant needs off, keep-first, or drop-all".to_owned()
+                })?);
+            }
             "--gate" => {
                 let text = value(&mut argv, &flag)?;
                 t.gate_kind = Some(
@@ -128,17 +155,28 @@ async fn offline_command(args: &Args, evals: &Path) -> Result<ExitCode, Error> {
             "--check and --write-baseline use the production numbers: do not combine them with tuning flags".into(),
         ));
     }
-    let cache_dir = args
-        .cache
-        .clone()
-        .unwrap_or_else(|| evals.join(if args.dev_cache { "cache-dev" } else { "cache" }));
-    let report = offline::run_dir(evals, &cache_dir, &args.tuning).await?;
-    if args.dev_cache && report.cache_kind != CacheKind::Dev {
+    if args.corpus.is_some() && check_mode {
+        return Err(Error::Run(
+            "--check and --write-baseline cover every corpus: do not combine them with --corpus"
+                .into(),
+        ));
+    }
+    let corpora = corpus::select(evals, args.corpus.as_deref())?;
+    check_cache_flag(args, &corpora)?;
+    let report = offline::run_suite(
+        &corpora,
+        args.dev_cache,
+        args.cache.as_deref(),
+        &args.tuning,
+    )
+    .await?;
+    let kind = report.combined.cache_kind;
+    if args.dev_cache && kind != CacheKind::Dev {
         return Err(Error::Run(
             "--dev-cache points at a cache that is not a dev cache".into(),
         ));
     }
-    if !args.dev_cache && report.cache_kind == CacheKind::Dev && check_mode {
+    if !args.dev_cache && kind == CacheKind::Dev && check_mode {
         return Err(Error::Run(
             "this cache is a dev cache: it cannot give or check a baseline".into(),
         ));
@@ -161,8 +199,14 @@ async fn offline_command(args: &Args, evals: &Path) -> Result<ExitCode, Error> {
 
     let baseline_path = evals.join("baseline.json");
     if args.write_baseline {
-        write_file(&baseline_path, &Baseline::from_report(&report)?.to_json()?)?;
+        write_file(&baseline_path, &Baseline::from_suite(&report)?.to_json()?)?;
         eprintln!("Wrote {}", baseline_path.display());
+        let benchmarks_path = evals.join("benchmarks.json");
+        write_file(
+            &benchmarks_path,
+            &Benchmarks::from_suite(&report, &corpora)?.to_json()?,
+        )?;
+        eprintln!("Wrote {}", benchmarks_path.display());
     }
     if args.check {
         let baseline = Baseline::load(&baseline_path)?;
@@ -171,23 +215,28 @@ async fn offline_command(args: &Args, evals: &Path) -> Result<ExitCode, Error> {
                 "the baseline comes from a dev cache and cannot be used".into(),
             ));
         }
-        if baseline.embedding_model != report.embedding_model {
+        if baseline.embedding_model != report.combined.embedding_model {
             return Err(Error::Run(format!(
-                "the baseline is for embedding model {:?} and the cache has {:?}",
-                baseline.embedding_model, report.embedding_model
+                "the baseline is for embedding model {:?} and the caches have {:?}",
+                baseline.embedding_model, report.combined.embedding_model
             )));
         }
-        let regressions = check_report(&baseline, &report);
+        let benchmarks_path = evals.join("benchmarks.json");
+        let stale =
+            Benchmarks::load(&benchmarks_path)? != Benchmarks::from_suite(&report, &corpora)?;
+        if stale {
+            eprintln!(
+                "CHECK FAILED: {} is stale. Run `openbook-eval offline --write-baseline` and `openbook-eval readme`, and commit them.",
+                benchmarks_path.display()
+            );
+            return Ok(ExitCode::FAILURE);
+        }
+        let regressions = check_suite(&baseline, &report)?;
         if regressions.is_empty() {
             eprintln!(
-                "Check passed: no hybrid metric is below the baseline by more than the tolerance."
+                "Check passed: no hybrid metric of any corpus, or of all pooled, is below the baseline by more than the tolerance."
             );
-            if improved(&baseline.hybrid, &report.hybrid)
-                || report
-                    .cap_off
-                    .as_ref()
-                    .is_some_and(|c| improved(&baseline.cap_off, &c.hybrid))
-            {
+            if suite_improved(&baseline, &report) {
                 eprintln!(
                     "Some metrics improved. Update the baseline in the same commit: openbook-eval offline --write-baseline"
                 );
@@ -203,78 +252,106 @@ async fn offline_command(args: &Args, evals: &Path) -> Result<ExitCode, Error> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// `--cache` names one cache directory, so it needs one corpus.
+fn check_cache_flag(args: &Args, corpora: &[corpus::Corpus]) -> Result<(), Error> {
+    if args.cache.is_some() && corpora.len() != 1 {
+        return Err(Error::Run(
+            "--cache names the cache of one corpus: add --corpus ID".into(),
+        ));
+    }
+    Ok(())
+}
+
 async fn refresh_command(args: &Args, evals: &Path) -> Result<ExitCode, Error> {
+    let corpora = corpus::select(evals, args.corpus.as_deref())?;
+    check_cache_flag(args, &corpora)?;
     if args.dev_cache {
-        let cache = refresh::build_dev(evals).await?;
+        for corpus in &corpora {
+            let cache = refresh::build_dev(corpus).await?;
+            let dir = args.cache.clone().unwrap_or_else(|| corpus.cache_dir(true));
+            cache.save(&dir)?;
+            eprintln!(
+                "Wrote the DEV cache of {} to {} ({} pages, {} embeddings). It is for development only.",
+                corpus.id,
+                dir.display(),
+                cache.pages.len(),
+                cache.embeddings.len()
+            );
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+    let plan = refresh::plan_refresh(&corpora, args.missing_only).await?;
+    println!("{}", plan.describe());
+    if args.missing_only && plan.is_empty() {
+        eprintln!("The caches have everything. Nothing to call.");
+        return Ok(ExitCode::SUCCESS);
+    }
+    if !args.yes {
+        eprintln!("Nothing was called. Run again with --yes to start.");
+        return Ok(ExitCode::FAILURE);
+    }
+    for (corpus, cache) in refresh::run_refresh(plan).await? {
         let dir = args
             .cache
             .clone()
-            .unwrap_or_else(|| evals.join("cache-dev"));
+            .unwrap_or_else(|| corpus.cache_dir(false));
         cache.save(&dir)?;
+        // Read it back, so a broken write shows now and not in CI.
+        let back = Cache::load(&dir)?;
         eprintln!(
-            "Wrote the DEV cache to {} ({} pages, {} embeddings). It is for development only.",
+            "Wrote the live cache of {} to {} ({} pages, {} transcribed, {} embeddings, {} rewrites). Review the diff and commit it.",
+            corpus.id,
             dir.display(),
-            cache.pages.len(),
-            cache.embeddings.len()
+            back.pages.len(),
+            back.meta.transcribed_pages,
+            back.embeddings.len(),
+            back.rewrites.len()
         );
-        return Ok(ExitCode::SUCCESS);
     }
-    if args.missing_only {
-        return refresh_missing_command(args, evals).await;
-    }
-    let (plan, pages) = refresh::plan_live(evals).await?;
-    println!("{}", plan.describe());
-    if !args.yes {
-        eprintln!("Nothing was called. Run again with --yes to start.");
-        return Ok(ExitCode::FAILURE);
-    }
-    let cache = refresh::build_live(evals, &plan, pages).await?;
-    let dir = args.cache.clone().unwrap_or_else(|| evals.join("cache"));
-    cache.save(&dir)?;
-    // Read it back, so a broken write shows now and not in CI.
-    let back = Cache::load(&dir)?;
-    eprintln!(
-        "Wrote the live cache to {} ({} pages, {} transcribed, {} embeddings). Review the diff and commit it.",
-        dir.display(),
-        back.pages.len(),
-        back.meta.transcribed_pages,
-        back.embeddings.len()
-    );
     Ok(ExitCode::SUCCESS)
 }
 
-/// `refresh --missing-only`: reuses the cached pages and calls Bedrock only for what the cache lacks.
-async fn refresh_missing_command(args: &Args, evals: &Path) -> Result<ExitCode, Error> {
-    let dir = args.cache.clone().unwrap_or_else(|| evals.join("cache"));
-    let (plan, cache) = refresh::plan_missing(evals, &dir)?;
-    println!("{}", plan.describe());
-    if plan.is_empty() {
-        eprintln!("The cache has everything. Nothing to call.");
+/// `readme`: puts the tables of `evals/benchmarks.json` between the markers of the README.
+fn readme_command(args: &Args, evals: &Path) -> Result<ExitCode, Error> {
+    let benchmarks = Benchmarks::load(&evals.join("benchmarks.json"))?;
+    let path = args.readme.clone().unwrap_or_else(|| {
+        evals
+            .parent()
+            .map_or_else(|| PathBuf::from("README.md"), |root| root.join("README.md"))
+    });
+    let old = std::fs::read_to_string(&path).map_err(|e| Error::io(&path, &e))?;
+    let new = benchmarks::replace_block(&old, &benchmarks.to_markdown())?;
+    if new == old {
+        eprintln!("The benchmark block of {} is current.", path.display());
         return Ok(ExitCode::SUCCESS);
     }
-    if !args.yes {
-        eprintln!("Nothing was called. Run again with --yes to start.");
+    if args.check {
+        eprintln!(
+            "CHECK FAILED: the benchmark block of {} is stale. Run `make benchmarks` and commit it.",
+            path.display()
+        );
         return Ok(ExitCode::FAILURE);
     }
-    let cache = refresh::run_missing(evals, &plan, cache).await?;
-    cache.save(&dir)?;
-    // Read it back, so a broken write shows now and not in CI.
-    let back = Cache::load(&dir)?;
-    eprintln!(
-        "Updated the live cache in {} ({} embeddings, {} rewrites). Review the diff and commit it.",
-        dir.display(),
-        back.embeddings.len(),
-        back.rewrites.len()
-    );
+    write_file(&path, &new)?;
+    eprintln!("Wrote the benchmark block of {}", path.display());
     Ok(ExitCode::SUCCESS)
 }
 
 async fn grid_command(args: &Args, evals: &Path) -> Result<ExitCode, Error> {
-    let cache_dir = args
-        .cache
-        .clone()
-        .unwrap_or_else(|| evals.join(if args.dev_cache { "cache-dev" } else { "cache" }));
-    let grid = grid::run(evals, &cache_dir, &args.tuning).await?;
+    let corpora = corpus::select(evals, args.corpus.as_deref())?;
+    check_cache_flag(args, &corpora)?;
+    let grid = grid::run(
+        &corpora,
+        args.dev_cache,
+        args.cache.as_deref(),
+        &args.tuning,
+        &if args.tiny {
+            grid::Axes::tiny()
+        } else {
+            grid::Axes::full()
+        },
+    )
+    .await?;
     let production = grid::Knobs::production(&args.tuning.options(&grid.embedding_model));
     let markdown = grid.to_markdown(&production, 20);
     let out = args.out.clone().unwrap_or_else(|| {
@@ -304,6 +381,7 @@ async fn main() -> ExitCode {
         "offline" => offline_command(&args, &evals).await,
         "grid" => grid_command(&args, &evals).await,
         "refresh" => refresh_command(&args, &evals).await,
+        "readme" => readme_command(&args, &evals),
         "help" | "--help" | "-h" => {
             println!("{USAGE}");
             return ExitCode::SUCCESS;
@@ -364,8 +442,9 @@ mod tests {
         );
         assert_eq!(o.params.final_sources, Params::default().final_sources);
         assert!(!args(&["offline", "--check"]).unwrap().tuning.is_tuned());
-        let m = args(&["refresh", "--missing-only", "--yes"]).unwrap();
+        let m = args(&["refresh", "--missing-only", "--yes", "--corpus", "x"]).unwrap();
         assert!(m.missing_only && m.yes);
+        assert_eq!(m.corpus.as_deref(), Some("x"));
     }
 
     #[test]

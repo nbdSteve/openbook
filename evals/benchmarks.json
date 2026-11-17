@@ -1,0 +1,118 @@
+{
+  "schema": 1,
+  "embeddingModel": "amazon.titan-embed-text-v2:0",
+  "questions": 180,
+  "corpora": [
+    {
+      "id": "american-government",
+      "title": "American Government 2e (OpenStax)",
+      "licence": "CC BY 4.0",
+      "source": "https://openstax.org/details/books/american-government-2e",
+      "pages": 39,
+      "questions": 73
+    },
+    {
+      "id": "college-algebra",
+      "title": "College Algebra (OpenStax)",
+      "licence": "CC BY 4.0",
+      "source": "https://openstax.org/details/books/college-algebra",
+      "pages": 43,
+      "questions": 107
+    }
+  ],
+  "retrieval": {
+    "combined": {
+      "hybrid": {
+        "recallAt1": 0.7642,
+        "recallAt5": 0.9675,
+        "recallAt8": 0.9919,
+        "ndcgAt8": 0.6064,
+        "mrr": 0.8553
+      },
+      "dense": {
+        "recallAt1": 0.8293,
+        "recallAt5": 0.9593,
+        "recallAt8": 0.9756,
+        "ndcgAt8": 0.6062,
+        "mrr": 0.8858
+      },
+      "bm25": {
+        "recallAt1": 0.6423,
+        "recallAt5": 0.9431,
+        "recallAt8": 0.9675,
+        "ndcgAt8": 0.546,
+        "mrr": 0.7672
+      }
+    },
+    "corpora": {
+      "american-government": {
+        "hybrid": {
+          "recallAt1": 0.766,
+          "recallAt5": 0.9787,
+          "recallAt8": 1.0,
+          "ndcgAt8": 0.6557,
+          "mrr": 0.8606
+        },
+        "dense": {
+          "recallAt1": 0.8298,
+          "recallAt5": 0.9574,
+          "recallAt8": 0.9787,
+          "ndcgAt8": 0.6413,
+          "mrr": 0.8803
+        },
+        "bm25": {
+          "recallAt1": 0.7234,
+          "recallAt5": 0.9787,
+          "recallAt8": 0.9787,
+          "ndcgAt8": 0.6077,
+          "mrr": 0.8312
+        }
+      },
+      "college-algebra": {
+        "hybrid": {
+          "recallAt1": 0.7632,
+          "recallAt5": 0.9605,
+          "recallAt8": 0.9868,
+          "ndcgAt8": 0.5758,
+          "mrr": 0.852
+        },
+        "dense": {
+          "recallAt1": 0.8289,
+          "recallAt5": 0.9605,
+          "recallAt8": 0.9737,
+          "ndcgAt8": 0.5844,
+          "mrr": 0.8893
+        },
+        "bm25": {
+          "recallAt1": 0.5921,
+          "recallAt5": 0.9211,
+          "recallAt8": 0.9605,
+          "ndcgAt8": 0.5078,
+          "mrr": 0.7277
+        }
+      }
+    }
+  },
+  "gate": {
+    "combined": {
+      "accuracy": 0.8944,
+      "falseGateRate": 0.0,
+      "offTopicCaught": 1.0,
+      "notCoveredCaught": 0.4242
+    },
+    "corpora": {
+      "american-government": {
+        "accuracy": 0.9178,
+        "falseGateRate": 0.0,
+        "offTopicCaught": 1.0,
+        "notCoveredCaught": 0.5714
+      },
+      "college-algebra": {
+        "accuracy": 0.8785,
+        "falseGateRate": 0.0,
+        "offTopicCaught": 1.0,
+        "notCoveredCaught": 0.3158
+      }
+    }
+  }
+}

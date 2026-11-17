@@ -1,0 +1,17 @@
+{
+  "format": 1,
+  "kind": "live",
+  "corpus": "american-government-excerpt.pdf",
+  "corpusSha256": "8f29bb7802ee26a76df86c0686a52c82c31fe59b55822fbf96fe93b5259eb503",
+  "embeddingModel": "amazon.titan-embed-text-v2:0",
+  "transcribeModel": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+  "rewriteModel": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+  "pages": 39,
+  "transcribedPages": 0,
+  "fallbackPages": [],
+  "latency": {
+    "queryEmbeddingMsP50": 70,
+    "queryEmbeddingMsP95": 86,
+    "samples": 73
+  }
+}

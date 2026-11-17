@@ -4,14 +4,19 @@
 //! embeddings in memory, and runs `search_both` and the fusion and gate code of `openbook-search`
 //! for every golden question.
 
-use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use openbook_search::bm25::{Bm25Chunk, Bm25Reader, Bm25Writer};
-use openbook_search::chunker::{TARGET_CHARS, chunk_pages_with, embed_text};
+use openbook_search::chunker::{
+    TARGET_CHARS, chunk_pages_variant, chunk_stripped_pages, embed_text,
+};
+use openbook_search::headers::{
+    HeaderMode, PRODUCTION_VARIANT, phrase_key, strip_running_lines_with,
+};
 use openbook_search::retrieval::{
     DENSE_TOP_K, DenseResult, DenseSearch, Fused, GateRule, Hit, LEXICAL_TOP_K, LexicalResult,
     LexicalSearch, MAX_QUERY_CHARS, Outcome, Params, Passage, clip, decide_with, fuse_with,
@@ -20,10 +25,14 @@ use openbook_search::retrieval::{
 use openbook_search::vectors::vector_key;
 
 use crate::Error;
-use crate::cache::{Cache, EmbeddingStore, rewrite_key};
+use crate::cache::{Cache, CacheKind, EmbeddingStore, Latency, rewrite_key};
+use crate::corpus::Corpus;
 use crate::data::{Kind, Question, Section};
 use crate::metrics::{self, Outcome as RunOutcome, RECALL_LARGE, Span};
-use crate::report::{GateRow, KindMetrics, Miss, ModeMetrics, QuestionDiag, Report, gate_sweep};
+use crate::report::{
+    CorpusReport, GateRow, HeaderLine, HeaderStats, KindMetrics, Miss, ModeMetrics, QuestionDiag,
+    Report, SuiteReport, gate_sweep,
+};
 
 /// The document ID that every chunk gets in cap-off mode.
 pub const CAP_OFF_DOCUMENT_ID: &str = "course";
@@ -42,6 +51,8 @@ pub struct Options {
     pub cap_off: bool,
     pub dense_top_k: usize,
     pub lexical_top_k: usize,
+    /// What the removal of running headers does with the first occurrence.
+    pub header_variant: HeaderMode,
 }
 
 impl Options {
@@ -53,6 +64,7 @@ impl Options {
             cap_off: false,
             dense_top_k: DENSE_TOP_K as usize,
             lexical_top_k: LEXICAL_TOP_K,
+            header_variant: PRODUCTION_VARIANT,
         }
     }
 
@@ -70,7 +82,7 @@ impl Options {
     /// The settings in words, for the report.
     pub fn describe(&self) -> String {
         format!(
-            "{}; RRF k {}, BM25 weight {}; {} sources, at most {} per document; {} dense and {} BM25 candidates; chunk target {} tokens; {}",
+            "{}; RRF k {}, BM25 weight {}; {} sources, at most {} per document; {} dense and {} BM25 candidates; chunk target {} tokens; running headers: {}; {}",
             describe_rule(&self.params.gate),
             self.params.rrf_k,
             self.params.lexical_weight,
@@ -79,6 +91,7 @@ impl Options {
             self.dense_top_k,
             self.lexical_top_k,
             self.chunk_tokens(),
+            self.header_variant.name(),
             if self.cap_off {
                 "cap off"
             } else {
@@ -140,6 +153,7 @@ pub struct Tuning {
     pub chunk_tokens: Option<usize>,
     pub dense_top_k: Option<usize>,
     pub lexical_top_k: Option<usize>,
+    pub header_variant: Option<HeaderMode>,
     pub cap_off: bool,
 }
 
@@ -192,6 +206,7 @@ impl Tuning {
         }
         o.dense_top_k = self.dense_top_k.unwrap_or(o.dense_top_k);
         o.lexical_top_k = self.lexical_top_k.unwrap_or(o.lexical_top_k);
+        o.header_variant = self.header_variant.unwrap_or(o.header_variant);
         o.cap_off = self.cap_off;
         o
     }
@@ -210,29 +225,50 @@ pub struct EvalChunk {
     pub embed_text: String,
 }
 
+/// The pages of one section, as the pages of its own document: they count from 1.
+fn section_pages(
+    section: &Section,
+    by_number: &HashMap<u32, &str>,
+) -> Result<Vec<(u32, String)>, Error> {
+    let offset = section.first_page - 1;
+    let mut local = Vec::new();
+    for number in section.first_page..=section.last_page {
+        let text = by_number.get(&number).ok_or_else(|| {
+            Error::Cache(format!(
+                "the cache has no page {number} (section {})",
+                section.id
+            ))
+        })?;
+        local.push((number - offset, (*text).to_owned()));
+    }
+    Ok(local)
+}
+
 /// Chunks every section like ingestion does for one document: the section is its own document,
-/// its pages count from 1, and the title is the section title. `target_chars` is the chunk target
-/// (`TARGET_CHARS` in production).
+/// its pages count from 1, and the title is the section title. The running headers and footers of
+/// the book are removed on the way, by the same code as in ingestion (`chunk_pages_with`).
+/// `target_chars` is the chunk target (`TARGET_CHARS` in production).
 pub fn build_chunks(
     sections: &[Section],
     pages: &[(u32, String)],
     target_chars: usize,
 ) -> Result<Vec<EvalChunk>, Error> {
+    build_chunks_with(sections, pages, target_chars, PRODUCTION_VARIANT)
+}
+
+/// `build_chunks` with a choice for the first occurrence of a running header.
+pub fn build_chunks_with(
+    sections: &[Section],
+    pages: &[(u32, String)],
+    target_chars: usize,
+    variant: HeaderMode,
+) -> Result<Vec<EvalChunk>, Error> {
     let by_number: HashMap<u32, &str> = pages.iter().map(|(n, t)| (*n, t.as_str())).collect();
     let mut out = Vec::new();
     for section in sections {
         let offset = section.first_page - 1;
-        let mut local = Vec::new();
-        for number in section.first_page..=section.last_page {
-            let text = by_number.get(&number).ok_or_else(|| {
-                Error::Cache(format!(
-                    "the cache has no page {number} (section {})",
-                    section.id
-                ))
-            })?;
-            local.push((number - offset, (*text).to_owned()));
-        }
-        for chunk in chunk_pages_with(&local, target_chars) {
+        let local = section_pages(section, &by_number)?;
+        for chunk in chunk_pages_variant(&local, target_chars, variant) {
             out.push(EvalChunk {
                 key: vector_key(&section.id, chunk.index),
                 document_id: section.id.clone(),
@@ -357,8 +393,9 @@ impl Index {
         cache: &Cache,
         chunk_chars: usize,
         cap_off: bool,
+        variant: HeaderMode,
     ) -> Result<Index, Error> {
-        let chunks = build_chunks(sections, &cache.pages, chunk_chars)?;
+        let chunks = build_chunks_with(sections, &cache.pages, chunk_chars, variant)?;
         if chunks.is_empty() {
             return Err(Error::Cache("the cached pages give no chunks".into()));
         }
@@ -597,6 +634,35 @@ pub struct Run {
 }
 
 impl Run {
+    /// The runs of several corpora as one run. Question IDs get the corpus as prefix.
+    pub fn merged(parts: &[(&str, &Run)]) -> Run {
+        let mut all = Run {
+            dense: Vec::new(),
+            bm25: Vec::new(),
+            hybrid: Vec::new(),
+            kinds: Vec::new(),
+            diagnostics: Vec::new(),
+            misses: Vec::new(),
+        };
+        for (corpus, run) in parts {
+            all.dense.extend(run.dense.iter().cloned());
+            all.bm25.extend(run.bm25.iter().cloned());
+            all.hybrid.extend(run.hybrid.iter().cloned());
+            all.kinds.extend(run.kinds.iter().copied());
+            for d in &run.diagnostics {
+                let mut d = d.clone();
+                d.id = format!("{corpus}/{}", d.id);
+                all.diagnostics.push(d);
+            }
+            for m in &run.misses {
+                let mut m = m.clone();
+                m.id = format!("{corpus}/{}", m.id);
+                all.misses.push(m);
+            }
+        }
+        all
+    }
+
     pub fn mode_metrics(&self) -> ModeMetrics {
         ModeMetrics {
             dense: metrics::aggregate(&self.dense),
@@ -721,30 +787,29 @@ fn gate_rows(run: &Run) -> Vec<GateRow> {
         .collect()
 }
 
-/// Runs every question and builds the report. A run that is not in cap-off mode also runs
-/// the cap-off mode, to report both.
-pub async fn run(
-    sections: &[Section],
-    questions: &[Question],
-    cache: &Cache,
-    opts: &Options,
-) -> Result<Report, Error> {
-    let mut index = Index::build(sections, cache, opts.chunk_chars, opts.cap_off)?;
-    index.set_candidates(opts.dense_top_k, opts.lexical_top_k);
-    let main = run_questions(&index, questions, cache, &opts.params).await?;
-    let cap_off = if opts.cap_off {
-        None
-    } else {
-        let mut single = Index::build(sections, cache, opts.chunk_chars, true)?;
-        single.set_candidates(opts.dense_top_k, opts.lexical_top_k);
-        Some(
-            run_questions(&single, questions, cache, &opts.params)
-                .await?
-                .mode_metrics(),
-        )
-    };
+/// What one run over one corpus found: the report, and the runs behind it (to pool corpora).
+pub struct Evaluated {
+    pub report: Report,
+    pub main: Run,
+    /// The run with the per-document cap off. `None` when this run is in that mode itself.
+    pub single: Option<Run>,
+}
 
-    let covered = questions.iter().filter(|q| q.is_covered()).count();
+/// What a report says about its corpus, besides the numbers of the runs.
+pub struct ReportInfo {
+    pub cache_kind: CacheKind,
+    pub embedding_model: String,
+    pub corpus_sha256: String,
+    pub chunks: usize,
+    pub settings: String,
+    pub latency: Option<Latency>,
+    pub headers: HeaderStats,
+}
+
+/// The report of a run (or of runs that were pooled).
+pub fn report_from_runs(info: ReportInfo, main: &Run, single: Option<&Run>) -> Report {
+    let questions = main.kinds.len();
+    let covered = main.hybrid.iter().filter(|o| o.covered).count();
     let mut by_kind: BTreeMap<Kind, Vec<RunOutcome>> = BTreeMap::new();
     for (kind, outcome) in main.kinds.iter().zip(&main.hybrid) {
         by_kind.entry(*kind).or_default().push(outcome.clone());
@@ -766,67 +831,266 @@ pub async fn run(
         })
         .collect();
     let modes = main.mode_metrics();
-    Ok(Report {
-        cache_kind: cache.meta.kind,
-        embedding_model: cache.meta.embedding_model.clone(),
-        corpus_sha256: cache.meta.corpus_sha256.clone(),
-        questions: questions.len(),
+    Report {
+        cache_kind: info.cache_kind,
+        embedding_model: info.embedding_model,
+        corpus_sha256: info.corpus_sha256,
+        questions,
         covered,
-        not_covered: questions.len() - covered,
-        chunks: index.chunks.len(),
+        not_covered: questions - covered,
+        chunks: info.chunks,
         dense: modes.dense,
         bm25: modes.bm25,
         hybrid: modes.hybrid,
         hybrid_by_kind,
-        gate_by_group: gate_rows(&main),
-        settings: opts.describe(),
-        cap_off,
-        misses: main.misses,
-        latency: cache.meta.latency.clone(),
+        gate_by_group: gate_rows(main),
+        settings: info.settings,
+        cap_off: single.map(Run::mode_metrics),
+        misses: main.misses.clone(),
+        latency: info.latency,
         gate_sweep: gate_sweep(&main.diagnostics),
-        diagnostics: main.diagnostics,
+        diagnostics: main.diagnostics.clone(),
+        headers: Some(info.headers),
+    }
+}
+
+/// Runs every question of one corpus. A run that is not in cap-off mode also runs the cap-off mode,
+/// to report both.
+pub async fn evaluate(
+    sections: &[Section],
+    questions: &[Question],
+    cache: &Cache,
+    opts: &Options,
+) -> Result<Evaluated, Error> {
+    let mut index = Index::build(
+        sections,
+        cache,
+        opts.chunk_chars,
+        opts.cap_off,
+        opts.header_variant,
+    )?;
+    index.set_candidates(opts.dense_top_k, opts.lexical_top_k);
+    let main = run_questions(&index, questions, cache, &opts.params).await?;
+    let single = if opts.cap_off {
+        None
+    } else {
+        let mut single =
+            Index::build(sections, cache, opts.chunk_chars, true, opts.header_variant)?;
+        single.set_candidates(opts.dense_top_k, opts.lexical_top_k);
+        Some(run_questions(&single, questions, cache, &opts.params).await?)
+    };
+    let info = ReportInfo {
+        cache_kind: cache.meta.kind,
+        embedding_model: cache.meta.embedding_model.clone(),
+        corpus_sha256: cache.meta.corpus_sha256.clone(),
+        chunks: index.chunks.len(),
+        settings: opts.describe(),
+        latency: cache.meta.latency.clone(),
+        headers: header_stats(sections, &cache.pages, opts.chunk_chars)?,
+    };
+    let report = report_from_runs(info, &main, single.as_ref());
+    Ok(Evaluated {
+        report,
+        main,
+        single,
     })
 }
 
-/// The data and the cache of an evaluation directory.
+/// Runs every question and builds the report of one corpus.
+pub async fn run(
+    sections: &[Section],
+    questions: &[Question],
+    cache: &Cache,
+    opts: &Options,
+) -> Result<Report, Error> {
+    Ok(evaluate(sections, questions, cache, opts).await?.report)
+}
+
+/// What the removal of running headers and footers did to the chunks of a corpus: the chunks that
+/// have a running header in their heading path, before and after.
+pub fn header_stats(
+    sections: &[Section],
+    pages: &[(u32, String)],
+    chunk_chars: usize,
+) -> Result<HeaderStats, Error> {
+    let by_number: HashMap<u32, &str> = pages.iter().map(|(n, t)| (*n, t.as_str())).collect();
+    let mut stats = HeaderStats::default();
+    for section in sections {
+        let local = section_pages(section, &by_number)?;
+        let stripped = strip_running_lines_with(&local, HeaderMode::KeepFirst);
+        let keys: HashSet<&str> = stripped.lines.iter().map(|l| l.key.as_str()).collect();
+        let carries = |chunk: &openbook_search::chunker::Chunk| {
+            chunk
+                .heading_path
+                .split(" > ")
+                .any(|part| keys.contains(phrase_key(part).as_str()))
+        };
+        // A fragment is a heading that is a part of a running phrase, such as `SECTION` from
+        // `SECTION 5.1 QUADRATIC FUNCTIONS`: what is left when a rule removes too little.
+        let fragment = |chunk: &openbook_search::chunker::Chunk| {
+            chunk.heading_path.split(" > ").any(|part| {
+                let part = phrase_key(part);
+                !part.is_empty()
+                    && !keys.contains(part.as_str())
+                    && keys.iter().any(|k| {
+                        // A part that is at most half of the phrase. A longer part is a heading of
+                        // its own (`1.2 EXPONENTS ...` is the end of `SECTION 1.2 EXPONENTS ...`).
+                        part.split(' ').count() * 2 <= k.split(' ').count()
+                            && (k.starts_with(&format!("{part} "))
+                                || k.ends_with(&format!(" {part}")))
+                    })
+            })
+        };
+        let before = chunk_stripped_pages(&local, chunk_chars);
+        // What the experimental rule would do (production does not strip).
+        let after = chunk_pages_variant(&local, chunk_chars, HeaderMode::KeepFirst);
+        stats.running_lines += stripped.lines.len();
+        stats.removed_lines += stripped
+            .lines
+            .iter()
+            .map(|l| l.removed_from.len())
+            .sum::<usize>();
+        stats.chunks_before += before.len();
+        stats.chunks_with_header_before += before.iter().filter(|c| carries(c)).count();
+        stats.chunks += after.len();
+        stats.chunks_with_header_after += after.iter().filter(|c| carries(c)).count();
+        stats.chunks_with_fragment_before += before.iter().filter(|c| fragment(c)).count();
+        stats.chunks_with_fragment_after += after.iter().filter(|c| fragment(c)).count();
+        for line in &stripped.lines {
+            stats.lines.push(HeaderLine {
+                section: section.id.clone(),
+                text: line.first_text.clone(),
+                first_page: line.first_page + section.first_page - 1,
+                removed_pages: line.removed_from.len(),
+            });
+        }
+    }
+    Ok(stats)
+}
+
+/// The data and the cache of one corpus.
 pub struct Loaded {
+    pub corpus: Corpus,
     pub sections: Vec<Section>,
     pub questions: Vec<Question>,
     pub cache: Cache,
 }
 
-/// Reads the corpus data and the cache, and checks that they belong together.
-pub fn load(evals: &Path, cache_dir: &Path) -> Result<Loaded, Error> {
-    let sections = crate::data::load_sections(&evals.join("corpus/sections.json"))?;
-    let questions = crate::data::load_golden(
-        &evals.join("golden.jsonl"),
-        crate::data::page_total(&sections),
-    )?;
-    let cache = Cache::load(cache_dir)?;
-    let corpus = crate::refresh::corpus_path(evals)?;
-    let sha = crate::cache::corpus_sha256(&corpus)?;
+/// Reads the data and the cache of a corpus, and checks that they belong together.
+pub fn load(corpus: &Corpus, cache_dir: &Path) -> Result<Loaded, Error> {
+    let sections = crate::data::load_sections(&corpus.sections_path())?;
+    let questions =
+        crate::data::load_golden(&corpus.golden_path(), crate::data::page_total(&sections))?;
+    let cache = Cache::load(cache_dir).map_err(|e| match e {
+        Error::Cache(text) => Error::Cache(format!("corpus {}: {text}", corpus.id)),
+        other => other,
+    })?;
+    let sha = crate::cache::corpus_sha256(&corpus.pdf_path()?)?;
     if sha != cache.meta.corpus_sha256 {
-        return Err(Error::Cache(
-            "the cache was made for another corpus file. Refresh the cache.".into(),
-        ));
+        return Err(Error::Cache(format!(
+            "the cache of corpus {} was made for another corpus file. Refresh the cache.",
+            corpus.id
+        )));
     }
     if cache.meta.pages != crate::data::page_total(&sections) {
         return Err(Error::Cache(format!(
-            "the cache has {} pages and the sections cover {}",
+            "the cache of corpus {} has {} pages and the sections cover {}",
+            corpus.id,
             cache.meta.pages,
             crate::data::page_total(&sections)
         )));
     }
     Ok(Loaded {
+        corpus: corpus.clone(),
         sections,
         questions,
         cache,
     })
 }
 
-/// Reads the corpus data and the cache, and runs the evaluation.
-pub async fn run_dir(evals: &Path, cache_dir: &Path, tuning: &Tuning) -> Result<Report, Error> {
-    let loaded = load(evals, cache_dir)?;
-    let opts = tuning.options(&loaded.cache.meta.embedding_model);
-    run(&loaded.sections, &loaded.questions, &loaded.cache, &opts).await
+/// Where the cache of a corpus is: the one that the caller names (only for one corpus), or the
+/// live or development cache of the corpus.
+pub fn cache_dir_of(corpus: &Corpus, dev: bool, named: Option<&Path>) -> PathBuf {
+    named.map_or_else(|| corpus.cache_dir(dev), Path::to_path_buf)
+}
+
+/// Pools the runs of several corpora into one report. The ID of a question gets the corpus as its
+/// prefix, so two corpora can use the same question IDs.
+pub fn combine(parts: &[(&Corpus, &Evaluated)]) -> Result<Report, Error> {
+    let first = &parts
+        .first()
+        .ok_or_else(|| Error::Run("there is no corpus to combine".into()))?
+        .1
+        .report;
+    for (corpus, evaluated) in parts {
+        let r = &evaluated.report;
+        if r.cache_kind != first.cache_kind || r.embedding_model != first.embedding_model {
+            return Err(Error::Cache(format!(
+                "corpus {} has another kind of cache or another embedding model than the first corpus. Refresh the caches with one model.",
+                corpus.id
+            )));
+        }
+    }
+    let main_parts: Vec<(&str, &Run)> = parts
+        .iter()
+        .map(|(c, e)| (c.id.as_str(), &e.main))
+        .collect();
+    let main = Run::merged(&main_parts);
+    let single = if parts.iter().all(|(_, e)| e.single.is_some()) {
+        let singles: Vec<(&str, &Run)> = parts
+            .iter()
+            .filter_map(|(c, e)| e.single.as_ref().map(|s| (c.id.as_str(), s)))
+            .collect();
+        Some(Run::merged(&singles))
+    } else {
+        None
+    };
+    let mut headers = HeaderStats::default();
+    for (_, e) in parts {
+        if let Some(h) = &e.report.headers {
+            headers.add(h);
+        }
+    }
+    let info = ReportInfo {
+        cache_kind: first.cache_kind,
+        embedding_model: first.embedding_model.clone(),
+        corpus_sha256: parts
+            .iter()
+            .map(|(_, e)| e.report.corpus_sha256.as_str())
+            .collect::<Vec<_>>()
+            .join("+"),
+        chunks: parts.iter().map(|(_, e)| e.report.chunks).sum(),
+        settings: first.settings.clone(),
+        latency: None,
+        headers,
+    };
+    Ok(report_from_runs(info, &main, single.as_ref()))
+}
+
+/// Runs the evaluation for corpora, from their caches.
+pub async fn run_suite(
+    corpora: &[Corpus],
+    dev: bool,
+    named_cache: Option<&Path>,
+    tuning: &Tuning,
+) -> Result<SuiteReport, Error> {
+    let mut done: Vec<(&Corpus, Evaluated)> = Vec::new();
+    for corpus in corpora {
+        let loaded = load(corpus, &cache_dir_of(corpus, dev, named_cache))?;
+        let opts = tuning.options(&loaded.cache.meta.embedding_model);
+        let evaluated = evaluate(&loaded.sections, &loaded.questions, &loaded.cache, &opts).await?;
+        done.push((corpus, evaluated));
+    }
+    let parts: Vec<(&Corpus, &Evaluated)> = done.iter().map(|(c, e)| (*c, e)).collect();
+    let combined = combine(&parts)?;
+    Ok(SuiteReport {
+        corpora: done
+            .into_iter()
+            .map(|(c, e)| CorpusReport {
+                id: c.id.clone(),
+                report: e.report,
+            })
+            .collect(),
+        combined,
+    })
 }

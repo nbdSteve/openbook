@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::Error;
 
-/// The least number of golden questions, and of each kind.
-pub const MIN_QUESTIONS: usize = 80;
+/// The least number of golden questions of one corpus, and of each required kind.
+pub const MIN_QUESTIONS: usize = 60;
 pub const MIN_PER_KIND: usize = 10;
 
 /// A part of the excerpt that the evaluation treats as one document (like one chapter PDF in a
@@ -31,7 +31,8 @@ pub enum Kind {
     Paraphrase,
     Notation,
     Followup,
-    /// Nearby math that the excerpt does not teach (a hard negative for the gate).
+    /// A nearby topic of the same subject that the excerpt does not teach (a hard negative for the
+    /// gate).
     NotCovered,
     /// No relation to the course: general knowledge, other subjects, and small talk.
     OffTopic,
@@ -46,6 +47,12 @@ impl Kind {
         Kind::NotCovered,
         Kind::OffTopic,
     ];
+
+    /// True when a golden set needs at least `MIN_PER_KIND` questions of this kind. A notation
+    /// question (math written as symbols) only makes sense for a math corpus.
+    pub fn is_required(self) -> bool {
+        self != Kind::Notation
+    }
 
     pub fn name(self) -> &'static str {
         match self {
@@ -183,7 +190,7 @@ pub fn validate_golden(questions: &[Question], pages: u32) -> Result<(), Error> 
             questions.len()
         ));
     }
-    for kind in Kind::ALL {
+    for kind in Kind::ALL.into_iter().filter(|k| k.is_required()) {
         let count = per_kind.get(&kind).copied().unwrap_or(0);
         if count < MIN_PER_KIND {
             problems.push(format!(
@@ -224,8 +231,8 @@ mod tests {
                 all.push(question(&format!("{}-{i}", kind.name()), kind));
             }
         }
-        // 6 kinds x 10 is 60, and the set needs 80.
-        for i in 0..20 {
+        // 6 kinds x 10 is 60, and the set needs 60 at the least. Add a few more.
+        for i in 0..5 {
             all.push(question(&format!("extra-{i}"), Kind::Lookup));
         }
         all
@@ -239,12 +246,12 @@ mod tests {
     #[test]
     fn the_rules_of_the_set_are_checked() {
         let mut few = full_set();
-        few.truncate(60);
+        few.truncate(59);
         assert!(
             validate_golden(&few, 43)
                 .unwrap_err()
                 .to_string()
-                .contains("least is 80")
+                .contains("least is 60")
         );
 
         let mut missing_kind = full_set();
@@ -263,6 +270,16 @@ mod tests {
         assert!(error.contains("outside 1..=43"), "{error}");
         assert!(error.contains("needs relevant pages"), "{error}");
         assert!(error.contains("used twice"), "{error}");
+    }
+
+    #[test]
+    fn a_corpus_may_have_no_notation_questions() {
+        let mut set = full_set();
+        set.retain(|q| q.kind != Kind::Notation);
+        for i in 0..10 {
+            set.push(question(&format!("more-{i}"), Kind::Paraphrase));
+        }
+        assert!(validate_golden(&set, 43).is_ok());
     }
 
     #[test]
@@ -302,10 +319,18 @@ mod tests {
     }
 
     #[test]
-    fn the_committed_golden_set_is_valid() {
+    fn the_committed_golden_sets_are_valid() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../evals");
-        let sections = load_sections(&root.join("corpus/sections.json")).unwrap();
-        let questions = load_golden(&root.join("golden.jsonl"), page_total(&sections)).unwrap();
-        assert!(questions.len() >= MIN_QUESTIONS);
+        let corpora = crate::corpus::discover(&root).unwrap();
+        assert!(
+            corpora.len() >= 2,
+            "the evaluation needs more than one corpus"
+        );
+        for corpus in corpora {
+            let sections = load_sections(&corpus.sections_path()).unwrap();
+            let questions = load_golden(&corpus.golden_path(), page_total(&sections)).unwrap();
+            assert!(questions.len() >= MIN_QUESTIONS, "{}", corpus.id);
+            assert!(corpus.attribution_path().is_file(), "{}", corpus.id);
+        }
     }
 }

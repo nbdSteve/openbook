@@ -74,15 +74,20 @@ fmt: ## Format the Rust code
 	$(call part,rust fmt,Cargo.toml,cargo fmt --all)
 
 .PHONY: eval
-eval: ## Retrieval evaluation, offline, checked against evals/baseline.json (no network)
+eval: ## Retrieval evaluation, offline, checked against evals/baseline.json and evals/benchmarks.json, and the README tables (no network)
 	cargo run -q -p openbook-eval -- offline --check
+	cargo run -q -p openbook-eval -- readme --check
+
+.PHONY: benchmarks
+benchmarks: ## Write the benchmark tables of evals/benchmarks.json into README.md (no network)
+	cargo run -q -p openbook-eval -- readme
 
 .PHONY: eval-dev
 eval-dev: ## Retrieval evaluation on the development cache (shows that the harness works; never a baseline)
 	cargo run -q -p openbook-eval -- offline --dev-cache
 
 .PHONY: eval-live
-eval-live: ## Refresh evals/cache with REAL Bedrock calls: needs AWS_PROFILE. It prints the calls and the cost; add YES=1 to start
+eval-live: ## Refresh the caches of all corpora with REAL Bedrock calls: needs AWS_PROFILE. It prints the calls and the cost; add YES=1 to start
 	@test -n "$${AWS_PROFILE:-}" || { echo "error: set AWS_PROFILE (this calls real AWS)" >&2; exit 1; }
 	OPENBOOK_PDFIUM_PATH="$$(scripts/fetch-pdfium.sh | tail -1)" cargo run -q --release -p openbook-eval -- refresh $(if $(YES),--yes,)
 
@@ -91,9 +96,9 @@ eval-grid: ## Run the whole retrieval tuning grid offline; writes target/eval/gr
 	cargo run -q -p openbook-eval -- grid
 
 .PHONY: eval-live-missing
-eval-live-missing: ## Add the missing embeddings and rewrites to evals/cache with REAL Bedrock calls, no transcription: needs AWS_PROFILE. It prints the calls and a cost bound; add YES=1 to start
+eval-live-missing: ## Fill what the caches of all corpora lack with REAL Bedrock calls (a corpus with no cache gets the full refresh): needs AWS_PROFILE. It prints the calls and a cost bound; add YES=1 to start
 	@test -n "$${AWS_PROFILE:-}" || { echo "error: set AWS_PROFILE (this calls real AWS)" >&2; exit 1; }
-	cargo run -q -p openbook-eval -- refresh --missing-only $(if $(YES),--yes,)
+	OPENBOOK_PDFIUM_PATH="$$(scripts/fetch-pdfium.sh | tail -1)" cargo run -q --release -p openbook-eval -- refresh --missing-only $(if $(YES),--yes,)
 
 .PHONY: test-integration
 test-integration: ## Rust integration tests against AWS Emulator (port 9320)

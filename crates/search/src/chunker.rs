@@ -337,6 +337,27 @@ pub fn chunk_pages(pages: &[(u32, String)]) -> Vec<Chunk> {
 /// `chunk_pages` with another target size in characters. Production uses `TARGET_CHARS`. The
 /// evaluation tries other sizes. The hard limit `MAX_CHARS` stays the same.
 pub fn chunk_pages_with(pages: &[(u32, String)], target: usize) -> Vec<Chunk> {
+    chunk_pages_variant(pages, target, crate::headers::PRODUCTION_VARIANT)
+}
+
+/// `chunk_pages_with` with a choice for the first occurrence of a running header. Only the
+/// evaluation grid calls it with another variant than the one of production.
+pub fn chunk_pages_variant(
+    pages: &[(u32, String)],
+    target: usize,
+    variant: crate::headers::HeaderMode,
+) -> Vec<Chunk> {
+    // The running headers and footers of the book go first, so no heading path, embedded text, or
+    // BM25 field holds them. The ingestion worker and the evaluation both come through here.
+    chunk_stripped_pages(
+        &crate::headers::strip_running_lines_with(pages, variant).pages,
+        target,
+    )
+}
+
+/// Chunks pages as they are, with no removal of running lines. The evaluation uses it to measure
+/// what the removal changes.
+pub fn chunk_stripped_pages(pages: &[(u32, String)], target: usize) -> Vec<Chunk> {
     let mut chunks: Vec<Chunk> = Vec::new();
     let mut stack: Vec<(usize, String)> = Vec::new();
     let mut current = Building::default();
@@ -464,6 +485,43 @@ mod tests {
         );
         let indexes: Vec<u32> = chunks.iter().map(|c| c.index).collect();
         assert_eq!(indexes, [0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn production_chunks_the_pages_as_they_are_and_the_experiment_removes_running_headers() {
+        let pages = pages(&[
+            "# BOOK SECTION ONE\n\n## Rules\n\nFirst rule text.",
+            "# BOOK CHAPTER ONE\n\nMore about the rules of grammar.",
+            "# BOOK SECTION ONE\n\nEven more about the laws of motion.",
+            "# BOOK CHAPTER ONE\n\nThe last words about the rules of chess.",
+            "# BOOK SECTION ONE\n\nAn extra page.",
+            "# BOOK CHAPTER ONE\n\nAnd one more page.",
+        ]);
+        // Production does not strip: the text is chunked as it is.
+        assert_eq!(
+            chunk_pages(&pages),
+            chunk_stripped_pages(&pages, TARGET_CHARS)
+        );
+        // The experimental rule (only the evaluation grid uses it).
+        let clean =
+            chunk_pages_variant(&pages, TARGET_CHARS, crate::headers::HeaderMode::KeepFirst);
+        let paths: Vec<&str> = clean.iter().map(|c| c.heading_path.as_str()).collect();
+        assert!(
+            paths
+                .iter()
+                .all(|p| !p.contains("CHAPTER") || *p == "BOOK CHAPTER ONE"),
+            "{paths:?}"
+        );
+        let text: String = clean.iter().map(|c| c.text.as_str()).collect();
+        assert!(text.contains("The last words about the rules of chess."));
+        // Without the removal, the later copies of the header are headings of their own.
+        let raw = chunk_stripped_pages(&pages, TARGET_CHARS);
+        assert!(
+            raw.len() > clean.len(),
+            "{} against {}",
+            raw.len(),
+            clean.len()
+        );
     }
 
     #[test]

@@ -22,14 +22,20 @@ pub const RRF_K: f64 = 60.0;
 /// the worst chunk that only dense search finds has `1 / (RRF_K + DENSE_TOP_K)`. With weight 0.5 that
 /// is 0.0082 against 0.0100, so BM25 could only re-order dense results and never add a source. That
 /// would remove the reason for hybrid search: an exact match (notation, a keyword) that dense ranks
-/// low. A test pins this. Weight 0.5 looked better on the golden set (MRR 0.852 to 0.901), but the set
-/// has 133 chunks, so 40 dense candidates are 30 percent of it, and it was rejected for that property.
+/// low. A test pins this. Weight 0.5 looked better on the golden set, and it was rejected for that
+/// property. Round 2 (`evals/results/2026-11-18.md`) tested it again on a second, prose corpus: pooled
+/// Recall@1 0.7642 to 0.8374 and MRR 0.8553 to 0.8973, and the MRR rises on both corpora, but Recall@8
+/// does not move (and falls a question on the prose corpus). The corpora are so small (82 and 133
+/// chunks) that 40 dense candidates hold every relevant chunk, so they cannot show what the property
+/// costs. That is a reason for a re-test on a larger corpus, not yet for giving up the property.
 pub const LEXICAL_WEIGHT: f64 = 1.0;
 /// Sources that go to the model and the student.
 pub const FINAL_SOURCES: usize = 8;
 /// Most sources from one document while other candidates are left. The cap is soft: when fewer than
 /// `FINAL_SOURCES` candidates pass it, the free places go to the skipped candidates, in fused order.
-/// On the golden set, 6 gives Recall@8 0.9868 and nDCG@10 0.5526, against 0.9605 and 0.4936 for 4.
+/// On the two corpora pooled (round 2), 6 gives Recall@8 0.9919 and nDCG@8 0.6064, against 0.9756 and
+/// 0.5475 for 4. The cap costs 0.024 of nDCG@8 against no cap (0.6307): it protects the source
+/// diversity of a course with several documents, which the golden sets do not measure.
 pub const MAX_PER_DOCUMENT: usize = 6;
 
 /// The embedding model that the stack uses by default. One definition, in `openbook-core`. The CDK
@@ -37,13 +43,27 @@ pub const MAX_PER_DOCUMENT: usize = 6;
 pub const TITAN_V2_MODEL_ID: &str = openbook_core::config::DEFAULT_EMBEDDING_MODEL_ID;
 /// The hashed bag-of-words embedder of local runs and tests.
 pub const FAKE_MODEL_ID: &str = openbook_core::config::FAKE_EMBEDDING_MODEL_ID;
-/// The gate distance for Titan v2 (see `GateRule`). "No false gate" is in-sample: on the 76 covered
-/// golden questions the worst best dense distance is 0.748, and the limit is 0.032 above it. A real
-/// course can have a covered question that is farther, and then the student gets no sources. The
-/// trace of every turn records the real distances (`trace.gate`), so the next round can re-measure.
-/// The adjacent math topics of `not_covered` are close to the course (0.56 to 0.86), so this limit
-/// catches few of them (see `evals/results/2026-11-17.md`). Off-topic questions are 0.82 and farther.
-/// The distance is only valid for Titan v2.
+/// The gate distance for Titan v2 (see `GateRule`): 0.78.
+///
+/// The rule that chose it: no false gate on the golden questions, and a margin of at least 0.02
+/// between the limit and the worst covered question; among the limits that pass, the highest gate
+/// accuracy. The margin is a safety condition and it comes first: a false gate (a student with a
+/// real course question gets no sources) costs more than a missed gate (the question gets sources
+/// that the answer may not cite, and the UI shows only the cited ones).
+///
+/// The numbers (`evals/results/2026-11-18.md`), over both corpora and 123 covered questions, with
+/// the pages chunked as they are: the worst covered question is 0.758 (a prose paraphrase), so 0.78
+/// has a margin of 0.022 and passes, and it has the best gate accuracy of the limits that pass
+/// (0.8944). 0.79 has a margin of 0.032 and 0.8833, and is the next step if real distances show
+/// that the margin is too thin. The false-gate rate is 0 on both corpora, and all 24 `off_topic`
+/// questions (distances 0.82 and farther) are gated. The limit was 0.79 for a while in round 2,
+/// when a stricter header rule moved the worst covered question to 0.764 (margin 0.016); production
+/// does not strip headers any more, and 0.78 passes again.
+///
+/// "No false gate" is in-sample: the limit was chosen on the golden questions that the retrieval was
+/// tuned on. A real course can have a covered question that is farther, and then the student gets no
+/// sources. The trace of every turn records the real distances (`trace.gate`), so the next round can
+/// re-measure. The distance is only valid for Titan v2.
 pub const GATE_TITAN_V2_MAX_DISTANCE: f32 = 0.78;
 
 /// What the relevance gate reads about the words of a query (see `Bm25Reader::search_with_stats`).
