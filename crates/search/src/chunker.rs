@@ -229,7 +229,7 @@ fn hard_split(text: &str, max: usize) -> Vec<String> {
 }
 
 /// Splits a paragraph that is larger than the hard limit into pieces of about the target size.
-fn split_paragraph(text: &str) -> Vec<String> {
+fn split_paragraph(text: &str, target: usize) -> Vec<String> {
     let mut pieces = Vec::new();
     let mut current = String::new();
     for sentence in split_sentences(text) {
@@ -238,10 +238,10 @@ fn split_paragraph(text: &str) -> Vec<String> {
             if !current.is_empty() {
                 pieces.push(std::mem::take(&mut current));
             }
-            pieces.extend(hard_split(&sentence, TARGET_CHARS));
+            pieces.extend(hard_split(&sentence, target));
             continue;
         }
-        if !current.is_empty() && current.chars().count() + 1 + sentence_chars > TARGET_CHARS {
+        if !current.is_empty() && current.chars().count() + 1 + sentence_chars > target {
             pieces.push(std::mem::take(&mut current));
         }
         if !current.is_empty() {
@@ -331,6 +331,12 @@ impl Building {
 
 /// Chunks the pages of a document. `pages` has `(1-based page number, Markdown)` in page order.
 pub fn chunk_pages(pages: &[(u32, String)]) -> Vec<Chunk> {
+    chunk_pages_with(pages, TARGET_CHARS)
+}
+
+/// `chunk_pages` with another target size in characters. Production uses `TARGET_CHARS`. The
+/// evaluation tries other sizes. The hard limit `MAX_CHARS` stays the same.
+pub fn chunk_pages_with(pages: &[(u32, String)], target: usize) -> Vec<Chunk> {
     let mut chunks: Vec<Chunk> = Vec::new();
     let mut stack: Vec<(usize, String)> = Vec::new();
     let mut current = Building::default();
@@ -370,30 +376,17 @@ pub fn chunk_pages(pages: &[(u32, String)]) -> Vec<Chunk> {
                     stack.push((level, block.text.clone()));
                 }
                 Kind::Paragraph if block.text.chars().count() > MAX_CHARS => {
-                    let pieces = split_paragraph(&block.text);
+                    let pieces = split_paragraph(&block.text, target);
                     for piece in pieces {
-                        add_block(
-                            &mut current,
-                            &mut chunks,
-                            &stack,
-                            &path_of,
-                            Kind::Paragraph,
-                            &piece,
-                            block.page,
-                        );
+                        let part = Block {
+                            kind: Kind::Paragraph,
+                            text: piece,
+                            page: block.page,
+                        };
+                        add_block(&mut current, &mut chunks, &stack, &path_of, target, &part);
                     }
                 }
-                kind => {
-                    add_block(
-                        &mut current,
-                        &mut chunks,
-                        &stack,
-                        &path_of,
-                        kind,
-                        &block.text,
-                        block.page,
-                    );
-                }
+                _ => add_block(&mut current, &mut chunks, &stack, &path_of, target, &block),
             }
         }
     }
@@ -406,12 +399,11 @@ fn add_block(
     chunks: &mut Vec<Chunk>,
     stack: &[(usize, String)],
     path_of: &PathFn,
-    kind: Kind,
-    text: &str,
-    page: u32,
+    target: usize,
+    block: &Block,
 ) {
-    let size = text.chars().count() + 2;
-    if !current.is_empty() && current.chars + size > TARGET_CHARS {
+    let size = block.text.chars().count() + 2;
+    if !current.is_empty() && current.chars + size > target {
         // The size limit ends this chunk. The next one starts with an overlap.
         let done = std::mem::take(current);
         let overlap = overlap_of(&done.last_paragraph);
@@ -431,7 +423,7 @@ fn add_block(
     } else if current.is_empty() {
         current.path = path_of(stack);
     }
-    current.push(kind, text, page);
+    current.push(block.kind, &block.text, block.page);
 }
 
 #[cfg(test)]
@@ -577,6 +569,21 @@ mod tests {
         }
         // Items are on consecutive lines, not separated by blank lines.
         assert!(!chunks[0].text.contains("\n\n"));
+    }
+
+    #[test]
+    fn a_smaller_target_gives_more_and_smaller_chunks() {
+        let paragraphs: Vec<String> = (0..12)
+            .map(|p| format!("Paragraph {p} starts here. {}", sentence_text(12)))
+            .collect();
+        let input = pages(&[&paragraphs.join("\n\n")]);
+        let normal = chunk_pages(&input);
+        assert_eq!(normal, chunk_pages_with(&input, TARGET_CHARS));
+        let small = chunk_pages_with(&input, TARGET_CHARS / 2);
+        let large = chunk_pages_with(&input, MAX_CHARS);
+        assert!(small.len() > normal.len() && normal.len() > large.len());
+        assert!(small.iter().all(|c| c.text.chars().count() <= MAX_CHARS));
+        assert!(large.iter().all(|c| c.text.chars().count() <= MAX_CHARS));
     }
 
     #[test]

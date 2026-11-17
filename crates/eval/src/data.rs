@@ -31,16 +31,20 @@ pub enum Kind {
     Paraphrase,
     Notation,
     Followup,
+    /// Nearby math that the excerpt does not teach (a hard negative for the gate).
     NotCovered,
+    /// No relation to the course: general knowledge, other subjects, and small talk.
+    OffTopic,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 5] = [
+    pub const ALL: [Kind; 6] = [
         Kind::Lookup,
         Kind::Paraphrase,
         Kind::Notation,
         Kind::Followup,
         Kind::NotCovered,
+        Kind::OffTopic,
     ];
 
     pub fn name(self) -> &'static str {
@@ -50,6 +54,7 @@ impl Kind {
             Kind::Notation => "notation",
             Kind::Followup => "followup",
             Kind::NotCovered => "not_covered",
+            Kind::OffTopic => "off_topic",
         }
     }
 }
@@ -70,7 +75,7 @@ pub struct Question {
 impl Question {
     /// True when the corpus covers the question.
     pub fn is_covered(&self) -> bool {
-        self.kind != Kind::NotCovered
+        !matches!(self.kind, Kind::NotCovered | Kind::OffTopic)
     }
 }
 
@@ -145,11 +150,12 @@ pub fn validate_golden(questions: &[Question], pages: u32) -> Result<(), Error> 
             problems.push(format!("{}: the question is empty", q.id));
         }
         match q.kind {
-            Kind::NotCovered => {
+            Kind::NotCovered | Kind::OffTopic => {
                 if !q.relevant_pages.is_empty() {
                     problems.push(format!(
-                        "{}: a not_covered question has no relevant pages",
-                        q.id
+                        "{}: a {} question has no relevant pages",
+                        q.id,
+                        q.kind.name()
                     ));
                 }
             }
@@ -201,7 +207,7 @@ mod tests {
         Question {
             id: id.into(),
             question: "What?".into(),
-            relevant_pages: if kind == Kind::NotCovered {
+            relevant_pages: if matches!(kind, Kind::NotCovered | Kind::OffTopic) {
                 vec![]
             } else {
                 vec![1]
@@ -218,8 +224,8 @@ mod tests {
                 all.push(question(&format!("{}-{i}", kind.name()), kind));
             }
         }
-        // 5 kinds x 10 is 50, and the set needs 80.
-        for i in 0..30 {
+        // 6 kinds x 10 is 60, and the set needs 80.
+        for i in 0..20 {
             all.push(question(&format!("extra-{i}"), Kind::Lookup));
         }
         all

@@ -11,25 +11,189 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use openbook_search::bm25::{Bm25Chunk, Bm25Reader, Bm25Writer};
-use openbook_search::chunker::{chunk_pages, embed_text};
+use openbook_search::chunker::{TARGET_CHARS, chunk_pages_with, embed_text};
 use openbook_search::retrieval::{
-    DenseResult, DenseSearch, Fused, Hit, LEXICAL_TOP_K, LexicalSearch, MAX_QUERY_CHARS, Outcome,
-    Params, Passage, clip, decide_with, fuse_with, passes_gate_with, search_both,
+    DENSE_TOP_K, DenseResult, DenseSearch, Fused, GateRule, Hit, LEXICAL_TOP_K, LexicalResult,
+    LexicalSearch, MAX_QUERY_CHARS, Outcome, Params, Passage, clip, decide_with, fuse_with,
+    gate_inputs, search_both,
 };
 use openbook_search::vectors::vector_key;
 
 use crate::Error;
 use crate::cache::{Cache, EmbeddingStore, rewrite_key};
 use crate::data::{Kind, Question, Section};
-use crate::metrics::{self, NDCG_DEPTH, Outcome as RunOutcome, RECALL_LARGE, Span};
-use crate::report::{KindMetrics, Miss, Report};
+use crate::metrics::{self, Outcome as RunOutcome, RECALL_LARGE, Span};
+use crate::report::{GateRow, KindMetrics, Miss, ModeMetrics, QuestionDiag, Report, gate_sweep};
 
-/// The ranked lists have this many results, so nDCG@10 has ten places. The API returns the first
-/// `Params::final_sources` of them, and the fusion order is the same.
-pub fn ranking_params(params: &Params) -> Params {
-    Params {
-        final_sources: params.final_sources.max(NDCG_DEPTH),
-        ..*params
+/// The document ID that every chunk gets in cap-off mode.
+pub const CAP_OFF_DOCUMENT_ID: &str = "course";
+
+/// One chunk is about this many characters per token.
+pub const CHARS_PER_TOKEN: usize = 4;
+
+/// Everything that one offline run can change.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Options {
+    pub params: Params,
+    /// The chunk target in characters (the chunker's `TARGET_CHARS` in production).
+    pub chunk_chars: usize,
+    /// Treat the whole PDF as one document: the per-document cap then sees one document. The chunks
+    /// and their embeddings stay the same, so this isolates the effect of the cap.
+    pub cap_off: bool,
+    pub dense_top_k: usize,
+    pub lexical_top_k: usize,
+}
+
+impl Options {
+    /// The production numbers for an embedding model.
+    pub fn production(embedding_model: &str) -> Self {
+        Self {
+            params: Params::for_embedding_model(embedding_model),
+            chunk_chars: TARGET_CHARS,
+            cap_off: false,
+            dense_top_k: DENSE_TOP_K as usize,
+            lexical_top_k: LEXICAL_TOP_K,
+        }
+    }
+
+    /// The chunk target in tokens.
+    pub fn chunk_tokens(&self) -> usize {
+        self.chunk_chars / CHARS_PER_TOKEN
+    }
+
+    /// The same options in the other document mode.
+    pub fn with_cap_off(mut self, single: bool) -> Self {
+        self.cap_off = single;
+        self
+    }
+
+    /// The settings in words, for the report.
+    pub fn describe(&self) -> String {
+        format!(
+            "{}; RRF k {}, BM25 weight {}; {} sources, at most {} per document; {} dense and {} BM25 candidates; chunk target {} tokens; {}",
+            describe_rule(&self.params.gate),
+            self.params.rrf_k,
+            self.params.lexical_weight,
+            self.params.final_sources,
+            self.params.max_per_document,
+            self.dense_top_k,
+            self.lexical_top_k,
+            self.chunk_tokens(),
+            if self.cap_off {
+                "cap off"
+            } else {
+                "one document per section"
+            }
+        )
+    }
+}
+
+/// A gate rule in words.
+pub fn describe_rule(rule: &GateRule) -> String {
+    match rule {
+        GateRule::AnyLexicalHit { max_distance } => {
+            format!("gate: dense distance at most {max_distance} or any BM25 hit")
+        }
+        GateRule::Dense { max_distance } => {
+            format!("gate: dense distance at most {max_distance}")
+        }
+        GateRule::DenseOrLexical {
+            max_distance,
+            min_coverage,
+            min_matched,
+        } => format!(
+            "gate: dense distance at most {max_distance}, or BM25 best hit with coverage at least {min_coverage} and at least {min_matched} matched terms"
+        ),
+    }
+}
+
+/// Which gate rule a flag asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GateKind {
+    Any,
+    Dense,
+    Combined,
+}
+
+impl GateKind {
+    pub fn parse(text: &str) -> Option<GateKind> {
+        match text {
+            "any" => Some(GateKind::Any),
+            "dense" => Some(GateKind::Dense),
+            "combined" => Some(GateKind::Combined),
+            _ => None,
+        }
+    }
+}
+
+/// The changes that the command line asks for. `Default` changes nothing.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Tuning {
+    pub rrf_k: Option<f64>,
+    pub lexical_weight: Option<f64>,
+    pub final_sources: Option<usize>,
+    pub max_per_document: Option<usize>,
+    pub gate_kind: Option<GateKind>,
+    pub gate_distance: Option<f32>,
+    pub gate_coverage: Option<f64>,
+    pub gate_matched: Option<usize>,
+    pub chunk_tokens: Option<usize>,
+    pub dense_top_k: Option<usize>,
+    pub lexical_top_k: Option<usize>,
+    pub cap_off: bool,
+}
+
+impl Tuning {
+    /// True when any number differs from production. `--check` and `--write-baseline` refuse it.
+    pub fn is_tuned(&self) -> bool {
+        *self != Tuning::default()
+    }
+
+    /// The options for an embedding model.
+    pub fn options(&self, embedding_model: &str) -> Options {
+        let mut o = Options::production(embedding_model);
+        let base = o.params.gate;
+        let distance = self.gate_distance.unwrap_or(base.max_distance());
+        o.params.gate = match self.gate_kind {
+            None => base.with_max_distance(distance),
+            Some(GateKind::Any) => GateRule::AnyLexicalHit {
+                max_distance: distance,
+            },
+            Some(GateKind::Dense) => GateRule::Dense {
+                max_distance: distance,
+            },
+            Some(GateKind::Combined) => GateRule::DenseOrLexical {
+                max_distance: distance,
+                min_coverage: self.gate_coverage.unwrap_or(0.75),
+                min_matched: self.gate_matched.unwrap_or(3),
+            },
+        };
+        if let (
+            None,
+            GateRule::DenseOrLexical {
+                max_distance,
+                min_coverage,
+                min_matched,
+            },
+        ) = (self.gate_kind, o.params.gate)
+        {
+            o.params.gate = GateRule::DenseOrLexical {
+                max_distance,
+                min_coverage: self.gate_coverage.unwrap_or(min_coverage),
+                min_matched: self.gate_matched.unwrap_or(min_matched),
+            };
+        }
+        o.params.rrf_k = self.rrf_k.unwrap_or(o.params.rrf_k);
+        o.params.lexical_weight = self.lexical_weight.unwrap_or(o.params.lexical_weight);
+        o.params.final_sources = self.final_sources.unwrap_or(o.params.final_sources);
+        o.params.max_per_document = self.max_per_document.unwrap_or(o.params.max_per_document);
+        if let Some(tokens) = self.chunk_tokens {
+            o.chunk_chars = tokens * CHARS_PER_TOKEN;
+        }
+        o.dense_top_k = self.dense_top_k.unwrap_or(o.dense_top_k);
+        o.lexical_top_k = self.lexical_top_k.unwrap_or(o.lexical_top_k);
+        o.cap_off = self.cap_off;
+        o
     }
 }
 
@@ -47,10 +211,12 @@ pub struct EvalChunk {
 }
 
 /// Chunks every section like ingestion does for one document: the section is its own document,
-/// its pages count from 1, and the title is the section title.
+/// its pages count from 1, and the title is the section title. `target_chars` is the chunk target
+/// (`TARGET_CHARS` in production).
 pub fn build_chunks(
     sections: &[Section],
     pages: &[(u32, String)],
+    target_chars: usize,
 ) -> Result<Vec<EvalChunk>, Error> {
     let by_number: HashMap<u32, &str> = pages.iter().map(|(n, t)| (*n, t.as_str())).collect();
     let mut out = Vec::new();
@@ -66,7 +232,7 @@ pub fn build_chunks(
             })?;
             local.push((number - offset, (*text).to_owned()));
         }
-        for chunk in chunk_pages(&local) {
+        for chunk in chunk_pages_with(&local, target_chars) {
             out.push(EvalChunk {
                 key: vector_key(&section.id, chunk.index),
                 document_id: section.id.clone(),
@@ -80,10 +246,14 @@ pub fn build_chunks(
     Ok(out)
 }
 
-fn passage(chunk: &EvalChunk) -> Passage {
+fn passage(chunk: &EvalChunk, cap_off: bool) -> Passage {
     Passage {
         key: chunk.key.clone(),
-        document_id: chunk.document_id.clone(),
+        document_id: if cap_off {
+            CAP_OFF_DOCUMENT_ID.to_owned()
+        } else {
+            chunk.document_id.clone()
+        },
         // The vector store and the index keep the first page of the chunk.
         page: chunk.span.0,
         heading: chunk.heading.clone(),
@@ -139,28 +309,34 @@ impl DenseSearch for MemoryDense {
 pub struct TantivyLexical {
     reader: Arc<Bm25Reader>,
     top_k: usize,
+    cap_off: bool,
 }
 
 #[async_trait]
 impl LexicalSearch for TantivyLexical {
-    async fn search(&self, query: &str) -> Result<Vec<Hit>, String> {
-        let hits = self
+    async fn search(&self, query: &str) -> Result<LexicalResult, String> {
+        let (hits, terms) = self
             .reader
-            .search(query, self.top_k)
+            .search_with_stats(query, self.top_k)
             .map_err(|e| e.to_string())?;
-        Ok(hits
+        let hits = hits
             .into_iter()
             .map(|h| Hit {
                 value: h.score,
                 passage: Passage {
                     key: h.chunk_id,
-                    document_id: h.document_id,
+                    document_id: if self.cap_off {
+                        CAP_OFF_DOCUMENT_ID.to_owned()
+                    } else {
+                        h.document_id
+                    },
                     page: u32::try_from(h.page).unwrap_or(0),
                     heading: h.heading,
                     text: h.text,
                 },
             })
-            .collect())
+            .collect();
+        Ok(LexicalResult { hits, terms })
     }
 }
 
@@ -175,14 +351,26 @@ pub struct Index {
 }
 
 impl Index {
-    pub fn build(sections: &[Section], cache: &Cache) -> Result<Index, Error> {
-        let chunks = build_chunks(sections, &cache.pages)?;
+    /// Builds the indexes for one chunk target and one document mode.
+    pub fn build(
+        sections: &[Section],
+        cache: &Cache,
+        chunk_chars: usize,
+        cap_off: bool,
+    ) -> Result<Index, Error> {
+        let chunks = build_chunks(sections, &cache.pages, chunk_chars)?;
         if chunks.is_empty() {
             return Err(Error::Cache("the cached pages give no chunks".into()));
         }
         let mut vectors = Vec::with_capacity(chunks.len());
         for chunk in &chunks {
-            vectors.push((passage(chunk), cache.embeddings.get(&chunk.embed_text)?));
+            let vector = cache.embeddings.get(&chunk.embed_text).map_err(|e| {
+                Error::Cache(format!(
+                    "{e} (a chunk of the {} token target: refresh the cache with `refresh --missing-only`)",
+                    chunk_chars / CHARS_PER_TOKEN
+                ))
+            })?;
+            vectors.push((passage(chunk, cap_off), vector));
         }
         let dir =
             tempfile::tempdir().map_err(|e| Error::Run(format!("temporary directory: {e}")))?;
@@ -208,16 +396,23 @@ impl Index {
             dense: MemoryDense {
                 chunks: vectors,
                 queries: cache.embeddings.clone(),
-                top_k: openbook_search::retrieval::DENSE_TOP_K as usize,
+                top_k: DENSE_TOP_K as usize,
             },
             lexical: TantivyLexical {
                 reader,
                 top_k: LEXICAL_TOP_K,
+                cap_off,
             },
             chunks,
             spans,
             _dir: dir,
         })
+    }
+
+    /// How many candidates each retriever returns.
+    pub fn set_candidates(&mut self, dense: usize, lexical: usize) {
+        self.dense.top_k = dense;
+        self.lexical.top_k = lexical;
     }
 
     fn span(&self, key: &str) -> Result<Span, Error> {
@@ -253,14 +448,28 @@ struct Answers {
     bm25: RunOutcome,
     hybrid: RunOutcome,
     hybrid_returned: Vec<Fused>,
+    diag: QuestionDiag,
 }
 
-async fn answer(
+fn round5(value: f32) -> f64 {
+    (f64::from(value) * 100_000.0).round() / 100_000.0
+}
+
+/// What the two retrievers found for one question. It does not depend on the fusion numbers, so the
+/// grid searches once and fuses many times.
+#[derive(Debug, Clone)]
+pub struct Candidates {
+    pub dense: Vec<Hit>,
+    pub lexical: Vec<Hit>,
+    pub terms: openbook_search::retrieval::TermStats,
+}
+
+/// Searches both indexes for the query of a question.
+pub async fn candidates(
     index: &Index,
     question: &Question,
     query: &str,
-    params: &Params,
-) -> Result<Answers, Error> {
+) -> Result<Candidates, Error> {
     // A missing embedding is a cache problem with a clear message, not "dense failed".
     index
         .dense
@@ -275,10 +484,22 @@ async fn answer(
             searched.errors.join(", ")
         )));
     }
-    let (dense, lexical) = (
-        searched.dense.unwrap_or_default(),
-        searched.lexical.unwrap_or_default(),
-    );
+    Ok(Candidates {
+        dense: searched.dense.unwrap_or_default(),
+        lexical: searched.lexical.unwrap_or_default(),
+        terms: searched.terms,
+    })
+}
+
+/// Gives the three setups their sources for one question.
+fn answer(
+    index: &Index,
+    question: &Question,
+    found: &Candidates,
+    params: &Params,
+) -> Result<Answers, Error> {
+    let (dense, lexical) = (&found.dense, &found.lexical);
+    let terms = found.terms;
 
     let covered = question.is_covered();
     let all: Vec<u8> = index
@@ -292,47 +513,67 @@ async fn answer(
             question.id, question.relevant_pages
         )));
     }
-    let outcome = |fused: &[Fused], gated: bool| -> Result<RunOutcome, Error> {
-        let ranked = fused
+    let gains = |fused: &[Fused]| -> Result<Vec<u8>, Error> {
+        fused
             .iter()
             .map(|f| {
                 index
                     .span(&f.passage.key)
                     .map(|span| metrics::gain(span, &question.relevant_pages))
             })
-            .collect::<Result<Vec<u8>, Error>>()?;
+            .collect()
+    };
+    let outcome = |pass: bool, list: &[Fused]| -> Result<RunOutcome, Error> {
+        let returned = if pass { gains(list)? } else { Vec::new() };
         Ok(RunOutcome {
             covered,
-            gated,
-            ranked,
+            gated: !pass,
+            returned,
             all: all.clone(),
         })
     };
 
     // Hybrid: exactly what the API does after the two searches.
-    let decision = decide_with(params, Some(dense.clone()), Some(lexical.clone()));
-    let hybrid = outcome(&decision.fused, decision.outcome == Outcome::NotCovered)?;
+    let decision = decide_with(params, Some(dense.clone()), Some(lexical.clone()), terms);
+    let hybrid_pass = decision.outcome != Outcome::NotCovered;
+    let hybrid = outcome(hybrid_pass, &decision.fused)?;
 
-    // Dense only and BM25 only: the same gate rule and the same fusion code on one list, so the
-    // cap and the depth are the same as for the hybrid run.
-    let best_dense = dense.first().map(|h| h.value);
-    let dense_pass = passes_gate_with(params, best_dense, 0);
-    let dense_fused = if dense_pass {
-        fuse_with(params, &dense, &[])
+    // Dense only and BM25 only: the dense or the lexical half of the gate and the same fusion code
+    // on one list, so the cap and the depth are the same as for the hybrid run.
+    let dense_inputs = gate_inputs(dense, &[], Default::default());
+    let dense_pass = params.gate.passes_dense_only(&dense_inputs);
+    let dense_returned = if dense_pass {
+        fuse_with(params, dense, &[])
     } else {
         Vec::new()
     };
-    let bm25_pass = passes_gate_with(params, None, lexical.len());
-    let bm25_fused = if bm25_pass {
-        fuse_with(params, &[], &lexical)
+    let bm25_inputs = gate_inputs(&[], lexical, terms);
+    let bm25_pass = params.gate.passes_lexical_only(&bm25_inputs);
+    let bm25_returned = if bm25_pass {
+        fuse_with(params, &[], lexical)
     } else {
         Vec::new()
+    };
+
+    let gate = decision.gate;
+    let diag = QuestionDiag {
+        id: question.id.clone(),
+        kind: question.kind.name().to_owned(),
+        best_dense_distance: gate.best_dense_distance.map(round5),
+        top_bm25_score: gate.top_bm25_score.map(round5),
+        term_coverage: metrics::round4(gate.term_coverage()),
+        query_terms: gate.terms.query_terms,
+        indexed_terms: gate.terms.indexed_terms,
+        matched_terms: gate.terms.matched_terms,
+        lexical_hits: gate.lexical_hits,
+        gated: !hybrid_pass,
     };
     Ok(Answers {
-        dense: outcome(&dense_fused, !dense_pass)?,
-        bm25: outcome(&bm25_fused, !bm25_pass)?,
+        dense: outcome(dense_pass, &dense_returned)?,
+        bm25: outcome(bm25_pass, &bm25_returned)?,
         hybrid,
         hybrid_returned: decision.fused,
+        diag,
     })
 }
 
@@ -344,29 +585,64 @@ fn span_text(span: Span) -> String {
     }
 }
 
-/// Runs every question and builds the report.
-pub async fn run(
-    sections: &[Section],
+/// What a run over all questions found.
+pub struct Run {
+    pub dense: Vec<RunOutcome>,
+    pub bm25: Vec<RunOutcome>,
+    pub hybrid: Vec<RunOutcome>,
+    /// The kind of each question, in the order of the outcomes.
+    pub kinds: Vec<Kind>,
+    pub diagnostics: Vec<QuestionDiag>,
+    pub misses: Vec<Miss>,
+}
+
+impl Run {
+    pub fn mode_metrics(&self) -> ModeMetrics {
+        ModeMetrics {
+            dense: metrics::aggregate(&self.dense),
+            bm25: metrics::aggregate(&self.bm25),
+            hybrid: metrics::aggregate(&self.hybrid),
+        }
+    }
+}
+
+/// Searches for every question. The result does not depend on the fusion numbers.
+pub async fn search_all(
+    index: &Index,
     questions: &[Question],
     cache: &Cache,
-    params: &Params,
-) -> Result<Report, Error> {
-    let index = Index::build(sections, cache)?;
-    let ranking = ranking_params(params);
-    let mut dense = Vec::new();
-    let mut bm25 = Vec::new();
-    let mut hybrid = Vec::new();
-    let mut misses = Vec::new();
-    let mut by_kind: BTreeMap<Kind, Vec<RunOutcome>> = BTreeMap::new();
+) -> Result<Vec<Candidates>, Error> {
+    let mut all = Vec::with_capacity(questions.len());
     for question in questions {
         let query = query_for(question, cache)?;
-        let answers = answer(&index, question, &query, &ranking).await?;
-        if question.is_covered() && !metrics::hit_at(&answers.hybrid.ranked, RECALL_LARGE) {
+        all.push(candidates(index, question, &query).await?);
+    }
+    Ok(all)
+}
+
+/// Fuses and judges every question from its candidates.
+pub fn judge_all(
+    index: &Index,
+    questions: &[Question],
+    found: &[Candidates],
+    params: &Params,
+) -> Result<Run, Error> {
+    let mut run = Run {
+        dense: Vec::new(),
+        bm25: Vec::new(),
+        hybrid: Vec::new(),
+        kinds: Vec::new(),
+        diagnostics: Vec::new(),
+        misses: Vec::new(),
+    };
+    for (question, candidates) in questions.iter().zip(found) {
+        let answers = answer(index, question, candidates, params)?;
+        if question.is_covered() && !metrics::hit_at(&answers.hybrid.returned, RECALL_LARGE) {
             let mut returned = Vec::new();
             for f in answers.hybrid_returned.iter().take(RECALL_LARGE) {
                 returned.push(span_text(index.span(&f.passage.key)?));
             }
-            misses.push(Miss {
+            run.misses.push(Miss {
                 id: question.id.clone(),
                 kind: question.kind.name().to_owned(),
                 question: question.question.clone(),
@@ -375,15 +651,104 @@ pub async fn run(
                 returned,
             });
         }
-        by_kind
-            .entry(question.kind)
-            .or_default()
-            .push(answers.hybrid.clone());
-        dense.push(answers.dense);
-        bm25.push(answers.bm25);
-        hybrid.push(answers.hybrid);
+        run.kinds.push(question.kind);
+        run.diagnostics.push(answers.diag);
+        run.dense.push(answers.dense);
+        run.bm25.push(answers.bm25);
+        run.hybrid.push(answers.hybrid);
     }
+    Ok(run)
+}
+
+/// Runs every question over a built index.
+pub async fn run_questions(
+    index: &Index,
+    questions: &[Question],
+    cache: &Cache,
+    params: &Params,
+) -> Result<Run, Error> {
+    let found = search_all(index, questions, cache).await?;
+    judge_all(index, questions, &found, params)
+}
+
+/// How often the gate was wrong, by group of questions. For covered questions: the false-gate
+/// rate. For the others: the missed-gate rate.
+fn gate_rows(run: &Run) -> Vec<GateRow> {
+    type Member = fn(Kind) -> bool;
+    let groups: [(&str, Member); 4] = [
+        ("covered (false-gate rate)", |k| {
+            !matches!(k, Kind::NotCovered | Kind::OffTopic)
+        }),
+        ("not_covered (missed-gate rate)", |k| k == Kind::NotCovered),
+        ("off_topic (missed-gate rate)", |k| k == Kind::OffTopic),
+        ("not_covered and off_topic (missed-gate rate)", |k| {
+            matches!(k, Kind::NotCovered | Kind::OffTopic)
+        }),
+    ];
+    let wrong = |outcomes: &[RunOutcome], member: Member| -> (usize, usize) {
+        let mut total = 0;
+        let mut bad = 0;
+        for (kind, o) in run.kinds.iter().zip(outcomes) {
+            if member(*kind) {
+                total += 1;
+                // A gated covered question and an ungated uncovered one are both wrong.
+                bad += usize::from(o.gated == o.covered);
+            }
+        }
+        (total, bad)
+    };
+    let rate = |bad: usize, total: usize| {
+        if total == 0 {
+            0.0
+        } else {
+            metrics::round4(bad as f64 / total as f64)
+        }
+    };
+    groups
+        .iter()
+        .map(|(name, member)| {
+            let (total, d) = wrong(&run.dense, *member);
+            let (_, b) = wrong(&run.bm25, *member);
+            let (_, h) = wrong(&run.hybrid, *member);
+            GateRow {
+                group: (*name).to_owned(),
+                questions: total,
+                dense: rate(d, total),
+                bm25: rate(b, total),
+                hybrid: rate(h, total),
+            }
+        })
+        .collect()
+}
+
+/// Runs every question and builds the report. A run that is not in cap-off mode also runs
+/// the cap-off mode, to report both.
+pub async fn run(
+    sections: &[Section],
+    questions: &[Question],
+    cache: &Cache,
+    opts: &Options,
+) -> Result<Report, Error> {
+    let mut index = Index::build(sections, cache, opts.chunk_chars, opts.cap_off)?;
+    index.set_candidates(opts.dense_top_k, opts.lexical_top_k);
+    let main = run_questions(&index, questions, cache, &opts.params).await?;
+    let cap_off = if opts.cap_off {
+        None
+    } else {
+        let mut single = Index::build(sections, cache, opts.chunk_chars, true)?;
+        single.set_candidates(opts.dense_top_k, opts.lexical_top_k);
+        Some(
+            run_questions(&single, questions, cache, &opts.params)
+                .await?
+                .mode_metrics(),
+        )
+    };
+
     let covered = questions.iter().filter(|q| q.is_covered()).count();
+    let mut by_kind: BTreeMap<Kind, Vec<RunOutcome>> = BTreeMap::new();
+    for (kind, outcome) in main.kinds.iter().zip(&main.hybrid) {
+        by_kind.entry(*kind).or_default().push(outcome.clone());
+    }
     let hybrid_by_kind = by_kind
         .iter()
         .map(|(kind, outcomes)| {
@@ -400,6 +765,7 @@ pub async fn run(
             )
         })
         .collect();
+    let modes = main.mode_metrics();
     Ok(Report {
         cache_kind: cache.meta.kind,
         embedding_model: cache.meta.embedding_model.clone(),
@@ -408,17 +774,29 @@ pub async fn run(
         covered,
         not_covered: questions.len() - covered,
         chunks: index.chunks.len(),
-        dense: metrics::aggregate(&dense),
-        bm25: metrics::aggregate(&bm25),
-        hybrid: metrics::aggregate(&hybrid),
+        dense: modes.dense,
+        bm25: modes.bm25,
+        hybrid: modes.hybrid,
         hybrid_by_kind,
-        misses,
+        gate_by_group: gate_rows(&main),
+        settings: opts.describe(),
+        cap_off,
+        misses: main.misses,
         latency: cache.meta.latency.clone(),
+        gate_sweep: gate_sweep(&main.diagnostics),
+        diagnostics: main.diagnostics,
     })
 }
 
-/// Reads the corpus data and the cache, and runs the evaluation.
-pub async fn run_dir(evals: &Path, cache_dir: &Path, params: &Params) -> Result<Report, Error> {
+/// The data and the cache of an evaluation directory.
+pub struct Loaded {
+    pub sections: Vec<Section>,
+    pub questions: Vec<Question>,
+    pub cache: Cache,
+}
+
+/// Reads the corpus data and the cache, and checks that they belong together.
+pub fn load(evals: &Path, cache_dir: &Path) -> Result<Loaded, Error> {
     let sections = crate::data::load_sections(&evals.join("corpus/sections.json"))?;
     let questions = crate::data::load_golden(
         &evals.join("golden.jsonl"),
@@ -439,5 +817,16 @@ pub async fn run_dir(evals: &Path, cache_dir: &Path, params: &Params) -> Result<
             crate::data::page_total(&sections)
         )));
     }
-    run(&sections, &questions, &cache, params).await
+    Ok(Loaded {
+        sections,
+        questions,
+        cache,
+    })
+}
+
+/// Reads the corpus data and the cache, and runs the evaluation.
+pub async fn run_dir(evals: &Path, cache_dir: &Path, tuning: &Tuning) -> Result<Report, Error> {
+    let loaded = load(evals, cache_dir)?;
+    let opts = tuning.options(&loaded.cache.meta.embedding_model);
+    run(&loaded.sections, &loaded.questions, &loaded.cache, &opts).await
 }

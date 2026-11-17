@@ -70,6 +70,16 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error + Send + Sy
             .any(|e| e.provider == ProviderKind::Bedrock))
     .then(|| aws::bedrock_client(&config, &sdk))
     .transpose()?;
+    if !fake_embeddings
+        && !openbook_search::retrieval::GateRule::is_calibrated(&config.embedding_model_id)
+    {
+        // The gate limit was measured for one embedding model. Another model gets the permissive
+        // fallback rule, which almost never gates. Run the evaluation with the new model.
+        tracing::warn!(
+            embedding_model = %config.embedding_model_id,
+            "no relevance gate limit is calibrated for this embedding model: the fallback rule (any BM25 hit passes) is used"
+        );
+    }
     let embedder: Arc<dyn Embedder> = match &bedrock {
         Some(client) if !fake_embeddings => Arc::new(TitanEmbedder::new(
             client.clone(),

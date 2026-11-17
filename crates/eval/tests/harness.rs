@@ -7,10 +7,10 @@ use std::process::Command;
 
 use openbook_eval::cache::{Cache, CacheKind, EmbeddingStore, FORMAT, Meta, rewrite_key};
 use openbook_eval::data::{Kind, Question, Section};
-use openbook_eval::offline;
-use openbook_eval::refresh::texts_to_embed;
+use openbook_eval::offline::{self, Options};
+use openbook_eval::refresh::{CHUNK_TARGET_TOKENS, texts_to_embed};
 use openbook_search::embed::{DIMENSIONS, FakeEmbedder};
-use openbook_search::retrieval::Params;
+use openbook_search::retrieval::GateRule;
 
 fn section(id: &str, a: u32, b: u32) -> Section {
     Section {
@@ -29,6 +29,11 @@ fn question(id: &str, kind: Kind, text: &str, pages: &[u32], context: Option<&st
         kind,
         context: context.map(str::to_owned),
     }
+}
+
+/// The numbers of production for the fake embedder that the small corpus uses.
+fn options() -> Options {
+    Options::production("fake")
 }
 
 /// Four pages in two sections, and a cache that holds fake embeddings of every text.
@@ -81,6 +86,7 @@ fn mini() -> (Vec<Section>, Vec<Question>, Cache) {
             &[],
             None,
         ),
+        question("q5", Kind::OffTopic, "hello there", &[], None),
     ];
     let mut rewrites = BTreeMap::new();
     let mut queries = Vec::new();
@@ -98,7 +104,7 @@ fn mini() -> (Vec<Section>, Vec<Question>, Cache) {
         }
     }
     let mut embeddings = EmbeddingStore::new("fake", DIMENSIONS);
-    for text in texts_to_embed(&sections, &pages, &queries).unwrap() {
+    for text in texts_to_embed(&sections, &pages, &queries, &CHUNK_TARGET_TOKENS).unwrap() {
         embeddings
             .insert(&text, &FakeEmbedder::vector(&text))
             .unwrap();
@@ -127,12 +133,12 @@ fn mini() -> (Vec<Section>, Vec<Question>, Cache) {
 #[tokio::test]
 async fn a_small_corpus_with_known_answers_scores_as_expected() {
     let (sections, questions, cache) = mini();
-    let report = offline::run(&sections, &questions, &cache, &Params::default())
+    let report = offline::run(&sections, &questions, &cache, &options())
         .await
         .unwrap();
     assert_eq!(
         (report.questions, report.covered, report.not_covered),
-        (4, 3, 1)
+        (5, 3, 2)
     );
     // Every covered question finds its page, in every setup.
     for metrics in [report.dense, report.bm25, report.hybrid] {
@@ -146,6 +152,29 @@ async fn a_small_corpus_with_known_answers_scores_as_expected() {
     assert_eq!(report.hybrid.false_gate_rate, 0.0);
     assert_eq!(report.hybrid.missed_gate_rate, 0.0);
     assert_eq!(report.hybrid_by_kind["not_covered"].gated_rate, 1.0);
+    assert_eq!(report.hybrid_by_kind["off_topic"].gated_rate, 1.0);
+    // The gate is reported by group and for every question.
+    let group = |name: &str| {
+        report
+            .gate_by_group
+            .iter()
+            .find(|g| g.group.starts_with(name))
+            .unwrap()
+    };
+    assert_eq!(group("covered").hybrid, 0.0);
+    assert_eq!(group("off_topic").questions, 1);
+    assert_eq!(group("not_covered and off_topic").questions, 2);
+    assert_eq!(report.diagnostics.len(), 5);
+    let earnings = &report.diagnostics[3];
+    assert_eq!((earnings.id.as_str(), earnings.gated), ("q4", true));
+    assert_eq!(earnings.lexical_hits, 0);
+    assert!(earnings.best_dense_distance.is_some());
+    let apples = &report.diagnostics[0];
+    assert!(apples.matched_terms > 0 && apples.term_coverage > 0.0);
+    assert!(report.gate_sweep.len() > 20);
+    // Both document modes are reported.
+    let single = report.cap_off.expect("the other mode is reported");
+    assert_eq!(single.hybrid.recall_at_8, 1.0);
     assert_eq!(report.hybrid_by_kind["lookup"].questions, 1);
 }
 
@@ -153,42 +182,40 @@ async fn a_small_corpus_with_known_answers_scores_as_expected() {
 async fn the_gate_number_changes_the_gate_accuracy() {
     let (sections, questions, cache) = mini();
     // A distance limit of 0 gates every question that has no BM25 hit. The earnings question stays gated.
-    let strict = Params {
-        gate_max_distance: 0.0,
-        ..Params::default()
-    };
+    let mut strict = options();
+    strict.params.gate = GateRule::AnyLexicalHit { max_distance: 0.0 };
     let report = offline::run(&sections, &questions, &cache, &strict)
         .await
         .unwrap();
     assert_eq!(report.hybrid.missed_gate_rate, 0.0);
     // The fusion count changes what the hybrid run returns, not the dense-only gate rule.
-    let narrow = Params {
-        final_sources: 1,
-        max_per_document: 1,
-        ..Params::default()
-    };
+    let mut narrow = options();
+    narrow.params.final_sources = 1;
+    narrow.params.max_per_document = 1;
     let report = offline::run(&sections, &questions, &cache, &narrow)
         .await
         .unwrap();
-    // The ranked lists are ten deep for nDCG, so Recall@8 still sees them.
-    assert_eq!(report.hybrid.recall_at_8, 1.0);
+    // One source is returned, and the question has one relevant chunk at rank 1 in this corpus.
+    assert!(report.hybrid.recall_at_8 > 0.0);
+    // nDCG reads a ten-deep list, so it is still more than zero for the questions that miss.
+    assert!(report.hybrid.ndcg_at_8 > 0.0);
 }
 
 #[tokio::test]
 async fn a_missing_embedding_is_an_error_and_not_a_skipped_question() {
     let (sections, mut questions, cache) = mini();
     questions.push(question(
-        "q5",
+        "q6",
         Kind::Lookup,
         "A question that was never embedded",
         &[1],
         None,
     ));
-    let error = offline::run(&sections, &questions, &cache, &Params::default())
+    let error = offline::run(&sections, &questions, &cache, &options())
         .await
         .unwrap_err()
         .to_string();
-    assert!(error.contains("q5"), "{error}");
+    assert!(error.contains("q6"), "{error}");
     assert!(error.contains("never embedded"), "{error}");
     assert!(error.contains("Refresh the cache"), "{error}");
 }
@@ -197,7 +224,7 @@ async fn a_missing_embedding_is_an_error_and_not_a_skipped_question() {
 async fn a_missing_rewrite_is_an_error() {
     let (sections, questions, mut cache) = mini();
     cache.rewrites.clear();
-    let error = offline::run(&sections, &questions, &cache, &Params::default())
+    let error = offline::run(&sections, &questions, &cache, &options())
         .await
         .unwrap_err()
         .to_string();
@@ -208,7 +235,7 @@ async fn a_missing_rewrite_is_an_error() {
 async fn a_label_that_no_chunk_holds_is_a_data_error() {
     let (sections, mut questions, cache) = mini();
     questions[0].relevant_pages = vec![9];
-    let error = offline::run(&sections, &questions, &cache, &Params::default())
+    let error = offline::run(&sections, &questions, &cache, &options())
         .await
         .unwrap_err()
         .to_string();
@@ -219,12 +246,33 @@ async fn a_label_that_no_chunk_holds_is_a_data_error() {
 }
 
 #[tokio::test]
-async fn the_run_is_deterministic() {
+async fn cap_off_mode_changes_only_the_cap() {
     let (sections, questions, cache) = mini();
-    let a = offline::run(&sections, &questions, &cache, &Params::default())
+    let mut narrow = options();
+    narrow.params.max_per_document = 1;
+    let sectioned = offline::run(&sections, &questions, &cache, &narrow)
         .await
         .unwrap();
-    let b = offline::run(&sections, &questions, &cache, &Params::default())
+    let single = offline::run(&sections, &questions, &cache, &narrow.with_cap_off(true))
+        .await
+        .unwrap();
+    // In cap-off mode the report does not nest the other mode.
+    assert!(single.cap_off.is_none());
+    assert!(single.settings.contains("cap off"));
+    assert!(sectioned.settings.contains("one document per section"));
+    // The mode nested in the sectioned report is the mode of the single run.
+    assert_eq!(sectioned.cap_off.unwrap().hybrid, single.hybrid);
+    // The gate does not depend on the mode.
+    assert_eq!(sectioned.hybrid.gate_accuracy, single.hybrid.gate_accuracy);
+}
+
+#[tokio::test]
+async fn the_run_is_deterministic() {
+    let (sections, questions, cache) = mini();
+    let a = offline::run(&sections, &questions, &cache, &options())
+        .await
+        .unwrap();
+    let b = offline::run(&sections, &questions, &cache, &options())
         .await
         .unwrap();
     assert_eq!(a.to_json().unwrap(), b.to_json().unwrap());
@@ -233,7 +281,7 @@ async fn the_run_is_deterministic() {
 #[test]
 fn chunks_know_their_pages_in_the_excerpt() {
     let (sections, _, cache) = mini();
-    let chunks = offline::build_chunks(&sections, &cache.pages).unwrap();
+    let chunks = offline::build_chunks(&sections, &cache.pages, 1600).unwrap();
     let rocks: Vec<_> = chunks.iter().filter(|c| c.document_id == "rocks").collect();
     assert!(!rocks.is_empty());
     for chunk in &rocks {
@@ -282,6 +330,76 @@ fn the_committed_dev_cache_runs_and_says_that_it_is_a_dev_cache() {
 }
 
 #[test]
+fn the_report_has_the_gate_inputs_the_sweep_and_both_modes() {
+    let dir = tempfile::tempdir().unwrap();
+    let json = dir.path().join("report.json");
+    let md = dir.path().join("report.md");
+    let out = eval(&[
+        "offline",
+        "--dev-cache",
+        "--json",
+        json.to_str().unwrap(),
+        "--markdown",
+        md.to_str().unwrap(),
+    ]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let value: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&json).unwrap()).unwrap();
+    let first = &value["diagnostics"][0];
+    for field in [
+        "id",
+        "kind",
+        "bestDenseDistance",
+        "topBm25Score",
+        "termCoverage",
+        "queryTerms",
+        "indexedTerms",
+        "matchedTerms",
+    ] {
+        assert!(first.get(field).is_some(), "{field}");
+    }
+    assert!(value["gateSweep"].as_array().unwrap().len() > 20);
+    assert!(value["capOff"]["hybrid"].is_object());
+    assert!(value["hybridByKind"]["off_topic"].is_object());
+    let markdown = std::fs::read_to_string(&md).unwrap();
+    assert!(markdown.contains("Gate sweep"));
+    assert!(markdown.contains("Cap-off mode"));
+    assert!(markdown.contains("| off_topic |"));
+}
+
+#[test]
+fn the_grid_runs_on_the_dev_cache_and_writes_a_table() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = eval(&["grid", "--dev-cache", "--out", dir.path().to_str().unwrap()]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let md = std::fs::read_to_string(dir.path().join("grid.md")).unwrap();
+    for name in ["RRF k", "Final sources", "Max per document", "Chunk target"] {
+        assert!(md.contains(name), "{name}");
+    }
+    let grid: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("grid.json")).unwrap())
+            .unwrap();
+    // 3 chunk targets x 3 k x 3 final x 2 candidates x 5 max per document x 2 weights.
+    assert_eq!(grid["rows"].as_array().unwrap().len(), 540);
+}
+
+#[test]
+fn missing_only_needs_a_live_cache() {
+    let out = eval(&[
+        "refresh",
+        "--missing-only",
+        "--cache",
+        evals_dir().join("cache-dev").to_str().unwrap(),
+    ]);
+    assert!(!out.status.success());
+    assert!(
+        text(&out.stderr).contains("live cache"),
+        "{}",
+        text(&out.stderr)
+    );
+}
+
+#[test]
 fn a_dev_cache_cannot_give_or_check_a_baseline() {
     for flag in ["--check", "--write-baseline"] {
         let out = eval(&["offline", "--dev-cache", flag]);
@@ -298,6 +416,17 @@ fn a_dev_cache_cannot_give_or_check_a_baseline() {
             let text = std::fs::read_to_string(evals_dir().join("baseline.json")).unwrap();
             !text.contains("\"cacheKind\": \"dev\"")
         }
+    );
+}
+
+#[test]
+fn check_and_write_baseline_cannot_be_used_together() {
+    let out = eval(&["offline", "--check", "--write-baseline"]);
+    assert!(!out.status.success());
+    assert!(
+        text(&out.stderr).contains("cannot be used together"),
+        "{}",
+        text(&out.stderr)
     );
 }
 

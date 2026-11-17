@@ -467,5 +467,14 @@ describe('the retrieval evaluation', () => {
     expect(live).toMatch(/^eval-live:.*Bedrock/);
     expect(live).toMatch(/\n\t@test -n "\$\$\{AWS_PROFILE:-\}" \|\| \{ .*exit 1; \}\n/);
     expect(live).toMatch(/openbook-eval -- refresh \$\(if \$\(YES\),--yes,\)\n/);
+    // The incremental refresh has the same safety shape: it names Bedrock, needs a profile, and
+    // starts only with YES=1.
+    const missing = target('eval-live-missing');
+    expect(missing).toMatch(/^eval-live-missing:.*Bedrock/);
+    expect(missing).toMatch(/\n\t@test -n "\$\$\{AWS_PROFILE:-\}" \|\| \{ .*exit 1; \}\n/);
+    expect(missing).toMatch(/openbook-eval -- refresh --missing-only \$\(if \$\(YES\),--yes,\)\n/);
+    // The grid is offline: no profile, no Bedrock.
+    expect(target('eval-grid')).toMatch(/openbook-eval -- grid\n/);
+    expect(target('eval-grid')).not.toMatch(/AWS|Bedrock/);
   });
 });

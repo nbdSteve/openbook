@@ -20,6 +20,7 @@ use openbook_core::domain::MessageRole;
 use openbook_core::model::BedrockChat;
 use openbook_ingest::pdf::{self, PageData};
 use openbook_ingest::transcribe::{BedrockTranscriber, TranscribeError, Transcriber};
+use openbook_search::chunker::TARGET_CHARS;
 use openbook_search::embed::{
     DIMENSIONS, EmbedError, Embedder, FakeEmbedder, TitanEmbedder, embed_all,
 };
@@ -28,7 +29,7 @@ use openbook_search::retrieval::{MAX_QUERY_CHARS, clean_query, clip};
 use crate::Error;
 use crate::cache::{Cache, CacheKind, EmbeddingStore, FORMAT, Latency, Meta, rewrite_key};
 use crate::data::{self, Kind, Question, Section};
-use crate::offline::build_chunks;
+use crate::offline::{CHARS_PER_TOKEN, build_chunks};
 
 /// The model for page transcription and for the follow-up rewrite, unless `OPENBOOK_EVAL_MODEL_ID`
 /// says another one. It is the fast model of the stack.
@@ -44,6 +45,13 @@ pub const DEV_REWRITE_MODEL: &str = "dev-concat";
 const TRANSCRIBE_USD_PER_PAGE: f64 = 0.0095;
 const EMBED_USD_PER_CALL: f64 = 0.000_01;
 const REWRITE_USD_PER_CALL: f64 = 0.0005;
+
+/// The chunk targets of the grid, in tokens. The cache holds the chunk embeddings of all of them, so
+/// the grid runs offline. The production target is the middle one.
+pub const CHUNK_TARGET_TOKENS: [usize; 3] = [300, 400, 600];
+
+/// The production chunk target, in tokens.
+pub const PRODUCTION_CHUNK_TOKENS: usize = TARGET_CHARS / CHARS_PER_TOKEN;
 
 /// The only PDF in `evals/corpus`.
 pub fn corpus_path(evals: &Path) -> Result<PathBuf, Error> {
@@ -93,17 +101,21 @@ fn plain_query(question: &Question) -> String {
     clip(question.question.trim(), MAX_QUERY_CHARS)
 }
 
-/// The text of every chunk and every query, in a fixed order, without repeats.
+/// The text of every chunk (for each chunk target in `targets`, in tokens) and every query, in a
+/// fixed order, without repeats.
 pub fn texts_to_embed(
     sections: &[Section],
     pages: &[(u32, String)],
     queries: &[String],
+    targets: &[usize],
 ) -> Result<Vec<String>, Error> {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
-    for chunk in build_chunks(sections, pages)? {
-        if seen.insert(chunk.embed_text.clone()) {
-            out.push(chunk.embed_text);
+    for tokens in targets {
+        for chunk in build_chunks(sections, pages, tokens * CHARS_PER_TOKEN)? {
+            if seen.insert(chunk.embed_text.clone()) {
+                out.push(chunk.embed_text);
+            }
         }
     }
     for query in queries {
@@ -159,7 +171,7 @@ pub async fn build_dev(evals: &Path) -> Result<Cache, Error> {
         }
     }
     let mut embeddings = EmbeddingStore::new(DEV_EMBEDDING_MODEL, DIMENSIONS);
-    for text in texts_to_embed(&sections, &pages, &queries)? {
+    for text in texts_to_embed(&sections, &pages, &queries, &CHUNK_TARGET_TOKENS)? {
         embeddings.insert(&text, &FakeEmbedder::vector(&text))?;
     }
     Ok(Cache {
@@ -270,7 +282,7 @@ pub async fn plan_live(evals: &Path) -> Result<(Plan, Vec<PageData>), Error> {
     }
     let text: Vec<(u32, String)> = pages.iter().map(|p| (p.number, p.text.clone())).collect();
     let queries: Vec<String> = questions.iter().map(plain_query).collect();
-    let embed_calls = texts_to_embed(&sections, &text, &queries)?.len();
+    let embed_calls = texts_to_embed(&sections, &text, &queries, &CHUNK_TARGET_TOKENS)?.len();
     let transcribe_pages: Vec<u32> = pages
         .iter()
         .filter(|p| p.needs_transcription && p.image.is_some())
@@ -318,6 +330,13 @@ where
             Err(error) => return Err(error),
         }
     }
+}
+
+/// The error for a rewrite that gave no query (the model failed, timed out, or said nothing).
+fn rewrite_failed(id: &str) -> Error {
+    Error::Aws(format!(
+        "the rewrite of follow-up {id} gave no query. Nothing was stored for it: run the refresh again"
+    ))
 }
 
 fn eval_entry(model_id: &str) -> ModelEntry {
@@ -408,9 +427,9 @@ pub async fn build_live(evals: &Path, plan: &Plan, pages: Vec<PageData>) -> Resu
                 )
                 .await
                 .map_err(Error::Aws)?;
-                // The API uses the raw message when the rewrite fails. The cache keeps what the
-                // run would have searched, so the offline run is exact.
-                let query = better.unwrap_or_else(|| plain_query(q));
+                // The API uses the raw message when the rewrite fails, but a cache that holds the raw
+                // question as the "rewrite" would hide the failure and measure the wrong thing.
+                let query = better.ok_or_else(|| rewrite_failed(&q.id))?;
                 rewrites.insert(
                     rewrite_key(&plan.model_id, context, &q.question),
                     query.clone(),
@@ -422,7 +441,7 @@ pub async fn build_live(evals: &Path, plan: &Plan, pages: Vec<PageData>) -> Resu
     }
 
     // 3. Embeddings: chunks in a batch, then each query alone so that its time is the time of one call.
-    let texts = texts_to_embed(&sections, &page_text, &queries)?;
+    let texts = texts_to_embed(&sections, &page_text, &queries, &CHUNK_TARGET_TOKENS)?;
     let query_set: HashSet<&String> = queries.iter().collect();
     let (query_texts, chunk_texts): (Vec<String>, Vec<String>) =
         texts.into_iter().partition(|t| query_set.contains(t));
@@ -479,6 +498,211 @@ pub async fn build_live(evals: &Path, plan: &Plan, pages: Vec<PageData>) -> Resu
     })
 }
 
+// ---- Incremental live refresh
+
+/// Rough upper bounds for the estimate of `refresh --missing-only`. A text of `n` characters has
+/// at most `n / 2` tokens (math text tokenizes worse than the 4 characters per token of prose).
+/// Titan Text Embeddings v2 costs $0.02 per million tokens. A rewrite sends at most 1000 input
+/// tokens ($1 per million) and gets at most 100 output tokens ($5 per million).
+const EMBED_USD_PER_TOKEN: f64 = 0.02 / 1_000_000.0;
+const REWRITE_UPPER_USD_PER_CALL: f64 = 1000.0 * 1.0 / 1_000_000.0 + 100.0 * 5.0 / 1_000_000.0;
+
+/// What `refresh --missing-only` will call: only what the cache does not have.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MissingPlan {
+    pub model_id: String,
+    pub embedding_model: String,
+    pub region: String,
+    pub profile: String,
+    /// The texts that have no embedding in the cache (chunks of every chunk target, and queries).
+    pub embed_texts: Vec<String>,
+    /// Follow-up questions that have no cached rewrite. Each is one rewrite call and one more
+    /// embedding call, because the rewritten query is a new text.
+    pub rewrite_ids: Vec<String>,
+}
+
+impl MissingPlan {
+    pub fn embed_calls(&self) -> usize {
+        self.embed_texts.len() + self.rewrite_ids.len()
+    }
+
+    /// An upper bound of the cost in US dollars.
+    pub fn cost_upper_bound_usd(&self) -> f64 {
+        let tokens: f64 = self
+            .embed_texts
+            .iter()
+            .map(|t| t.chars().count() as f64 / 2.0)
+            .sum::<f64>()
+            // A rewritten query is at most 500 characters.
+            + self.rewrite_ids.len() as f64 * MAX_QUERY_CHARS as f64 / 2.0;
+        tokens * EMBED_USD_PER_TOKEN + self.rewrite_ids.len() as f64 * REWRITE_UPPER_USD_PER_CALL
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.embed_texts.is_empty() && self.rewrite_ids.is_empty()
+    }
+
+    pub fn describe(&self) -> String {
+        let mut out = String::new();
+        out.push_str("openbook-eval refresh --missing-only will call REAL AWS services with the credentials of this environment.\n");
+        out.push_str(&format!(
+            "  AWS profile: {}\n  AWS Region: {}\n\n",
+            self.profile, self.region
+        ));
+        out.push_str(
+            "  It reuses evals/cache/pages. It does NO page transcription and no other call.\n",
+        );
+        out.push_str(&format!(
+            "  1. Bedrock InvokeModel (embeddings), model {}: {} calls for the texts that the cache does not have, and up to {} more for the rewritten follow-up queries.\n",
+            self.embedding_model,
+            self.embed_texts.len(),
+            self.rewrite_ids.len()
+        ));
+        out.push_str(&format!(
+            "  2. Bedrock ConverseStream (rewrite of follow-up questions), model {}: {} calls{}.\n\n",
+            self.model_id,
+            self.rewrite_ids.len(),
+            if self.rewrite_ids.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", self.rewrite_ids.join(", "))
+            }
+        ));
+        out.push_str(&format!(
+            "  Total: at most ${:.4} at list prices (an upper bound).\n",
+            self.cost_upper_bound_usd()
+        ));
+        out.push_str("  It does not touch S3, DynamoDB, SQS, or S3 Vectors. It writes only to evals/cache/.\n");
+        out
+    }
+}
+
+/// The search queries of the questions that are known now, and the follow-ups that have no cached
+/// rewrite.
+fn known_queries<'a>(questions: &'a [Question], cache: &Cache) -> (Vec<String>, Vec<&'a Question>) {
+    let mut queries = Vec::new();
+    let mut missing = Vec::new();
+    for q in questions {
+        match (&q.kind, &q.context) {
+            (Kind::Followup, Some(context)) => {
+                let key = rewrite_key(&cache.meta.rewrite_model, context, &q.question);
+                match cache.rewrites.get(&key) {
+                    Some(query) => queries.push(query.clone()),
+                    None => missing.push(q),
+                }
+            }
+            _ => queries.push(plain_query(q)),
+        }
+    }
+    (queries, missing)
+}
+
+/// Reads the live cache and works out what it lacks. It calls nothing.
+pub fn plan_missing(evals: &Path, cache_dir: &Path) -> Result<(MissingPlan, Cache), Error> {
+    let sections = data::load_sections(&evals.join("corpus/sections.json"))?;
+    let questions = data::load_golden(&evals.join("golden.jsonl"), data::page_total(&sections))?;
+    let cache = Cache::load(cache_dir)?;
+    if cache.meta.kind != CacheKind::Live {
+        return Err(Error::Run(
+            "--missing-only works on a live cache. A dev cache has no Bedrock calls to add.".into(),
+        ));
+    }
+    let sha = crate::cache::corpus_sha256(&corpus_path(evals)?)?;
+    if sha != cache.meta.corpus_sha256 {
+        return Err(Error::Cache(
+            "the cache was made for another corpus file. Run a full `refresh`.".into(),
+        ));
+    }
+    let (queries, missing) = known_queries(&questions, &cache);
+    let embed_texts: Vec<String> =
+        texts_to_embed(&sections, &cache.pages, &queries, &CHUNK_TARGET_TOKENS)?
+            .into_iter()
+            .filter(|t| !cache.embeddings.contains(t))
+            .collect();
+    let plan = MissingPlan {
+        // The models of the cache decide, so that the cache keys stay valid.
+        model_id: cache.meta.rewrite_model.clone(),
+        embedding_model: cache.meta.embedding_model.clone(),
+        region: std::env::var("AWS_REGION")
+            .or_else(|_| std::env::var("AWS_DEFAULT_REGION"))
+            .unwrap_or_else(|_| format!("{DEFAULT_REGION} (default)")),
+        profile: std::env::var("AWS_PROFILE")
+            .unwrap_or_else(|_| "(none: the default credential chain)".into()),
+        embed_texts,
+        rewrite_ids: missing.iter().map(|q| q.id.clone()).collect(),
+    };
+    Ok((plan, cache))
+}
+
+/// Makes the calls of the plan and returns the completed cache. The pages stay as they are.
+pub async fn run_missing(
+    evals: &Path,
+    plan: &MissingPlan,
+    mut cache: Cache,
+) -> Result<Cache, Error> {
+    let sections = data::load_sections(&evals.join("corpus/sections.json"))?;
+    let questions = data::load_golden(&evals.join("golden.jsonl"), data::page_total(&sections))?;
+    let sdk = aws_config::defaults(aws_config::BehaviorVersion::latest())
+        .region(
+            aws_config::meta::region::RegionProviderChain::default_provider()
+                .or_else(DEFAULT_REGION),
+        )
+        .load()
+        .await;
+    let client = aws_sdk_bedrockruntime::Client::new(&sdk);
+    let entry = eval_entry(&plan.model_id);
+    let embedder = TitanEmbedder::new(client.clone(), plan.embedding_model.clone());
+    let chat = BedrockChat::new(client, &entry);
+
+    // 1. The rewrites that the cache does not have.
+    let (_, missing) = known_queries(&questions, &cache);
+    eprintln!("Rewriting {} follow-up questions ...", missing.len());
+    for q in missing {
+        let Some(context) = &q.context else { continue };
+        let earlier = [(MessageRole::User, context.clone())];
+        let (better, _usage) = retry(
+            &format!("rewrite {}", q.id),
+            || async { Ok::<_, String>(rewrite_query(&chat, &earlier, &q.question).await) },
+            |_| false,
+        )
+        .await
+        .map_err(Error::Aws)?;
+        let query = better.ok_or_else(|| rewrite_failed(&q.id))?;
+        cache.rewrites.insert(
+            rewrite_key(&cache.meta.rewrite_model, context, &q.question),
+            query,
+        );
+    }
+
+    // 2. The embeddings that the cache does not have (the rewritten queries are known now).
+    let (queries, _) = known_queries(&questions, &cache);
+    let needed = texts_to_embed(&sections, &cache.pages, &queries, &CHUNK_TARGET_TOKENS)?;
+    let to_embed: Vec<String> = needed
+        .iter()
+        .filter(|t| !cache.embeddings.contains(t))
+        .cloned()
+        .collect();
+    eprintln!("Embedding {} texts ...", to_embed.len());
+    let vectors = retry(
+        "embeddings",
+        || embed_all(&embedder, &to_embed),
+        |e| matches!(e, EmbedError::Transient(_)),
+    )
+    .await
+    .map_err(|e| Error::Aws(e.to_string()))?;
+    for (text, vector) in to_embed.iter().zip(&vectors) {
+        cache.embeddings.insert(text, vector)?;
+    }
+
+    // 3. Keep only what the run needs, so that the cache is what a full refresh would hold.
+    let mut kept = EmbeddingStore::new(cache.embeddings.model(), cache.embeddings.dimensions());
+    for text in &needed {
+        kept.insert(text, &cache.embeddings.get(text)?)?;
+    }
+    cache.embeddings = kept;
+    Ok(cache)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -529,7 +753,7 @@ mod tests {
         }];
         let pages = vec![(1, "# Heading\n\nSome text about quadratics.".to_owned())];
         let queries = vec!["q one".to_owned(), "q one".to_owned(), "q two".to_owned()];
-        let texts = texts_to_embed(&sections, &pages, &queries).unwrap();
+        let texts = texts_to_embed(&sections, &pages, &queries, &[400]).unwrap();
         assert_eq!(texts.len(), 3);
         assert!(texts[0].starts_with("Title > Heading\n"), "{}", texts[0]);
         assert_eq!(&texts[1..], ["q one", "q two"]);
@@ -562,5 +786,51 @@ mod tests {
         .await;
         assert!(result.is_err());
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn the_missing_plan_names_the_calls_and_bounds_the_cost() {
+        let plan = MissingPlan {
+            model_id: "m".into(),
+            embedding_model: "e".into(),
+            region: "r".into(),
+            profile: "p".into(),
+            embed_texts: vec!["a".repeat(2000), "b".repeat(100)],
+            rewrite_ids: vec!["followup-11".into()],
+        };
+        assert_eq!(plan.embed_calls(), 3);
+        let text = plan.describe();
+        assert!(text.contains("REAL AWS"));
+        assert!(text.contains("NO page transcription"));
+        assert!(text.contains("model e: 2 calls"));
+        assert!(text.contains("model m: 1 calls (followup-11)"));
+        assert!(text.contains("at most $"));
+        assert!(!text.contains("page transcription), model"));
+        assert!(plan.cost_upper_bound_usd() > 0.0);
+        // Bigger work gives a bigger bound, and the bound is far below a dollar for this work.
+        let more = MissingPlan {
+            rewrite_ids: vec![],
+            embed_texts: vec!["a".repeat(2000)],
+            ..plan.clone()
+        };
+        assert!(more.cost_upper_bound_usd() < plan.cost_upper_bound_usd());
+        assert!(plan.cost_upper_bound_usd() < 0.01);
+        assert!(!plan.is_empty());
+    }
+
+    #[test]
+    fn the_grid_has_the_chunk_target_of_production() {
+        // The cache must hold the chunk embeddings of the production target, or the normal run fails.
+        assert!(CHUNK_TARGET_TOKENS.contains(&PRODUCTION_CHUNK_TOKENS));
+        assert_eq!(PRODUCTION_CHUNK_TOKENS, 400);
+    }
+
+    #[test]
+    fn a_failed_rewrite_is_an_error_that_names_the_question() {
+        let error = rewrite_failed("followup-11").to_string();
+        assert!(
+            error.contains("followup-11") && error.contains("gave no query"),
+            "{error}"
+        );
     }
 }

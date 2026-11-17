@@ -93,3 +93,15 @@
 {"id": "not-covered-17", "question": "How do I convert a number to scientific notation?", "relevantPages": [], "kind": "not_covered"}
 {"id": "not-covered-18", "question": "How do I factor a sum of cubes?", "relevantPages": [], "kind": "not_covered"}
 {"id": "not-covered-19", "question": "What is the law of cosines?", "relevantPages": [], "kind": "not_covered"}
+{"id": "off-topic-01", "question": "hi", "relevantPages": [], "kind": "off_topic"}
+{"id": "off-topic-02", "question": "thanks, that makes sense", "relevantPages": [], "kind": "off_topic"}
+{"id": "off-topic-03", "question": "ok cool", "relevantPages": [], "kind": "off_topic"}
+{"id": "off-topic-04", "question": "good morning, how are you today?", "relevantPages": [], "kind": "off_topic"}
+{"id": "off-topic-05", "question": "What is the capital of Australia?", "relevantPages": [], "kind": "off_topic"}
+{"id": "off-topic-06", "question": "Who won the football World Cup in 2018?", "relevantPages": [], "kind": "off_topic"}
+{"id": "off-topic-07", "question": "How does photosynthesis work?", "relevantPages": [], "kind": "off_topic"}
+{"id": "off-topic-08", "question": "Who wrote Romeo and Juliet?", "relevantPages": [], "kind": "off_topic"}
+{"id": "off-topic-09", "question": "What caused the French Revolution?", "relevantPages": [], "kind": "off_topic"}
+{"id": "off-topic-10", "question": "How do I write a for loop in Python?", "relevantPages": [], "kind": "off_topic"}
+{"id": "off-topic-11", "question": "How do I balance the chemical equation for burning methane?", "relevantPages": [], "kind": "off_topic"}
+{"id": "off-topic-12", "question": "Can you help me write a cover letter for a job?", "relevantPages": [], "kind": "off_topic"}
