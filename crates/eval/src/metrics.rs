@@ -6,6 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Recall@1: the first source of the list is relevant.
+pub const RECALL_FIRST: usize = 1;
 pub const RECALL_SMALL: usize = 5;
 pub const RECALL_LARGE: usize = 8;
 /// nDCG is computed on the list that the API returns, at the depth of Recall@8.
@@ -86,6 +88,9 @@ pub struct Outcome {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Metrics {
+    /// The share of covered questions where the first fused result is relevant (the same
+    /// relevance rule as the other recalls).
+    pub recall_at_1: f64,
     pub recall_at_5: f64,
     pub recall_at_8: f64,
     pub ndcg_at_8: f64,
@@ -127,6 +132,9 @@ pub fn aggregate(outcomes: &[Outcome]) -> Metrics {
     let missed = outcomes.iter().filter(|o| !o.covered && !o.gated).count();
     let right = outcomes.len() - false_gated - missed;
     Metrics {
+        recall_at_1: round4(mean(&|o| {
+            f64::from(u8::from(hit_at(&o.returned, RECALL_FIRST)))
+        })),
         recall_at_5: round4(mean(&|o| {
             f64::from(u8::from(hit_at(&o.returned, RECALL_SMALL)))
         })),
@@ -240,6 +248,7 @@ mod tests {
             outcome(true, false, &[0, 0, 0, 0, 0, 2]), // rank 6: in the top 8, not in the top 5
         ];
         let m = aggregate(&outcomes);
+        assert!(close(m.recall_at_1, 0.25));
         assert!(close(m.recall_at_5, 0.5));
         assert!(close(m.recall_at_8, 0.75));
         assert!(close(m.mrr, round4((1.0 + 0.25 + 0.0 + 1.0 / 6.0) / 4.0)));

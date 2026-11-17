@@ -345,6 +345,8 @@ fn the_report_has_the_gate_inputs_the_sweep_and_both_modes() {
     assert!(out.status.success(), "{}", text(&out.stderr));
     let value: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&json).unwrap()).unwrap();
+    assert_eq!(value["corpora"].as_array().unwrap().len(), 2);
+    let value = &value["combined"];
     let first = &value["diagnostics"][0];
     for field in [
         "id",
@@ -362,15 +364,130 @@ fn the_report_has_the_gate_inputs_the_sweep_and_both_modes() {
     assert!(value["capOff"]["hybrid"].is_object());
     assert!(value["hybridByKind"]["off_topic"].is_object());
     let markdown = std::fs::read_to_string(&md).unwrap();
+    assert!(value["headers"]["runningLines"].as_u64().unwrap() > 0);
     assert!(markdown.contains("Gate sweep"));
     assert!(markdown.contains("Cap-off mode"));
     assert!(markdown.contains("| off_topic |"));
+    assert!(markdown.contains("## Combined (all corpora pooled)"));
+    assert!(markdown.contains("## Corpus: american-government"));
+    assert!(markdown.contains("## Corpus: college-algebra"));
+}
+
+#[test]
+fn one_corpus_can_be_run_alone_and_a_wrong_use_is_refused() {
+    let out = eval(&["offline", "--dev-cache", "--corpus", "college-algebra"]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let stdout = text(&out.stdout);
+    assert!(stdout.contains("## Corpus: college-algebra"));
+    assert!(!stdout.contains("american-government"));
+    assert!(!stdout.contains("Combined"));
+    // The baseline covers every corpus, so it cannot come from one.
+    let out = eval(&["offline", "--check", "--corpus", "college-algebra"]);
+    assert!(!out.status.success());
+    assert!(
+        text(&out.stderr).contains("every corpus"),
+        "{}",
+        text(&out.stderr)
+    );
+    let out = eval(&["offline", "--dev-cache", "--corpus", "nope"]);
+    assert!(!out.status.success());
+    assert!(
+        text(&out.stderr).contains("american-government, college-algebra"),
+        "{}",
+        text(&out.stderr)
+    );
+    // One cache directory needs one corpus.
+    let out = eval(&["offline", "--dev-cache", "--cache", "/nowhere"]);
+    assert!(!out.status.success());
+    assert!(
+        text(&out.stderr).contains("--corpus"),
+        "{}",
+        text(&out.stderr)
+    );
+}
+
+#[test]
+fn running_headers_are_stripped_from_the_committed_pages() {
+    // The pages of the first corpus come from page transcription (Markdown with header lines). The
+    // pages of the second corpus come from the text layer (one paragraph per page, the header and
+    // the footer inside it). The same code strips both.
+    for (id, dev, phrase) in [
+        ("college-algebra", false, "chapter 1 prerequisites"),
+        (
+            "american-government",
+            true,
+            "chapter 2 | the constitution and its origins",
+        ),
+        (
+            "american-government",
+            true,
+            "this openstax book is available for free at http://cnx.org/content/col26739/1.4",
+        ),
+    ] {
+        let corpus = openbook_eval::corpus::select(&evals_dir(), Some(id))
+            .unwrap()
+            .remove(0);
+        let sections = openbook_eval::data::load_sections(&corpus.sections_path()).unwrap();
+        let cache = Cache::load(&corpus.cache_dir(dev)).unwrap();
+        let stats = offline::header_stats(&sections, &cache.pages, 1600).unwrap();
+        assert!(stats.running_lines >= 4, "{id}: {stats:?}");
+        assert!(stats.removed_lines >= 15, "{id}: {stats:?}");
+        // Nothing is left of a header that a longer header covers, such as `# SECTION` from
+        // `# SECTION 5.1 QUADRATIC FUNCTIONS`.
+        assert_eq!(stats.chunks_with_fragment_after, 0, "{id}: {stats:?}");
+        assert!(
+            stats.chunks_with_header_after < stats.chunks_with_header_before
+                || stats.chunks_with_header_before == 0,
+            "{id}: {stats:?}"
+        );
+        // Real pages 27 and 28 of college-algebra (the first two pages of the section that starts
+        // at excerpt page 26 are the chapter opener and the first page; 27 and 28 follow): the
+        // header of page 27 has a title at its end, and page 28 has the title alone.
+        if id == "college-algebra" {
+            let stripped = openbook_search::headers::strip_running_lines_with(
+                &cache.pages[25..37]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (_, t))| (u32::try_from(i + 1).unwrap(), t.clone()))
+                    .collect::<Vec<_>>(),
+                openbook_search::headers::HeaderMode::KeepFirst,
+            );
+            for (_, text) in &stripped.pages {
+                assert!(!text.lines().any(|l| l.trim() == "# SECTION"), "{text}");
+                assert!(!text.contains("CHAPTER 5 5.1"), "{text}");
+            }
+        }
+        // The phrase is gone from the chunks, except for its first occurrence in each section.
+        let chunks = offline::build_chunks_with(
+            &sections,
+            &cache.pages,
+            1600,
+            openbook_search::headers::HeaderMode::KeepFirst,
+        )
+        .unwrap();
+        let in_chunks = chunks
+            .iter()
+            .filter(|c| c.text.to_lowercase().contains(phrase))
+            .count();
+        assert!(
+            in_chunks <= sections.len(),
+            "{id}: {in_chunks} chunks still hold {phrase:?}"
+        );
+    }
 }
 
 #[test]
 fn the_grid_runs_on_the_dev_cache_and_writes_a_table() {
     let dir = tempfile::tempdir().unwrap();
-    let out = eval(&["grid", "--dev-cache", "--out", dir.path().to_str().unwrap()]);
+    // The tiny grid has two rows: the production setting with both header variants. The whole grid
+    // (`make eval-grid`) is a tool and not a test.
+    let out = eval(&[
+        "grid",
+        "--dev-cache",
+        "--tiny",
+        "--out",
+        dir.path().to_str().unwrap(),
+    ]);
     assert!(out.status.success(), "{}", text(&out.stderr));
     let md = std::fs::read_to_string(dir.path().join("grid.md")).unwrap();
     for name in ["RRF k", "Final sources", "Max per document", "Chunk target"] {
@@ -379,17 +496,32 @@ fn the_grid_runs_on_the_dev_cache_and_writes_a_table() {
     let grid: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(dir.path().join("grid.json")).unwrap())
             .unwrap();
-    // 3 chunk targets x 3 k x 3 final x 2 candidates x 5 max per document x 2 weights.
-    assert_eq!(grid["rows"].as_array().unwrap().len(), 540);
+    let rows = grid["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0]["knobs"]["headerMode"], "off");
+    assert_eq!(rows[1]["knobs"]["headerMode"], "keep-first");
+    assert_eq!(rows[2]["knobs"]["headerMode"], "drop-all");
+    // Every row has the pooled numbers and the numbers of each corpus.
+    assert!(rows[0]["combined"]["sectioned"]["hybrid"].is_object());
+    assert_eq!(rows[0]["corpora"].as_object().unwrap().len(), 2);
+    assert!(md.contains("## Combined (all corpora pooled)"));
+    assert!(md.contains("## Corpus: college-algebra"));
 }
 
 #[test]
 fn missing_only_needs_a_live_cache() {
+    // A corpus whose cache directory holds a dev cache.
+    let dir = live_looking_copy();
+    for corpus in openbook_eval::corpus::discover(dir.path()).unwrap() {
+        let mut cache = Cache::load(&corpus.cache_dir(false)).unwrap();
+        cache.meta.kind = CacheKind::Dev;
+        cache.save(&corpus.cache_dir(false)).unwrap();
+    }
     let out = eval(&[
         "refresh",
         "--missing-only",
-        "--cache",
-        evals_dir().join("cache-dev").to_str().unwrap(),
+        "--evals",
+        dir.path().to_str().unwrap(),
     ]);
     assert!(!out.status.success());
     assert!(
@@ -439,23 +571,32 @@ fn tuning_flags_cannot_be_used_with_the_check() {
     assert!(text(&out.stderr).contains("tuning flags"));
 }
 
-/// A temporary evals directory with the corpus, the golden set, and the dev cache presented as a
-/// live cache. It lets the test run the whole baseline and check path without AWS.
+/// A temporary evals directory with the corpora, their golden sets, and their dev caches presented
+/// as live caches. It lets the test run the whole baseline and check path without AWS.
 fn live_looking_copy() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    let from = evals_dir();
-    std::fs::create_dir_all(root.join("corpus")).unwrap();
-    for name in [
-        "corpus/sections.json",
-        "corpus/college-algebra-excerpt.pdf",
-        "golden.jsonl",
-    ] {
-        std::fs::copy(from.join(name), root.join(name)).unwrap();
+    for corpus in openbook_eval::corpus::discover(&evals_dir()).unwrap() {
+        let to = root.join("corpora").join(&corpus.id);
+        std::fs::create_dir_all(&to).unwrap();
+        for name in [
+            "sections.json".to_owned(),
+            "golden.jsonl".to_owned(),
+            "corpus.json".to_owned(),
+            corpus
+                .pdf_path()
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+        ] {
+            std::fs::copy(corpus.dir.join(&name), to.join(&name)).unwrap();
+        }
+        let mut cache = Cache::load(&corpus.cache_dir(true)).unwrap();
+        cache.meta.kind = CacheKind::Live;
+        cache.save(&to.join("cache")).unwrap();
     }
-    let mut cache = Cache::load(&from.join("cache-dev")).unwrap();
-    cache.meta.kind = CacheKind::Live;
-    cache.save(&root.join("cache")).unwrap();
     dir
 }
 
@@ -485,8 +626,9 @@ fn the_check_passes_on_its_own_baseline_and_fails_on_a_regression() {
     // A baseline that is better than the code (a regression for the code) fails the check.
     let original = std::fs::read_to_string(&baseline_path).unwrap();
     let mut value: serde_json::Value = serde_json::from_str(&original).unwrap();
-    let recall = value["hybrid"]["recallAt8"].as_f64().unwrap();
-    value["hybrid"]["recallAt8"] = serde_json::json!((recall + 0.05).min(1.0).max(recall + 0.02));
+    let recall = value["combined"]["hybrid"]["recallAt8"].as_f64().unwrap();
+    value["combined"]["hybrid"]["recallAt8"] =
+        serde_json::json!((recall + 0.05).min(1.0).max(recall + 0.02));
     std::fs::write(
         &baseline_path,
         serde_json::to_string_pretty(&value).unwrap(),
@@ -495,12 +637,57 @@ fn the_check_passes_on_its_own_baseline_and_fails_on_a_regression() {
     let out = eval(&["offline", "--check", "--evals", evals]);
     assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));
     assert!(text(&out.stderr).contains("CHECK FAILED"));
-    assert!(text(&out.stderr).contains("Recall@8"));
+    assert!(
+        text(&out.stderr).contains("combined, Recall@8"),
+        "{}",
+        text(&out.stderr)
+    );
+
+    // One corpus that gets worse fails the check, even when the pooled numbers hold.
+    let mut value: serde_json::Value = serde_json::from_str(&original).unwrap();
+    let ndcg = value["corpora"]["american-government"]["hybrid"]["ndcgAt8"]
+        .as_f64()
+        .unwrap();
+    value["corpora"]["american-government"]["hybrid"]["ndcgAt8"] =
+        serde_json::json!((ndcg + 0.05).min(1.0).max(ndcg + 0.02));
+    std::fs::write(
+        &baseline_path,
+        serde_json::to_string_pretty(&value).unwrap(),
+    )
+    .unwrap();
+    let out = eval(&["offline", "--check", "--evals", evals]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));
+    assert!(
+        text(&out.stderr).contains("american-government, nDCG@8"),
+        "{}",
+        text(&out.stderr)
+    );
+
+    // A baseline for other corpora is refused with a clear message.
+    let mut value: serde_json::Value = serde_json::from_str(&original).unwrap();
+    value["corpora"]
+        .as_object_mut()
+        .unwrap()
+        .remove("college-algebra");
+    std::fs::write(
+        &baseline_path,
+        serde_json::to_string_pretty(&value).unwrap(),
+    )
+    .unwrap();
+    let out = eval(&["offline", "--check", "--evals", evals]);
+    assert!(!out.status.success());
+    assert!(
+        text(&out.stderr).contains("--write-baseline"),
+        "{}",
+        text(&out.stderr)
+    );
 
     // Gate accuracy has no tolerance.
     let mut value: serde_json::Value = serde_json::from_str(&original).unwrap();
-    let gate = value["hybrid"]["gateAccuracy"].as_f64().unwrap();
-    value["hybrid"]["gateAccuracy"] = serde_json::json!(gate + 0.0005);
+    let gate = value["combined"]["hybrid"]["gateAccuracy"]
+        .as_f64()
+        .unwrap();
+    value["combined"]["hybrid"]["gateAccuracy"] = serde_json::json!(gate + 0.0005);
     std::fs::write(
         &baseline_path,
         serde_json::to_string_pretty(&value).unwrap(),
@@ -515,9 +702,10 @@ fn the_check_passes_on_its_own_baseline_and_fails_on_a_regression() {
 fn a_cache_for_another_corpus_is_refused() {
     let dir = live_looking_copy();
     let evals = dir.path().to_str().unwrap();
-    let mut cache = Cache::load(&dir.path().join("cache")).unwrap();
+    let cache_dir = dir.path().join("corpora/american-government/cache");
+    let mut cache = Cache::load(&cache_dir).unwrap();
     cache.meta.corpus_sha256 = "0".repeat(64);
-    cache.save(&dir.path().join("cache")).unwrap();
+    cache.save(&cache_dir).unwrap();
     let out = eval(&["offline", "--evals", evals]);
     assert!(!out.status.success());
     assert!(
@@ -534,8 +722,101 @@ fn the_live_refresh_does_not_start_without_the_go_ahead() {
     // cache is written.
     let dir = live_looking_copy();
     let evals = dir.path().to_str().unwrap();
-    std::fs::remove_dir_all(dir.path().join("cache")).unwrap();
-    let out = eval(&["refresh", "--evals", evals]);
+    for corpus in openbook_eval::corpus::discover(dir.path()).unwrap() {
+        std::fs::remove_dir_all(corpus.cache_dir(false)).unwrap();
+    }
+    let out = eval(&["refresh", "--missing-only", "--evals", evals]);
     assert!(!out.status.success());
-    assert!(!dir.path().join("cache").exists());
+    for corpus in openbook_eval::corpus::discover(dir.path()).unwrap() {
+        assert!(!corpus.cache_dir(false).exists());
+    }
+}
+
+#[test]
+fn benchmarks_come_with_the_baseline_and_a_stale_file_fails_the_check() {
+    let dir = live_looking_copy();
+    let evals = dir.path().to_str().unwrap();
+    let out = eval(&["offline", "--write-baseline", "--evals", evals]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let path = dir.path().join("benchmarks.json");
+    let original = std::fs::read_to_string(&path).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&original).unwrap();
+    assert_eq!(value["schema"], 1);
+    assert_eq!(value["questions"], 180);
+    assert_eq!(value["corpora"].as_array().unwrap().len(), 2);
+    assert_eq!(value["corpora"][0]["licence"], "CC BY 4.0");
+    assert!(
+        value["corpora"][0]["source"]
+            .as_str()
+            .unwrap()
+            .starts_with("https://openstax.org/")
+    );
+    for scope in ["combined", "corpora"] {
+        assert!(value["retrieval"][scope].is_object());
+        assert!(value["gate"][scope].is_object());
+    }
+    assert!(value["gate"]["combined"]["offTopicCaught"].is_number());
+
+    let out = eval(&["offline", "--check", "--evals", evals]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+
+    // A file that is not what the code gives now fails the check, even when the baseline holds.
+    let mut stale = value.clone();
+    stale["retrieval"]["combined"]["hybrid"]["recallAt8"] = serde_json::json!(0.5);
+    std::fs::write(&path, serde_json::to_string_pretty(&stale).unwrap()).unwrap();
+    let out = eval(&["offline", "--check", "--evals", evals]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));
+    assert!(text(&out.stderr).contains("stale"), "{}", text(&out.stderr));
+    // A missing file says what to do.
+    std::fs::remove_file(&path).unwrap();
+    let out = eval(&["offline", "--check", "--evals", evals]);
+    assert!(!out.status.success());
+    assert!(text(&out.stderr).contains("--write-baseline"));
+}
+
+#[test]
+fn the_readme_block_is_written_and_a_stale_block_fails_the_check() {
+    let dir = live_looking_copy();
+    let evals = dir.path().to_str().unwrap();
+    let out = eval(&["offline", "--write-baseline", "--evals", evals]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let readme = dir.path().join("README.md");
+    let readme_arg = readme.to_str().unwrap();
+    std::fs::write(
+        &readme,
+        "# Title\n\n<!-- benchmarks:start -->\n<!-- benchmarks:end -->\n\nAfter.\n",
+    )
+    .unwrap();
+    let out = eval(&[
+        "readme", "--check", "--evals", evals, "--readme", readme_arg,
+    ]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));
+    let out = eval(&["readme", "--evals", evals, "--readme", readme_arg]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let written = std::fs::read_to_string(&readme).unwrap();
+    assert!(
+        written.contains("| All corpora | 180 | Hybrid |"),
+        "{written}"
+    );
+    assert!(
+        written.contains("| Gate accuracy | False-gate rate |")
+            || written.contains("Gate accuracy")
+    );
+    assert!(written.starts_with("# Title") && written.ends_with("After.\n"));
+    let out = eval(&[
+        "readme", "--check", "--evals", evals, "--readme", readme_arg,
+    ]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    std::fs::write(&readme, written.replace("| Hybrid |", "| Hybrid! |")).unwrap();
+    let out = eval(&[
+        "readme", "--check", "--evals", evals, "--readme", readme_arg,
+    ]);
+    assert_eq!(out.status.code(), Some(1));
+    // The README of the repository has the markers, and its block is what the table generator gives
+    // from a benchmarks file when there is one.
+    let real = std::fs::read_to_string(evals_dir().join("../README.md")).unwrap();
+    assert!(real.contains("<!-- benchmarks:start -->") && real.contains("<!-- benchmarks:end -->"));
+    assert!(real.contains(
+        "raw.githubusercontent.com%2FnbdSteve%2Fopenbook%2Fmain%2Fevals%2Fbenchmarks.json"
+    ));
 }

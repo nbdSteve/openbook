@@ -3,6 +3,7 @@
 
 pub mod chunker;
 pub mod embed;
+pub mod headers;
 pub mod quality;
 pub mod retrieval;
 pub mod vectors;
