@@ -138,7 +138,7 @@ const SCREENS: Screen[] = [
   { name: 'verify', url: '/verify?email=new%40openbook.test', signedIn: false, ready: heading('Confirm your email'), fullPage: true },
   { name: 'forgot', url: '/forgot', signedIn: false, ready: heading('Reset your password'), fullPage: true },
   { name: 'not-found', url: '/nowhere', signedIn: false, ready: heading('Page not found'), fullPage: true },
-  { name: 'portal-home', url: '/portal', signedIn: true, ready: heading('Your courses'), fullPage: true },
+  { name: 'portal-home', url: '/portal', signedIn: true, ready: heading('Courses you manage'), fullPage: true },
   { name: 'portal-empty', url: '/portal', signedIn: true, ready: heading('You have no courses yet', 2), fullPage: true, mock: { courses: [] } },
   { name: 'home', url: '/ask', signedIn: true, ready: heading('Your courses'), fullPage: true },
   { name: 'join', url: '/join/K7MQ-4XW2', signedIn: true, ready: async (page) => {
@@ -151,7 +151,7 @@ const SCREENS: Screen[] = [
     name: 'home-personal-dialog',
     url: '/portal',
     signedIn: true,
-    ready: heading('Your courses'),
+    ready: heading('Courses you manage'),
     act: async (page) => {
       await page.getByRole('button', { name: 'Study on your own' }).click();
       await expect(page.getByLabel('Course name')).toHaveValue('My study course');
@@ -161,7 +161,7 @@ const SCREENS: Screen[] = [
     name: 'personal-first-run',
     url: '/portal',
     signedIn: true,
-    ready: heading('Your courses'),
+    ready: heading('Courses you manage'),
     mock: {
       override: (path, method) => {
         if (method === 'POST' && path === '/api/courses') return { status: 201, body: { course: OWNER_COURSE } };
@@ -179,7 +179,7 @@ const SCREENS: Screen[] = [
     name: 'home-create-dialog',
     url: '/portal',
     signedIn: true,
-    ready: heading('Your courses'),
+    ready: heading('Courses you manage'),
     act: async (page) => {
       await page.getByRole('button', { name: 'Create a course for a class' }).first().click();
       await expect(page.getByRole('dialog')).toBeVisible();

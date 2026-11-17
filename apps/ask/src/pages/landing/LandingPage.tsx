@@ -63,8 +63,8 @@ export function LandingPage() {
     <div className="min-h-dvh bg-bg-primary">
       <header className="border-b border-border">
         <nav aria-label="Main" className="mx-auto flex h-16 max-w-6xl items-center justify-between px-5 sm:px-8">
-          <Logo className="[&_span]:hidden min-[420px]:[&_span]:inline" />
-          <div className="flex items-center gap-1 sm:gap-2">
+          <Logo className="text-xl sm:text-2xl" />
+          <div className="flex items-center gap-0.5 sm:gap-2">
             <div className="mr-2 hidden items-center gap-1 md:flex">
               {[
                 { to: '/ask', label: 'Ask' },
@@ -78,7 +78,7 @@ export function LandingPage() {
                 GitHub
               </a>
             </div>
-            <ThemeToggle />
+            <ThemeToggle className="hidden h-10 w-10 items-center justify-center rounded-xl text-text-tertiary transition-colors hover:bg-surface-hover hover:text-text-primary sm:inline-flex" />
             <Link to="/login" className={buttonStyles('ghost', 'sm')}>
               Sign in
             </Link>
@@ -119,34 +119,33 @@ export function LandingPage() {
           <BenchmarksSection />
         </Reveal>
 
-        <section aria-label="Open source" className="mx-auto max-w-6xl px-5 py-16 sm:px-8 sm:py-24">
-          <Reveal className="flex flex-col items-start justify-between gap-8 sm:flex-row sm:items-center">
-            <div className="flex items-center gap-5">
-              <Mascot mood="happy" size={88} className="hidden sm:block" />
-              <p className="font-serif text-title font-medium tracking-tight text-text-primary">Free and open source.</p>
-            </div>
-            <div className="flex items-center gap-3">
-              <span className="rounded-full border border-border-strong px-3 py-1 text-sm font-medium text-text-secondary">AGPL-3.0</span>
-              <a href={GITHUB_URL} target="_blank" rel="noopener noreferrer" className={buttonStyles('primary', 'lg')}>
-                <GithubMark className="h-5 w-5" />
-                GitHub
-              </a>
-            </div>
-          </Reveal>
-        </section>
       </main>
 
       <footer className="border-t border-border">
-        <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-x-6 gap-y-2 px-5 py-6 text-sm text-text-muted sm:px-8">
-          <span className="font-serif text-base font-semibold text-text-primary">Openbook</span>
-          <span className="flex items-center gap-5">
-            <a href={GITHUB_URL} target="_blank" rel="noopener noreferrer" className="rounded underline-offset-2 hover:text-text-primary hover:underline">
-              GitHub
-            </a>
-            <a href={`${GITHUB_URL}/blob/main/LICENSE`} target="_blank" rel="noopener noreferrer" className="rounded underline-offset-2 hover:text-text-primary hover:underline">
+        <div className="mx-auto flex max-w-6xl flex-col gap-4 px-5 py-8 sm:flex-row sm:items-center sm:justify-between sm:px-8">
+          <div className="flex items-center gap-3">
+            <Mascot mood="happy" size={44} />
+            <span className="font-serif text-xl font-semibold text-text-primary">Openbook</span>
+            <span className="hidden text-text-muted sm:inline" aria-hidden="true">
+              ·
+            </span>
+            <span className="text-sm text-text-secondary">Free and open source</span>
+          </div>
+          <div className="flex items-center gap-3">
+            <ThemeToggle className="inline-flex h-10 w-10 items-center justify-center rounded-xl text-text-tertiary transition-colors hover:bg-surface-hover hover:text-text-primary sm:hidden" />
+            <a
+              href={`${GITHUB_URL}/blob/main/LICENSE`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="rounded-full border border-border-strong px-3 py-1 text-sm font-medium text-text-secondary transition-colors hover:text-text-primary"
+            >
               AGPL-3.0
             </a>
-          </span>
+            <a href={GITHUB_URL} target="_blank" rel="noopener noreferrer" className={buttonStyles('primary', 'sm')}>
+              <GithubMark className="h-4 w-4" />
+              GitHub
+            </a>
+          </div>
         </div>
       </footer>
     </div>

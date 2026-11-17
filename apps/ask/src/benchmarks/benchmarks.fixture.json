@@ -24,9 +24,9 @@
   "retrieval": {
     "combined": {
       "hybrid": {
-        "recallAt1": 0.8222,
+        "recallAt1": 0.813,
         "recallAt5": 0.9556,
-        "recallAt8": 0.9778,
+        "recallAt8": 0.9756,
         "ndcgAt8": 0.9012,
         "mrr": 0.8801
       },

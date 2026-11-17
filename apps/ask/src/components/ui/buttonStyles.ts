@@ -6,7 +6,7 @@ export type ButtonSize = 'sm' | 'md' | 'lg';
 /** Class names shared by <Button> and links that look like buttons. */
 export function buttonStyles(variant: ButtonVariant = 'primary', size: ButtonSize = 'md', className?: string) {
   return cn(
-    'inline-flex items-center justify-center gap-2 font-medium rounded-xl transition-colors duration-150 select-none',
+    'inline-flex items-center justify-center gap-2 whitespace-nowrap font-medium rounded-xl transition-colors duration-150 select-none',
     'disabled:opacity-50 disabled:cursor-not-allowed',
     {
       'bg-accent text-on-accent hover:bg-accent-hover shadow-sm': variant === 'primary',

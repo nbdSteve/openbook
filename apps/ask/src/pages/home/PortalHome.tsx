@@ -93,7 +93,7 @@ export function PortalHome() {
       <AppHeader />
       <main className="mx-auto max-w-5xl px-4 py-8 sm:px-6">
         <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
-          <h1 className="font-serif text-title font-medium text-text-primary">Your courses</h1>
+          <h1 className="font-serif text-title font-medium text-text-primary">Courses you manage</h1>
           {owned && owned.length > 0 && (
             <div className="flex flex-wrap gap-2">
               <Button variant="secondary" onClick={() => setCreating('personal')}>
