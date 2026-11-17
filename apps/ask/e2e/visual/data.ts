@@ -134,6 +134,43 @@ export const MESSAGES_NO_SOURCES: Message[] = [
   },
 ];
 
+const EIGHT_PASSAGES: Message['sources'] = [
+  { n: 1, documentId: 'D1', documentName: 'Lecture 4 - Photosynthesis.pdf', page: 12, snippet: 'In the thylakoid membranes, chlorophyll absorbs light energy and makes ATP and NADPH.' },
+  { n: 2, documentId: 'D1', documentName: 'Lecture 4 - Photosynthesis.pdf', page: 14, snippet: 'The Calvin cycle takes place in the stroma.' },
+  { n: 3, documentId: 'D2', documentName: 'Introduction to Plant Biology: Cells, Tissues, and the Chemistry of Life (Third edition, complete course reader).pdf', page: 148, snippet: 'Oxygen is released when water is split in photosystem II.' },
+  { n: 4, documentId: 'D3', documentName: 'Problem set 2.pdf', snippet: 'Question 3: name the products of the light reactions.' },
+  { n: 5, documentId: 'D1', documentName: 'Lecture 4 - Photosynthesis.pdf', page: 20, snippet: 'Stomata open to let carbon dioxide enter the leaf.' },
+  { n: 6, documentId: 'D7', documentName: 'Lab manual.pdf', page: 1, snippet: 'Wear gloves when you handle the chlorophyll extract.' },
+  { n: 7, documentId: 'D1', documentName: 'Lecture 4 - Photosynthesis.pdf', page: 31, snippet: 'C4 plants separate carbon fixation from the Calvin cycle.' },
+  { n: 8, documentId: 'D2', documentName: 'Introduction to Plant Biology: Cells, Tissues, and the Chemistry of Life (Third edition, complete course reader).pdf', page: 160, snippet: 'Plants store glucose as starch.' },
+];
+
+/** Eight passages were retrieved. The answer cites only [3] and [1], so two are listed and six are hidden. */
+export const MESSAGES_TWO_OF_EIGHT: Message[] = [
+  { id: '01JMSG00000000000000000T81', role: 'user', content: 'Where do the light reactions happen?', createdAt: T },
+  {
+    id: '01JMSG00000000000000000T82',
+    role: 'assistant',
+    model: 'claude-sonnet',
+    createdAt: T,
+    content: 'Water is split in photosystem II and releases oxygen [3]. The light reactions happen in the thylakoid membranes [1].',
+    sources: EIGHT_PASSAGES,
+  },
+];
+
+/** Eight passages were retrieved and the answer cites none of them. */
+export const MESSAGES_NONE_CITED: Message[] = [
+  { id: '01JMSG00000000000000000NC1', role: 'user', content: 'Who won the cricket match?', createdAt: T },
+  {
+    id: '01JMSG00000000000000000NC2',
+    role: 'assistant',
+    model: 'claude-sonnet',
+    createdAt: T,
+    content: 'Your course materials do not seem to cover that question, so I can only answer from general knowledge. I do not have live sports results.',
+    sources: EIGHT_PASSAGES,
+  },
+];
+
 export const DOCUMENTS: CourseDocument[] = [
   { id: 'D1', courseId: COURSE_ID, filename: 'Lecture 4 - Photosynthesis.pdf', sizeBytes: 2457600, status: 'ready', pageCount: 38, chunkCount: 112, transcribedPages: 3, warnings: ['Page 7 was not transcribed because the daily transcription limit was reached.'], createdAt: T, updatedAt: T },
   { id: 'D2', courseId: COURSE_ID, filename: 'Lecture 5 - Cellular respiration and the electron transport chain.pdf', sizeBytes: 3145728, status: 'processing', createdAt: T, updatedAt: T },

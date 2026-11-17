@@ -152,6 +152,71 @@ const SCREENS: Screen[] = [
     },
   },
   {
+    name: 'chat-sources-two-of-eight',
+    url: `/app/c/${COURSE_ID}/chat/TWOOFEIGHT`,
+    signedIn: true,
+    ready: async (page) => {
+      // Eight passages were retrieved. Two are cited, so two are listed and the rest are hidden.
+      const list = page.getByRole('list', { name: 'Sources for this answer' });
+      await expect(list.getByRole('listitem')).toHaveCount(2);
+      await expect(list.getByRole('listitem').first()).toContainText('Introduction to Plant Biology');
+      await expect(page.getByRole('button', { name: 'Show 6 other passages that were searched' })).toHaveAttribute('aria-expanded', 'false');
+    },
+  },
+  {
+    name: 'chat-sources-two-of-eight-open',
+    url: `/app/c/${COURSE_ID}/chat/TWOOFEIGHT`,
+    signedIn: true,
+    ready: async (page) => {
+      await expect(page.getByRole('list', { name: 'Sources for this answer' })).toBeVisible();
+    },
+    act: async (page) => {
+      await page.getByRole('button', { name: 'Show 6 other passages that were searched' }).click();
+      await expect(page.getByRole('list', { name: 'Other passages that were searched' }).getByRole('listitem')).toHaveCount(6);
+    },
+  },
+  {
+    name: 'chat-sources-disclosure-focus',
+    url: `/app/c/${COURSE_ID}/chat/TWOOFEIGHT`,
+    signedIn: true,
+    ready: async (page) => {
+      await expect(page.getByRole('list', { name: 'Sources for this answer' })).toBeVisible();
+    },
+    act: async (page) => {
+      // The keyboard reaches the disclosure, opens it with Enter, and shows a focus ring.
+      const toggle = page.getByTestId('other-sources-toggle');
+      await toggle.focus();
+      await page.keyboard.press('Enter');
+      await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+      await expect(toggle).toBeFocused();
+      await page.keyboard.press('Space');
+      await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+      await expect(toggle).toBeFocused();
+    },
+  },
+  {
+    name: 'chat-sources-none-used',
+    url: `/app/c/${COURSE_ID}/chat/NONECITED`,
+    signedIn: true,
+    ready: async (page) => {
+      await expect(page.getByText('do not seem to cover that question')).toBeVisible();
+      await expect(page.getByText('Sources', { exact: true })).toHaveCount(0);
+      await expect(page.getByRole('button', { name: 'Searched 8 passages, none used' })).toHaveAttribute('aria-expanded', 'false');
+    },
+  },
+  {
+    name: 'chat-sources-none-used-open',
+    url: `/app/c/${COURSE_ID}/chat/NONECITED`,
+    signedIn: true,
+    ready: async (page) => {
+      await expect(page.getByRole('button', { name: 'Searched 8 passages, none used' })).toBeVisible();
+    },
+    act: async (page) => {
+      await page.getByRole('button', { name: 'Searched 8 passages, none used' }).click();
+      await expect(page.getByRole('list', { name: 'Other passages that were searched' }).getByRole('listitem')).toHaveCount(8);
+    },
+  },
+  {
     name: 'chat-source-one',
     url: `/app/c/${COURSE_ID}/chat/${CONVERSATIONS[2].id}`,
     signedIn: true,

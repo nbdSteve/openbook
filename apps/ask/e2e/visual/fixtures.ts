@@ -13,6 +13,8 @@ import {
   MESSAGES,
   MESSAGES_MANY_SOURCES,
   MESSAGES_NO_SOURCES,
+  MESSAGES_NONE_CITED,
+  MESSAGES_TWO_OF_EIGHT,
   MESSAGES_ONE_SOURCE,
   MODELS,
   OWNER_COURSE,
@@ -91,7 +93,7 @@ export async function mockBackend(page: Page, options: MockOptions = {}) {
       const id = path.split('/').pop();
       const conversation = CONVERSATIONS.find((c) => c.id === id) ?? CONVERSATIONS[0];
       const messages =
-        id === CONVERSATIONS[1].id ? MESSAGES_MANY_SOURCES : id === CONVERSATIONS[2].id ? MESSAGES_ONE_SOURCE : id === 'NOSOURCES' ? MESSAGES_NO_SOURCES : MESSAGES;
+        id === CONVERSATIONS[1].id ? MESSAGES_MANY_SOURCES : id === CONVERSATIONS[2].id ? MESSAGES_ONE_SOURCE : id === 'NOSOURCES' ? MESSAGES_NO_SOURCES : id === 'TWOOFEIGHT' ? MESSAGES_TWO_OF_EIGHT : id === 'NONECITED' ? MESSAGES_NONE_CITED : MESSAGES;
       return json(route, { conversation, messages });
     }
     if (path.endsWith('/documents')) {

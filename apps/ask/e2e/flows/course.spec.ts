@@ -213,6 +213,10 @@ test('an answer from the uploaded PDF shows citations and sources, also after a 
     if (!DEPLOYED) {
       // The fake model cites [1] and [2], and they link to the list entries.
       await expect(answer.locator('[data-variant="badge"]').first()).toBeVisible();
+      // The list holds only cited sources: each entry has a badge in the text.
+      for (const n of await list.locator('[data-variant="entry"]').evaluateAll((els) => els.map((el) => el.getAttribute('data-source-n')))) {
+        await expect(answer.locator(`[data-variant="badge"][data-source-n="${n}"]`).first()).toBeVisible();
+      }
     }
     // Opening a source shows its passage as plain text.
     await entry.click();

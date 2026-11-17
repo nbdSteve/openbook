@@ -255,11 +255,11 @@ export function SourcesList({ cited, other, streaming = false }: SourcesListProp
             data-testid="other-sources-toggle"
             onClick={() => setExpanded((value) => !value)}
             className={cn(
-              '-ml-1 inline-flex min-h-8 items-center gap-1 rounded-lg px-1 text-left text-xs text-text-muted transition-colors hover:text-text-secondary',
+              '-ml-1 inline-flex min-h-8 items-start gap-1 rounded-lg px-1 py-2 text-left leading-4 text-xs text-text-muted transition-colors hover:text-text-secondary',
               cited.length > 0 && 'mt-1',
             )}
           >
-            <ChevronRight className={cn('h-3.5 w-3.5 shrink-0 transition-transform', expanded && 'rotate-90')} aria-hidden="true" />
+            <ChevronRight className={cn('mt-px h-3.5 w-3.5 shrink-0 transition-transform', expanded && 'rotate-90')} aria-hidden="true" />
             <span>{label}</span>
           </button>
           <div id={otherId} hidden={!expanded}>
