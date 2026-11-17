@@ -216,8 +216,8 @@ pub fn gate_sweep(diags: &[QuestionDiag]) -> Vec<SweepRow> {
         &GateRule::AnyLexicalHit { max_distance: 0.85 },
         diags,
     ));
-    for step in 0..=20 {
-        let d = grid_value(0.60, 0.02, step);
+    for step in 0..=30 {
+        let d = grid_value(0.60, 0.01, step);
         rows.push(sweep_row(
             "(a) dense",
             &GateRule::Dense { max_distance: d },

@@ -506,7 +506,7 @@ mod tests {
                 MAX_PER_DOCUMENT,
                 SNIPPET_CHARS
             ),
-            (40, 40, 8, 4, 2400)
+            (40, 40, 8, 6, 2400)
         );
         assert_eq!(RRF_K, 60.0);
         assert_eq!(

@@ -16,20 +16,27 @@ pub const DENSE_TOP_K: u32 = 40;
 pub const LEXICAL_TOP_K: usize = 40;
 /// Reciprocal rank fusion: `score = sum over lists of weight / (RRF_K + rank)`, with rank from 1.
 pub const RRF_K: f64 = 60.0;
-/// The weight of the BM25 list in the fusion. The dense list has weight 1.
-pub const LEXICAL_WEIGHT: f64 = 1.0;
+/// The weight of the BM25 list in the fusion. The dense list has weight 1. On the golden set, 0.5
+/// lifts MRR from 0.852 to 0.901 (the dense list alone has 0.889) and Recall@8 from 0.987 to 1.0,
+/// in both document modes.
+pub const LEXICAL_WEIGHT: f64 = 0.5;
 /// Sources that go to the model and the student.
 pub const FINAL_SOURCES: usize = 8;
 /// Most sources from one document while other candidates are left. The cap is soft: when fewer than
 /// `FINAL_SOURCES` candidates pass it, the free places go to the skipped candidates, in fused order.
-pub const MAX_PER_DOCUMENT: usize = 4;
+/// On the golden set, 6 gives Recall@8 0.9868 and nDCG@10 0.5526, against 0.9605 and 0.4936 for 4.
+pub const MAX_PER_DOCUMENT: usize = 6;
 
 /// The embedding model that the stack uses by default.
 pub const TITAN_V2_MODEL_ID: &str = "amazon.titan-embed-text-v2:0";
 /// The hashed bag-of-words embedder of local runs and tests.
 pub const FAKE_MODEL_ID: &str = "fake";
-/// The gate distance for Titan v2 (see `GateRule`).
-pub const GATE_TITAN_V2_MAX_DISTANCE: f32 = 0.85;
+/// The gate distance for Titan v2 (see `GateRule`). On the golden set (107 questions) the worst
+/// covered question has a best dense distance of 0.748, so 0.78 has no false gate and a margin of
+/// 0.03. The adjacent math topics of `not_covered` are close to the course (0.56 to 0.86), so this
+/// limit catches few of them (see `evals/results/2026-11-17.md`). Off-topic questions are 0.82 and
+/// farther. The distance is only valid for Titan v2.
+pub const GATE_TITAN_V2_MAX_DISTANCE: f32 = 0.78;
 
 /// What the relevance gate reads about the words of a query (see `Bm25Reader::search_with_stats`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -522,11 +529,19 @@ mod tests {
         fused.iter().map(|f| f.passage.key.as_str()).collect()
     }
 
+    /// The two lists count the same, so the tests of the fusion read simply.
+    fn equal_weights() -> Params {
+        Params {
+            lexical_weight: 1.0,
+            ..Params::default()
+        }
+    }
+
     #[test]
     fn rrf_adds_one_over_sixty_plus_rank_for_each_list() {
         let dense = [hit("A", 0, 0.1), hit("B", 0, 0.2)];
         let lexical = [hit("B", 0, 9.0), hit("C", 0, 5.0)];
-        let fused = fuse(&dense, &lexical);
+        let fused = fuse_with(&equal_weights(), &dense, &lexical);
         // B is rank 2 in dense and rank 1 in lexical: it wins over A (rank 1 in one list only).
         assert_eq!(keys(&fused), ["B:0", "A:0", "C:0"]);
         let b = &fused[0];
@@ -541,13 +556,21 @@ mod tests {
     #[test]
     fn ties_are_broken_by_the_better_rank_then_by_key() {
         // A:0 is first in dense, B:0 is first in lexical: equal scores, equal best rank, so the key decides.
-        let fused = fuse(&[hit("A", 0, 0.1)], &[hit("B", 0, 9.0)]);
+        let fused = fuse_with(&equal_weights(), &[hit("A", 0, 0.1)], &[hit("B", 0, 9.0)]);
         assert_eq!(keys(&fused), ["A:0", "B:0"]);
         // The same score again, with the keys the other way round: the key still decides.
-        let fused = fuse(&[hit("Z", 0, 0.1)], &[hit("Y", 0, 9.0), hit("X", 0, 8.0)]);
+        let fused = fuse_with(
+            &equal_weights(),
+            &[hit("Z", 0, 0.1)],
+            &[hit("Y", 0, 9.0), hit("X", 0, 8.0)],
+        );
         assert_eq!(keys(&fused), ["Y:0", "Z:0", "X:0"]);
         // The result does not depend on the order of the inputs inside a tie.
-        let again = fuse(&[hit("Z", 0, 0.1)], &[hit("Y", 0, 9.0), hit("X", 0, 8.0)]);
+        let again = fuse_with(
+            &equal_weights(),
+            &[hit("Z", 0, 0.1)],
+            &[hit("Y", 0, 9.0), hit("X", 0, 8.0)],
+        );
         assert_eq!(keys(&fused), keys(&again));
     }
 
@@ -604,6 +627,7 @@ mod tests {
         ];
         let params = Params {
             final_sources: 5,
+            max_per_document: 4,
             ..Params::default()
         };
         // The first pass takes A:0 to A:3 and B:0 (A:4 is over the cap). That fills the five places.
@@ -612,7 +636,11 @@ mod tests {
             ["A:0", "A:1", "A:2", "A:3", "B:0"]
         );
         // With six places, A:4 comes back into the free place, and the list stays in fused order.
-        let fused = fuse(&dense, &[]);
+        let six = Params {
+            max_per_document: 4,
+            ..Params::default()
+        };
+        let fused = fuse_with(&six, &dense, &[]);
         assert_eq!(keys(&fused), ["A:0", "A:1", "A:2", "A:3", "A:4", "B:0"]);
     }
 

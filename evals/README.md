@@ -17,7 +17,7 @@ The evaluation runs the same retrieval code as the API (`openbook_search::retrie
 
 ## Commands
 
-Run all commands from the repository root. The `make` targets are short forms: `make eval-dev` is `offline --dev-cache`, `make eval` is `offline --check`, and `AWS_PROFILE=<profile> make eval-live` (with `YES=1` to start) is the live refresh.
+Run all commands from the repository root. The `make` targets are short forms: `make eval-dev` is `offline --dev-cache`, `make eval` is `offline --check`, and `AWS_PROFILE=<profile> AWS_REGION=ap-southeast-2 make eval-live` (with `YES=1` to start) is the live refresh.
 
 ### Offline (no network, no AWS)
 
@@ -69,8 +69,10 @@ cargo run -p openbook-eval -- grid
 ### Refresh the live cache (real AWS)
 
 ```
-OPENBOOK_PDFIUM_PATH=$(scripts/fetch-pdfium.sh | tail -1)/lib AWS_PROFILE=<profile> cargo run -p openbook-eval --release -- refresh
+OPENBOOK_PDFIUM_PATH=$(scripts/fetch-pdfium.sh | tail -1)/lib AWS_PROFILE=<profile> AWS_REGION=ap-southeast-2 cargo run -p openbook-eval --release -- refresh
 ```
+
+Set `AWS_REGION` yourself. The refresh follows `AWS_REGION` and then `AWS_DEFAULT_REGION`, and only without both does it use `ap-southeast-2`. A shell that exports another Region sends the calls to that Region.
 
 This prints what it will call and about what it costs, and then stops. To start, add `--yes`. It does these steps with the real code of the ingestion worker:
 
@@ -79,15 +81,15 @@ This prints what it will call and about what it costs, and then stops. To start,
 3. Embeds every chunk and every question with Titan Text Embeddings v2.
 4. Writes `evals/cache/` (page Markdown, embeddings, rewrites, and the time of the query embedding calls).
 
-It reads the normal AWS environment (`AWS_PROFILE`, `AWS_REGION`; the Region is `ap-southeast-2` when none is set). The model for transcription and rewrite is `au.anthropic.claude-haiku-4-5-20251001-v1:0` unless `OPENBOOK_EVAL_MODEL_ID` says another one. It does not touch S3, DynamoDB, SQS, or S3 Vectors. Review the diff of `evals/cache/`, then run `offline --write-baseline` and commit both.
+It reads the normal AWS environment (`AWS_PROFILE`, `AWS_REGION`; the Region is `ap-southeast-2` only when none is set, so set `AWS_REGION=ap-southeast-2`). The model for transcription and rewrite is `au.anthropic.claude-haiku-4-5-20251001-v1:0` unless `OPENBOOK_EVAL_MODEL_ID` says another one. It does not touch S3, DynamoDB, SQS, or S3 Vectors. Review the diff of `evals/cache/`, then run `offline --write-baseline` and commit both.
 
 ### Add what the cache lacks (real AWS, small)
 
 ```
-AWS_PROFILE=<profile> cargo run -p openbook-eval -- refresh --missing-only
+AWS_PROFILE=<profile> AWS_REGION=ap-southeast-2 cargo run -p openbook-eval -- refresh --missing-only
 ```
 
-`AWS_PROFILE=<profile> make eval-live-missing` (with `YES=1` to start) is the short form. It reuses `evals/cache/pages`, does no page transcription, and does not need PDFium. It calls Bedrock only for the Titan embeddings and the follow-up rewrites that the cache does not have: new or changed questions, and the chunks of the other chunk targets. It prints each call and an upper bound of the cost first, and starts only with `--yes`. It keeps the models that the cache was made with, so the cache keys stay valid, and it drops entries that no run needs.
+`AWS_PROFILE=<profile> AWS_REGION=ap-southeast-2 make eval-live-missing` (with `YES=1` to start) is the short form. It reuses `evals/cache/pages`, does no page transcription, and does not need PDFium. It calls Bedrock only for the Titan embeddings and the follow-up rewrites that the cache does not have: new or changed questions, and the chunks of the other chunk targets. It prints each call and an upper bound of the cost first, and starts only with `--yes`. It keeps the models that the cache was made with, so the cache keys stay valid, and it drops entries that no run needs.
 
 ### Refresh the development cache (no AWS)
 

@@ -3,11 +3,11 @@
   "embeddingModel": "amazon.titan-embed-text-v2:0",
   "hybrid": {
     "recallAt5": 0.9605,
-    "recallAt8": 0.9605,
-    "ndcgAt10": 0.4919,
-    "mrr": 0.8476,
-    "gateAccuracy": 0.8,
+    "recallAt8": 1.0,
+    "ndcgAt10": 0.56,
+    "mrr": 0.9007,
+    "gateAccuracy": 0.8785,
     "falseGateRate": 0.0,
-    "missedGateRate": 1.0
+    "missedGateRate": 0.4194
   }
 }
