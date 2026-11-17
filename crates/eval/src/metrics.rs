@@ -1,4 +1,4 @@
-//! The metrics of `docs/evaluation.md`: Recall@5, Recall@8, nDCG@10, MRR, and gate accuracy.
+//! The metrics of `docs/evaluation.md`: Recall@5, Recall@8, nDCG@8, MRR, and gate accuracy.
 //!
 //! The functions here are pure. A ranked list is a list of gains, best rank first: 2 for a chunk
 //! that holds a labeled page, 1 for a chunk that holds only a page next to a labeled page, 0 for
@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 
 pub const RECALL_SMALL: usize = 5;
 pub const RECALL_LARGE: usize = 8;
-pub const NDCG_DEPTH: usize = 10;
+/// nDCG is computed on the list that the API returns, at the depth of Recall@8.
+pub const NDCG_DEPTH: usize = 8;
 
 /// The pages (first and last, 1-based, inclusive) that a chunk covers.
 pub type Span = (u32, u32);
@@ -75,9 +76,8 @@ pub struct Outcome {
     pub covered: bool,
     /// True when the gate gave no sources.
     pub gated: bool,
-    /// The gains of a ten-deep ranking, best rank first. nDCG@10 reads it, so it has ten places.
-    pub ranked: Vec<u8>,
-    /// The gains of the list that the API returns (`final_sources` long). Recall and MRR read it.
+    /// The gains of the list that the API returns (`final_sources` long), best rank first. Recall,
+    /// MRR, and nDCG all read it.
     pub returned: Vec<u8>,
     /// The gain of every chunk of the corpus for this question.
     pub all: Vec<u8>,
@@ -88,7 +88,7 @@ pub struct Outcome {
 pub struct Metrics {
     pub recall_at_5: f64,
     pub recall_at_8: f64,
-    pub ndcg_at_10: f64,
+    pub ndcg_at_8: f64,
     pub mrr: f64,
     /// The share of all questions where the gate was right: a covered question has sources and a
     /// question that is not covered has none.
@@ -133,7 +133,7 @@ pub fn aggregate(outcomes: &[Outcome]) -> Metrics {
         recall_at_8: round4(mean(&|o| {
             f64::from(u8::from(hit_at(&o.returned, RECALL_LARGE)))
         })),
-        ndcg_at_10: round4(mean(&|o| ndcg_at(&o.ranked, &o.all, NDCG_DEPTH))),
+        ndcg_at_8: round4(mean(&|o| ndcg_at(&o.returned, &o.all, NDCG_DEPTH))),
         mrr: round4(mean(&|o| reciprocal_rank(&o.returned))),
         gate_accuracy: round4(share(right, outcomes.len())),
         false_gate_rate: round4(share(false_gated, covered.len())),
@@ -226,7 +226,6 @@ mod tests {
         Outcome {
             covered,
             gated,
-            ranked: ranked.to_vec(),
             returned: ranked.to_vec(),
             all: vec![2, 1, 0, 0],
         }
@@ -244,7 +243,7 @@ mod tests {
         assert!(close(m.recall_at_5, 0.5));
         assert!(close(m.recall_at_8, 0.75));
         assert!(close(m.mrr, round4((1.0 + 0.25 + 0.0 + 1.0 / 6.0) / 4.0)));
-        assert!(m.ndcg_at_10 > 0.0 && m.ndcg_at_10 < 1.0);
+        assert!(m.ndcg_at_8 > 0.0 && m.ndcg_at_8 < 1.0);
         assert!(close(m.gate_accuracy, 1.0));
     }
 

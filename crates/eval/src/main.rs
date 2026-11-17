@@ -5,7 +5,7 @@ use std::process::ExitCode;
 
 use openbook_eval::cache::{Cache, CacheKind};
 use openbook_eval::offline::{GateKind, Tuning};
-use openbook_eval::report::{Baseline, check, improved};
+use openbook_eval::report::{Baseline, check_report, improved};
 use openbook_eval::{Error, default_evals_dir, grid, offline, refresh};
 
 const USAGE: &str = "\
@@ -17,14 +17,14 @@ Usage:
 
 TUNING (changes the numbers for one run; not allowed with --check or --write-baseline):
   --rrf-k N  --lexical-weight X  --final-sources N  --max-per-document N
-  --dense-candidates N  --lexical-candidates N  --chunk-tokens N  --single-document
+  --dense-candidates N  --lexical-candidates N  --chunk-tokens N  --cap-off
   --gate any|dense|combined  --gate-distance X  --gate-coverage X  --gate-matched N
 
 offline   Runs the evaluation from the cache. No network, no AWS. Prints a Markdown table.
           --check            compares with evals/baseline.json and exits 1 on a regression
           --write-baseline   writes evals/baseline.json from a live cache
           --dev-cache        uses evals/cache-dev (a development cache; never a baseline)
-          --single-document  treats the whole PDF as one document (the report always shows both)
+          --cap-off  treats the whole PDF as one document (the report always shows both)
 grid      Runs the whole tuning grid offline and writes grid.md and grid.json (default: target/eval).
           Chunk targets other than the production one need their chunk embeddings in the cache.
 refresh   Builds the cache.
@@ -87,7 +87,7 @@ fn parse(argv: impl Iterator<Item = String>) -> Result<Args, String> {
                 t.lexical_top_k = Some(number(value(&mut argv, &flag)?, &flag)?);
             }
             "--chunk-tokens" => t.chunk_tokens = Some(number(value(&mut argv, &flag)?, &flag)?),
-            "--single-document" => t.single_document = true,
+            "--cap-off" => t.cap_off = true,
             "--gate" => {
                 let text = value(&mut argv, &flag)?;
                 t.gate_kind = Some(
@@ -112,6 +112,11 @@ fn write_file(path: &Path, text: &str) -> Result<(), Error> {
 }
 
 async fn offline_command(args: &Args, evals: &Path) -> Result<ExitCode, Error> {
+    if args.check && args.write_baseline {
+        return Err(Error::Run(
+            "--check and --write-baseline cannot be used together: check first, then write the baseline in the same commit as the change".into(),
+        ));
+    }
     let check_mode = args.check || args.write_baseline;
     if args.dev_cache && check_mode {
         return Err(Error::Run(
@@ -156,7 +161,7 @@ async fn offline_command(args: &Args, evals: &Path) -> Result<ExitCode, Error> {
 
     let baseline_path = evals.join("baseline.json");
     if args.write_baseline {
-        write_file(&baseline_path, &Baseline::from_report(&report).to_json()?)?;
+        write_file(&baseline_path, &Baseline::from_report(&report)?.to_json()?)?;
         eprintln!("Wrote {}", baseline_path.display());
     }
     if args.check {
@@ -172,12 +177,17 @@ async fn offline_command(args: &Args, evals: &Path) -> Result<ExitCode, Error> {
                 baseline.embedding_model, report.embedding_model
             )));
         }
-        let regressions = check(&baseline.hybrid, &report.hybrid);
+        let regressions = check_report(&baseline, &report);
         if regressions.is_empty() {
             eprintln!(
                 "Check passed: no hybrid metric is below the baseline by more than the tolerance."
             );
-            if improved(&baseline.hybrid, &report.hybrid) {
+            if improved(&baseline.hybrid, &report.hybrid)
+                || report
+                    .cap_off
+                    .as_ref()
+                    .is_some_and(|c| improved(&baseline.cap_off, &c.hybrid))
+            {
                 eprintln!(
                     "Some metrics improved. Update the baseline in the same commit: openbook-eval offline --write-baseline"
                 );
@@ -336,14 +346,14 @@ mod tests {
             "4",
             "--chunk-tokens",
             "600",
-            "--single-document",
+            "--cap-off",
         ])
         .unwrap();
         assert!(a.dev_cache && a.tuning.is_tuned());
         let o = a.tuning.options("amazon.titan-embed-text-v2:0");
         assert_eq!(o.params.rrf_k, 30.0);
         assert_eq!(o.chunk_tokens(), 600);
-        assert!(o.single_document);
+        assert!(o.cap_off);
         assert_eq!(
             o.params.gate,
             GateRule::DenseOrLexical {

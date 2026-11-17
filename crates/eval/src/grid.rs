@@ -18,7 +18,8 @@ pub const RRF_KS: [f64; 3] = [30.0, 60.0, 100.0];
 pub const FINAL_SOURCES: [usize; 3] = [6, 8, 10];
 /// Candidates from each retriever.
 pub const CANDIDATES: [usize; 2] = [20, 40];
-pub const MAX_PER_DOCUMENT: [usize; 4] = [2, 3, 4, 6];
+/// Most sources per document. 8 is the same as no cap at 6 or 8 final sources.
+pub const MAX_PER_DOCUMENT: [usize; 5] = [2, 3, 4, 6, 8];
 pub const LEXICAL_WEIGHTS: [f64; 2] = [0.5, 1.0];
 
 /// One setting of the knobs.
@@ -63,7 +64,7 @@ pub struct GridRow {
     /// One document per section.
     pub sectioned: ModeResult,
     /// The whole PDF is one document.
-    pub single_document: ModeResult,
+    pub cap_off: ModeResult,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -123,7 +124,7 @@ pub async fn run(evals: &Path, cache_dir: &Path, tuning: &Tuning) -> Result<Grid
                                     lexical_weight,
                                 },
                                 sectioned: modes[0],
-                                single_document: modes[1],
+                                cap_off: modes[1],
                             });
                         }
                     }
@@ -145,24 +146,24 @@ fn find<'a>(grid: &'a Grid, knobs: &Knobs) -> Option<&'a GridRow> {
 fn header(out: &mut String, first: &str) {
     let _ = writeln!(
         out,
-        "| {first} | R@5 | R@8 | Recall of list | nDCG@10 | MRR | Gate acc. | 1-doc R@8 | 1-doc nDCG@10 | 1-doc MRR |"
+        "| {first} | R@5 | R@8 | Recall of list | nDCG@8 | MRR | Gate acc. | cap-off R@8 | cap-off nDCG@8 | cap-off MRR |"
     );
     let _ = writeln!(out, "|---|---|---|---|---|---|---|---|---|---|");
 }
 
 fn line(out: &mut String, label: &str, row: &GridRow) {
-    let (s, d) = (&row.sectioned, &row.single_document);
+    let (s, d) = (&row.sectioned, &row.cap_off);
     let _ = writeln!(
         out,
         "| {label} | {:.4} | {:.4} | {:.4} | {:.4} | {:.4} | {:.4} | {:.4} | {:.4} | {:.4} |",
         s.hybrid.recall_at_5,
         s.hybrid.recall_at_8,
         s.recall_returned,
-        s.hybrid.ndcg_at_10,
+        s.hybrid.ndcg_at_8,
         s.hybrid.mrr,
         s.hybrid.gate_accuracy,
         d.hybrid.recall_at_8,
-        d.hybrid.ndcg_at_10,
+        d.hybrid.ndcg_at_8,
         d.hybrid.mrr
     );
 }
@@ -184,7 +185,7 @@ impl Grid {
         let _ = writeln!(out);
         let _ = writeln!(
             out,
-            "Each table changes one knob and keeps the others at production. `*` marks the production value. Columns: hybrid metrics with one document per section, then Recall@8, nDCG@10, and MRR when the whole PDF is one document. Recall of list is the share of questions with a relevant chunk anywhere in the returned list."
+            "Each table changes one knob and keeps the others at production. `*` marks the production value. Columns: hybrid metrics with one document per section, then Recall@8, nDCG@8, and MRR when the whole PDF is one document. Recall of list is the share of questions with a relevant chunk anywhere in the returned list."
         );
         type Set = fn(&mut Knobs, f64);
         let experiments: [(&str, Vec<f64>, f64, Set); 6] = [
@@ -249,7 +250,7 @@ impl Grid {
                 (
                     r.sectioned.hybrid.gate_accuracy,
                     r.sectioned.hybrid.recall_at_8,
-                    r.sectioned.hybrid.ndcg_at_10,
+                    r.sectioned.hybrid.ndcg_at_8,
                     r.sectioned.hybrid.mrr,
                 )
             };
@@ -264,12 +265,12 @@ impl Grid {
         let _ = writeln!(out);
         let _ = writeln!(
             out,
-            "Sorted by gate accuracy, then Recall@8, nDCG@10, and MRR (one document per section)."
+            "Sorted by gate accuracy, then Recall@8, nDCG@8, and MRR (one document per section)."
         );
         let _ = writeln!(out);
         let _ = writeln!(
             out,
-            "| chunk | k | sources | candidates | max/doc | BM25 weight | R@5 | R@8 | Recall of list | nDCG@10 | MRR | 1-doc R@8 | 1-doc nDCG@10 | 1-doc MRR |"
+            "| chunk | k | sources | candidates | max/doc | BM25 weight | R@5 | R@8 | Recall of list | nDCG@8 | MRR | cap-off R@8 | cap-off nDCG@8 | cap-off MRR |"
         );
         let _ = writeln!(
             out,
@@ -277,7 +278,7 @@ impl Grid {
         );
         for row in best.into_iter().take(top) {
             let k = &row.knobs;
-            let (s, d) = (&row.sectioned, &row.single_document);
+            let (s, d) = (&row.sectioned, &row.cap_off);
             let _ = writeln!(
                 out,
                 "| {} | {} | {} | {} | {} | {} | {:.4} | {:.4} | {:.4} | {:.4} | {:.4} | {:.4} | {:.4} | {:.4} |",
@@ -290,10 +291,10 @@ impl Grid {
                 s.hybrid.recall_at_5,
                 s.hybrid.recall_at_8,
                 s.recall_returned,
-                s.hybrid.ndcg_at_10,
+                s.hybrid.ndcg_at_8,
                 s.hybrid.mrr,
                 d.hybrid.recall_at_8,
-                d.hybrid.ndcg_at_10,
+                d.hybrid.ndcg_at_8,
                 d.hybrid.mrr
             );
         }
@@ -323,7 +324,7 @@ mod tests {
         let mut hybrid = Metrics {
             recall_at_5: recall,
             recall_at_8: recall,
-            ndcg_at_10: 0.5,
+            ndcg_at_8: 0.5,
             mrr: 0.5,
             gate_accuracy: 0.9,
             false_gate_rate: 0.0,
@@ -347,7 +348,7 @@ mod tests {
                     ..production
                 },
                 sectioned: result(0.9),
-                single_document: result(0.8),
+                cap_off: result(0.8),
             });
         }
         let grid = Grid {

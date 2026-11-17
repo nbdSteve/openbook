@@ -76,9 +76,13 @@ pub fn escape_source(text: &str) -> String {
     out
 }
 
-/// The text of the system prompt when retrieval found nothing relevant.
-pub const NOT_COVERED_NOTICE: &str = "The course materials do not seem to cover this question. \
-Say so briefly before you help from general knowledge.";
+/// The text of the system prompt when retrieval found nothing relevant. The relevance gate also
+/// cuts off small talk ("hi", "thanks, that makes sense"), so the notice says what to do for it:
+/// reply normally and do not talk about the course materials.
+pub const NOT_COVERED_NOTICE: &str = "Retrieval found nothing in the course materials for the student's last message. \
+If that message is a greeting, thanks, or other small talk, reply normally and briefly, and do not mention \
+the course materials. If it is a question about a subject, say briefly that the course materials do not seem \
+to cover it before you help from general knowledge.";
 
 /// What retrieval gave the prompt for one turn.
 #[derive(Debug, Clone, Copy)]
@@ -497,6 +501,10 @@ mod tests {
         let p = build_system_prompt_for("C", "", TutoringStyle::Hints, SourceMode::NotCovered);
         assert!(p.contains(NOT_COVERED_NOTICE));
         assert!(!p.contains("<source "));
+        // Small talk is gated too, so the notice must not make the model say "not covered" to "hi".
+        assert!(NOT_COVERED_NOTICE.contains("greeting, thanks, or other small talk"));
+        assert!(NOT_COVERED_NOTICE.contains("do not mention the course materials"));
+        assert!(NOT_COVERED_NOTICE.contains("do not seem to cover"));
         let plain = build_system_prompt_for("C", "", TutoringStyle::Hints, SourceMode::NotUsed);
         assert!(!plain.contains("do not seem to cover") && !plain.contains("<source n="));
     }

@@ -173,7 +173,7 @@ async fn a_small_corpus_with_known_answers_scores_as_expected() {
     assert!(apples.matched_terms > 0 && apples.term_coverage > 0.0);
     assert!(report.gate_sweep.len() > 20);
     // Both document modes are reported.
-    let single = report.single_document.expect("the other mode is reported");
+    let single = report.cap_off.expect("the other mode is reported");
     assert_eq!(single.hybrid.recall_at_8, 1.0);
     assert_eq!(report.hybrid_by_kind["lookup"].questions, 1);
 }
@@ -198,7 +198,7 @@ async fn the_gate_number_changes_the_gate_accuracy() {
     // One source is returned, and the question has one relevant chunk at rank 1 in this corpus.
     assert!(report.hybrid.recall_at_8 > 0.0);
     // nDCG reads a ten-deep list, so it is still more than zero for the questions that miss.
-    assert!(report.hybrid.ndcg_at_10 > 0.0);
+    assert!(report.hybrid.ndcg_at_8 > 0.0);
 }
 
 #[tokio::test]
@@ -246,27 +246,22 @@ async fn a_label_that_no_chunk_holds_is_a_data_error() {
 }
 
 #[tokio::test]
-async fn single_document_mode_changes_only_the_cap() {
+async fn cap_off_mode_changes_only_the_cap() {
     let (sections, questions, cache) = mini();
     let mut narrow = options();
     narrow.params.max_per_document = 1;
     let sectioned = offline::run(&sections, &questions, &cache, &narrow)
         .await
         .unwrap();
-    let single = offline::run(
-        &sections,
-        &questions,
-        &cache,
-        &narrow.with_single_document(true),
-    )
-    .await
-    .unwrap();
-    // In single-document mode the report does not nest the other mode.
-    assert!(single.single_document.is_none());
-    assert!(single.settings.contains("single document"));
+    let single = offline::run(&sections, &questions, &cache, &narrow.with_cap_off(true))
+        .await
+        .unwrap();
+    // In cap-off mode the report does not nest the other mode.
+    assert!(single.cap_off.is_none());
+    assert!(single.settings.contains("cap off"));
     assert!(sectioned.settings.contains("one document per section"));
     // The mode nested in the sectioned report is the mode of the single run.
-    assert_eq!(sectioned.single_document.unwrap().hybrid, single.hybrid);
+    assert_eq!(sectioned.cap_off.unwrap().hybrid, single.hybrid);
     // The gate does not depend on the mode.
     assert_eq!(sectioned.hybrid.gate_accuracy, single.hybrid.gate_accuracy);
 }
@@ -364,11 +359,11 @@ fn the_report_has_the_gate_inputs_the_sweep_and_both_modes() {
         assert!(first.get(field).is_some(), "{field}");
     }
     assert!(value["gateSweep"].as_array().unwrap().len() > 20);
-    assert!(value["singleDocument"]["hybrid"].is_object());
+    assert!(value["capOff"]["hybrid"].is_object());
     assert!(value["hybridByKind"]["off_topic"].is_object());
     let markdown = std::fs::read_to_string(&md).unwrap();
     assert!(markdown.contains("Gate sweep"));
-    assert!(markdown.contains("Single-document mode"));
+    assert!(markdown.contains("Cap-off mode"));
     assert!(markdown.contains("| off_topic |"));
 }
 
@@ -384,8 +379,8 @@ fn the_grid_runs_on_the_dev_cache_and_writes_a_table() {
     let grid: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(dir.path().join("grid.json")).unwrap())
             .unwrap();
-    // 3 chunk targets x 3 k x 3 final x 2 candidates x 4 max per document x 2 weights.
-    assert_eq!(grid["rows"].as_array().unwrap().len(), 432);
+    // 3 chunk targets x 3 k x 3 final x 2 candidates x 5 max per document x 2 weights.
+    assert_eq!(grid["rows"].as_array().unwrap().len(), 540);
 }
 
 #[test]
@@ -421,6 +416,17 @@ fn a_dev_cache_cannot_give_or_check_a_baseline() {
             let text = std::fs::read_to_string(evals_dir().join("baseline.json")).unwrap();
             !text.contains("\"cacheKind\": \"dev\"")
         }
+    );
+}
+
+#[test]
+fn check_and_write_baseline_cannot_be_used_together() {
+    let out = eval(&["offline", "--check", "--write-baseline"]);
+    assert!(!out.status.success());
+    assert!(
+        text(&out.stderr).contains("cannot be used together"),
+        "{}",
+        text(&out.stderr)
     );
 }
 

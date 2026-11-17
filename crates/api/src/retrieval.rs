@@ -78,6 +78,9 @@ pub struct Trace {
     pub query: String,
     /// True when the fast model rewrote the message.
     pub rewritten: bool,
+    /// True when the turn needed a rewrite (a follow-up) and it failed, so the raw message was
+    /// searched and the fallback gate rule was used.
+    pub rewrite_failed: bool,
     pub dense: Vec<TraceHit>,
     pub lexical: Vec<TraceHit>,
     pub fused: Vec<TraceFused>,
@@ -126,6 +129,8 @@ impl Trace {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct TraceGate {
+    /// The name of the gate rule that this turn used.
+    pub rule: String,
     pub best_dense_distance: Option<f32>,
     pub top_bm25_score: Option<f32>,
     pub term_coverage: f64,
@@ -134,9 +139,10 @@ pub struct TraceGate {
     pub matched_terms: usize,
 }
 
-impl From<&GateInputs> for TraceGate {
-    fn from(g: &GateInputs) -> Self {
+impl TraceGate {
+    fn new(rule: &GateRule, g: &GateInputs) -> Self {
         Self {
+            rule: rule.name().to_owned(),
             best_dense_distance: g.best_dense_distance,
             top_bm25_score: g.top_bm25_score,
             term_coverage: (g.term_coverage() * 1000.0).round() / 1000.0,
@@ -346,6 +352,18 @@ pub async fn rewrite_query(
     (text.and_then(|t| clean_query(&t)), used)
 }
 
+/// The numbers of one turn. The gate limit belongs to the embedding model. A follow-up whose rewrite
+/// failed searches the raw message ("can you explain the second step again?"), which is far from every
+/// chunk, so the turn must not end as "not covered" because of a distance: it uses the first rule
+/// (any BM25 hit passes).
+pub fn turn_params(embedding_model: &str, rewrite_failed: bool) -> Params {
+    let mut params = Params::for_embedding_model(embedding_model);
+    if rewrite_failed {
+        params.gate = GateRule::fallback();
+    }
+    params
+}
+
 /// Runs retrieval for one turn. It never fails: a problem gives `NotUsed` or a smaller result.
 ///
 /// `earlier` is the conversation before this message. `documents` is every document of the course.
@@ -371,6 +389,8 @@ pub async fn run_turn(
     let mut usage = TokenUsage::default();
     let mut query = clip(message.trim(), MAX_QUERY_CHARS);
     let mut rewritten = false;
+    // A follow-up needs a rewrite. Without one the raw message is searched.
+    let mut rewrite_failed = !earlier.is_empty();
     if !earlier.is_empty()
         && let Some(model) = rewriter
     {
@@ -379,6 +399,7 @@ pub async fn run_turn(
         usage.input_tokens += used.input_tokens;
         usage.output_tokens += used.output_tokens;
         if let Some(better) = better {
+            rewrite_failed = false;
             rewritten = better != query;
             query = better;
         }
@@ -394,6 +415,7 @@ pub async fn run_turn(
     let mut trace = Trace {
         query,
         rewritten,
+        rewrite_failed,
         errors: searched.errors.clone(),
         ..Trace::default()
     };
@@ -409,7 +431,7 @@ pub async fn run_turn(
     let (dense, lexical) = (only_ready(searched.dense), only_ready(searched.lexical));
     let fuse_at = Instant::now();
     // The distance limit of the gate belongs to the embedding model.
-    let params = Params::for_embedding_model(retrieval.embedder.model_id());
+    let params = turn_params(retrieval.embedder.model_id(), rewrite_failed);
     let decision = decide_with(&params, dense, lexical, searched.terms);
     timings.fuse_ms = fuse_at.elapsed().as_millis() as u64;
     if decision.outcome == Outcome::NotUsed {
@@ -427,7 +449,7 @@ pub async fn run_turn(
     trace.lexical = trace_hits(&decision.lexical);
     let fused = decision.fused;
     trace.gated = fused.is_empty();
-    trace.gate = Some(TraceGate::from(&decision.gate));
+    trace.gate = Some(TraceGate::new(&params.gate, &decision.gate));
     trace.fused = fused
         .iter()
         .enumerate()
@@ -586,6 +608,7 @@ mod tests {
         for field in [
             "query",
             "rewritten",
+            "rewriteFailed",
             "dense",
             "lexical",
             "fused",
@@ -598,6 +621,51 @@ mod tests {
         }
         assert_eq!(value["dense"][0]["rank"], 1);
         assert!(value["timings"].get("retrieveMs").is_some());
+    }
+
+    struct FailingRewriter;
+
+    #[async_trait]
+    impl ChatModel for FailingRewriter {
+        async fn stream(
+            &self,
+            _request: openbook_core::model::ChatRequest,
+        ) -> Result<openbook_core::model::ModelStream, openbook_core::model::ModelError> {
+            Err(openbook_core::model::ModelError("down".into()))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_rewrite_gives_no_query_and_the_turn_uses_the_fallback_gate() {
+        let earlier = [(MessageRole::User, "What is a parabola?".to_owned())];
+        let (query, _) = rewrite_query(
+            &FailingRewriter,
+            &earlier,
+            "can you explain the second step again?",
+        )
+        .await;
+        assert_eq!(query, None);
+        // Titan v2: a normal turn uses the dense rule, and a turn with a failed rewrite does not.
+        let titan = "amazon.titan-embed-text-v2:0";
+        assert_eq!(turn_params(titan, false).gate.name(), "dense");
+        assert_eq!(turn_params(titan, true).gate.name(), "any_lexical_hit");
+        // The raw message is far from every chunk (distance 0.9) but has BM25 hits: it keeps sources.
+        let far = |gate: &Params| {
+            let dense = vec![Hit {
+                value: 0.9,
+                passage: Passage {
+                    key: "D:0".into(),
+                    document_id: "D".into(),
+                    page: 1,
+                    heading: String::new(),
+                    text: "text".into(),
+                },
+            }];
+            let lexical = dense.clone();
+            decide_with(gate, Some(dense), Some(lexical), Default::default()).outcome
+        };
+        assert_eq!(far(&turn_params(titan, false)), Outcome::NotCovered);
+        assert_eq!(far(&turn_params(titan, true)), Outcome::Found);
     }
 
     #[test]

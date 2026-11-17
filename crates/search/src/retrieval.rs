@@ -16,10 +16,15 @@ pub const DENSE_TOP_K: u32 = 40;
 pub const LEXICAL_TOP_K: usize = 40;
 /// Reciprocal rank fusion: `score = sum over lists of weight / (RRF_K + rank)`, with rank from 1.
 pub const RRF_K: f64 = 60.0;
-/// The weight of the BM25 list in the fusion. The dense list has weight 1. On the golden set, 0.5
-/// lifts MRR from 0.852 to 0.901 (the dense list alone has 0.889) and Recall@8 from 0.987 to 1.0,
-/// in both document modes.
-pub const LEXICAL_WEIGHT: f64 = 0.5;
+/// The weight of the BM25 list in the fusion. The dense list has weight 1.
+///
+/// Keep it at 1.0 or more. A chunk that only BM25 finds has the best score `weight / (RRF_K + 1)`, and
+/// the worst chunk that only dense search finds has `1 / (RRF_K + DENSE_TOP_K)`. With weight 0.5 that
+/// is 0.0082 against 0.0100, so BM25 could only re-order dense results and never add a source. That
+/// would remove the reason for hybrid search: an exact match (notation, a keyword) that dense ranks
+/// low. A test pins this. Weight 0.5 looked better on the golden set (MRR 0.852 to 0.901), but the set
+/// has 133 chunks, so 40 dense candidates are 30 percent of it, and it was rejected for that property.
+pub const LEXICAL_WEIGHT: f64 = 1.0;
 /// Sources that go to the model and the student.
 pub const FINAL_SOURCES: usize = 8;
 /// Most sources from one document while other candidates are left. The cap is soft: when fewer than
@@ -27,15 +32,18 @@ pub const FINAL_SOURCES: usize = 8;
 /// On the golden set, 6 gives Recall@8 0.9868 and nDCG@10 0.5526, against 0.9605 and 0.4936 for 4.
 pub const MAX_PER_DOCUMENT: usize = 6;
 
-/// The embedding model that the stack uses by default.
-pub const TITAN_V2_MODEL_ID: &str = "amazon.titan-embed-text-v2:0";
+/// The embedding model that the stack uses by default. One definition, in `openbook-core`. The CDK
+/// default (`infra/lib/config.ts`) is tied to it by an infra test.
+pub const TITAN_V2_MODEL_ID: &str = openbook_core::config::DEFAULT_EMBEDDING_MODEL_ID;
 /// The hashed bag-of-words embedder of local runs and tests.
-pub const FAKE_MODEL_ID: &str = "fake";
-/// The gate distance for Titan v2 (see `GateRule`). On the golden set (107 questions) the worst
-/// covered question has a best dense distance of 0.748, so 0.78 has no false gate and a margin of
-/// 0.03. The adjacent math topics of `not_covered` are close to the course (0.56 to 0.86), so this
-/// limit catches few of them (see `evals/results/2026-11-17.md`). Off-topic questions are 0.82 and
-/// farther. The distance is only valid for Titan v2.
+pub const FAKE_MODEL_ID: &str = openbook_core::config::FAKE_EMBEDDING_MODEL_ID;
+/// The gate distance for Titan v2 (see `GateRule`). "No false gate" is in-sample: on the 76 covered
+/// golden questions the worst best dense distance is 0.748, and the limit is 0.032 above it. A real
+/// course can have a covered question that is farther, and then the student gets no sources. The
+/// trace of every turn records the real distances (`trace.gate`), so the next round can re-measure.
+/// The adjacent math topics of `not_covered` are close to the course (0.56 to 0.86), so this limit
+/// catches few of them (see `evals/results/2026-11-17.md`). Off-topic questions are 0.82 and farther.
+/// The distance is only valid for Titan v2.
 pub const GATE_TITAN_V2_MAX_DISTANCE: f32 = 0.78;
 
 /// What the relevance gate reads about the words of a query (see `Bm25Reader::search_with_stats`).
@@ -103,7 +111,29 @@ impl GateRule {
             TITAN_V2_MODEL_ID => GateRule::Dense {
                 max_distance: GATE_TITAN_V2_MAX_DISTANCE,
             },
-            _ => GateRule::AnyLexicalHit { max_distance: 0.85 },
+            _ => GateRule::fallback(),
+        }
+    }
+
+    /// The first rule: the closest distance within 0.85, or any BM25 hit. A turn uses it when the
+    /// search query is the raw message of a follow-up whose rewrite failed, because the raw message
+    /// ("can you explain the second step again?") is far from every chunk.
+    pub fn fallback() -> GateRule {
+        GateRule::AnyLexicalHit { max_distance: 0.85 }
+    }
+
+    /// True when the evaluation measured the distance limit for this embedding model. The fake
+    /// embedder is not measured on purpose: its rule only has to keep local runs sensible.
+    pub fn is_calibrated(model_id: &str) -> bool {
+        model_id == TITAN_V2_MODEL_ID
+    }
+
+    /// The name of the rule, for traces and logs.
+    pub fn name(&self) -> &'static str {
+        match self {
+            GateRule::AnyLexicalHit { .. } => "any_lexical_hit",
+            GateRule::Dense { .. } => "dense",
+            GateRule::DenseOrLexical { .. } => "dense_or_lexical",
         }
     }
 
@@ -468,15 +498,18 @@ pub fn gate_inputs(dense: &[Hit], lexical: &[Hit], terms: TermStats) -> GateInpu
 }
 
 /// Applies the relevance gate and the fusion to the two candidate lists. `None` means the retriever
-/// failed. When dense search failed and BM25 found nothing, the gate cannot judge without the dense
-/// result, so the outcome is `NotUsed` and not `NotCovered`. When dense search failed and BM25 found
-/// something, the gate passes: the lexical hits are all that there is.
+/// failed. An empty dense list counts as a failed dense search: the caller drops the dense hits of
+/// documents that are not ready, so an empty list can mean "the documents are still processing", and
+/// the gate cannot judge without a distance. When dense search failed and BM25 found nothing, the
+/// outcome is `NotUsed` and not `NotCovered`. When dense search failed and BM25 found something, the
+/// gate passes: the lexical hits are all that there is.
 pub fn decide_with(
     params: &Params,
     dense: Option<Vec<Hit>>,
     lexical: Option<Vec<Hit>>,
     terms: TermStats,
 ) -> Decision {
+    let dense = dense.filter(|hits| !hits.is_empty());
     if dense.is_none() && lexical.as_ref().is_none_or(Vec::is_empty) {
         return Decision {
             outcome: Outcome::NotUsed,
@@ -868,6 +901,55 @@ mod tests {
         assert_eq!(failed(None, None), Outcome::NotUsed);
         // Dense failed but BM25 found something: the gate passes, whatever the rule.
         assert_eq!(failed(None, Some(vec![hit("B", 1, 3.0)])), Outcome::Found);
+        // An empty dense list (for example every dense hit belonged to a document that is still
+        // processing) is a failed dense search: it does not gate a question that BM25 can answer.
+        assert_eq!(
+            failed(Some(Vec::new()), Some(vec![hit("B", 1, 3.0)])),
+            Outcome::Found
+        );
+        assert_eq!(failed(Some(Vec::new()), Some(Vec::new())), Outcome::NotUsed);
+    }
+
+    #[test]
+    fn with_the_production_numbers_a_chunk_that_only_bm25_finds_reaches_the_sources() {
+        // The point of hybrid search: an exact match that dense ranks low (or not at all). The best
+        // BM25-only score must beat the worst dense-only score, at the production k and candidates.
+        let best_lexical_only = LEXICAL_WEIGHT / (RRF_K + 1.0);
+        let worst_dense_only = 1.0 / (RRF_K + f64::from(DENSE_TOP_K));
+        assert!(
+            best_lexical_only > worst_dense_only,
+            "BM25 could not add a source"
+        );
+        // And it does: 40 dense hits from three documents, and a BM25 rank 1 that dense lacks.
+        let dense: Vec<Hit> = (0..40)
+            .map(|i| hit(["A", "B", "C"][i as usize % 3], i, 0.2 + i as f32 * 0.01))
+            .collect();
+        let lexical = [hit("D", 99, 14.0)];
+        let fused = fuse(&dense, &lexical);
+        assert_eq!(fused.len(), FINAL_SOURCES);
+        assert!(keys(&fused).contains(&"D:99"), "{:?}", keys(&fused));
+        let found = fused.iter().find(|f| f.passage.key == "D:99").unwrap();
+        assert_eq!((found.dense_rank, found.lexical_rank), (None, Some(1)));
+    }
+
+    #[test]
+    fn a_follow_up_with_a_failed_rewrite_uses_the_fallback_rule() {
+        let titan = GateRule::for_embedding_model(TITAN_V2_MODEL_ID);
+        assert_eq!(titan.name(), "dense");
+        let fallback = GateRule::fallback();
+        assert_eq!(fallback.name(), "any_lexical_hit");
+        // The raw message of a follow-up is far from every chunk (distance 0.9), but it shares words
+        // with the course: the Titan rule gates it and the fallback keeps the sources.
+        let raw = inputs(Some(0.9), 12, 4, 3);
+        assert!(!titan.passes(&raw));
+        assert!(fallback.passes(&raw));
+        assert!(GateRule::is_calibrated(TITAN_V2_MODEL_ID));
+        assert!(!GateRule::is_calibrated(FAKE_MODEL_ID));
+        assert!(!GateRule::is_calibrated("amazon.titan-embed-text-v3:0"));
+        assert_eq!(
+            GateRule::for_embedding_model("amazon.titan-embed-text-v3:0"),
+            fallback
+        );
     }
 
     struct Stub(Result<Vec<Hit>, String>);

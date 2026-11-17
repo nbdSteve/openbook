@@ -262,7 +262,7 @@ pub struct Report {
     /// The settings of this run, in words (gate rule, fusion, chunk size, mode).
     pub settings: String,
     /// The same three setups when the whole PDF is one document (`None` in that mode itself).
-    pub single_document: Option<ModeMetrics>,
+    pub cap_off: Option<ModeMetrics>,
     pub misses: Vec<Miss>,
     pub latency: Option<Latency>,
     /// What the gate read for every question.
@@ -300,7 +300,7 @@ impl Report {
         let rows: [(&str, Getter); 7] = [
             ("Recall@5", |m| m.recall_at_5),
             ("Recall@8", |m| m.recall_at_8),
-            ("nDCG@10", |m| m.ndcg_at_10),
+            ("nDCG@8", |m| m.ndcg_at_8),
             ("MRR", |m| m.mrr),
             ("Gate accuracy", |m| m.gate_accuracy),
             ("False-gate rate", |m| m.false_gate_rate),
@@ -347,11 +347,11 @@ impl Report {
                 row.group, row.questions, row.dense, row.bm25, row.hybrid
             );
         }
-        if let Some(single) = &self.single_document {
+        if let Some(single) = &self.cap_off {
             let _ = writeln!(out);
             let _ = writeln!(
                 out,
-                "Single-document mode (the whole PDF is one document, so the per-document cap sees one):"
+                "Cap-off mode (every chunk has the same document ID, so the per-document cap never skips a chunk):"
             );
             let _ = writeln!(out);
             let _ = writeln!(out, "| Metric | Dense only | BM25 only | Hybrid |");
@@ -359,7 +359,7 @@ impl Report {
             let rows: [(&str, Getter); 4] = [
                 ("Recall@5", |m| m.recall_at_5),
                 ("Recall@8", |m| m.recall_at_8),
-                ("nDCG@10", |m| m.ndcg_at_10),
+                ("nDCG@8", |m| m.ndcg_at_8),
                 ("MRR", |m| m.mrr),
             ];
             for (name, get) in rows {
@@ -443,15 +443,24 @@ pub struct Baseline {
     pub cache_kind: CacheKind,
     pub embedding_model: String,
     pub hybrid: Metrics,
+    /// The hybrid metrics when the per-document cap is off (the whole PDF is one document).
+    pub cap_off: Metrics,
 }
 
 impl Baseline {
-    pub fn from_report(report: &Report) -> Self {
-        Self {
+    /// The baseline of a report. It needs the cap-off run, so the report must not be a cap-off run.
+    pub fn from_report(report: &Report) -> Result<Self, Error> {
+        let cap_off = report.cap_off.as_ref().ok_or_else(|| {
+            Error::Run(
+                "the baseline needs the cap-off metrics: do not run it with --cap-off".into(),
+            )
+        })?;
+        Ok(Self {
             cache_kind: report.cache_kind,
             embedding_model: report.embedding_model.clone(),
             hybrid: report.hybrid,
-        }
+            cap_off: cap_off.hybrid,
+        })
     }
 
     pub fn load(path: &Path) -> Result<Self, Error> {
@@ -477,6 +486,8 @@ impl Baseline {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Regression {
+    /// The mode of the metric: empty for the normal run, "cap off" for the cap-off run.
+    pub mode: &'static str,
     pub metric: &'static str,
     pub baseline: f64,
     pub current: f64,
@@ -486,21 +497,26 @@ pub struct Regression {
 
 impl std::fmt::Display for Regression {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mode = if self.mode.is_empty() {
+            String::new()
+        } else {
+            format!("{}, ", self.mode)
+        };
         write!(
             f,
-            "{}: {:.4}, the baseline is {:.4} and the lowest allowed is {:.4}",
+            "{mode}{}: {:.4}, the baseline is {:.4} and the limit is {:.4}",
             self.metric, self.current, self.baseline, self.lowest_allowed
         )
     }
 }
 
 /// Compares the hybrid metrics with the baseline. A ranking metric may fall by `TOLERANCE`. Gate
-/// accuracy may not fall at all.
+/// accuracy may not fall at all, and the false-gate rate may not rise at all.
 pub fn check(baseline: &Metrics, current: &Metrics) -> Vec<Regression> {
     let ranking: [(&'static str, f64, f64); 4] = [
         ("Recall@5", baseline.recall_at_5, current.recall_at_5),
         ("Recall@8", baseline.recall_at_8, current.recall_at_8),
-        ("nDCG@10", baseline.ndcg_at_10, current.ndcg_at_10),
+        ("nDCG@8", baseline.ndcg_at_8, current.ndcg_at_8),
         ("MRR", baseline.mrr, current.mrr),
     ];
     let mut found = Vec::new();
@@ -508,6 +524,7 @@ pub fn check(baseline: &Metrics, current: &Metrics) -> Vec<Regression> {
         let lowest = base - TOLERANCE;
         if now < lowest - EPSILON {
             found.push(Regression {
+                mode: "",
                 metric,
                 baseline: base,
                 current: now,
@@ -517,11 +534,35 @@ pub fn check(baseline: &Metrics, current: &Metrics) -> Vec<Regression> {
     }
     if current.gate_accuracy < baseline.gate_accuracy - EPSILON {
         found.push(Regression {
+            mode: "",
             metric: "Gate accuracy",
             baseline: baseline.gate_accuracy,
             current: current.gate_accuracy,
             lowest_allowed: baseline.gate_accuracy,
         });
+    }
+    // A covered question that the gate cuts off is the worst error for a student: no tolerance.
+    if current.false_gate_rate > baseline.false_gate_rate + EPSILON {
+        found.push(Regression {
+            mode: "",
+            metric: "False-gate rate",
+            baseline: baseline.false_gate_rate,
+            current: current.false_gate_rate,
+            lowest_allowed: baseline.false_gate_rate,
+        });
+    }
+    found
+}
+
+/// Checks both runs of a report against the baseline: the normal run and the cap-off run, with the
+/// same tolerance.
+pub fn check_report(baseline: &Baseline, report: &Report) -> Vec<Regression> {
+    let mut found = check(&baseline.hybrid, &report.hybrid);
+    if let Some(cap_off) = &report.cap_off {
+        for mut regression in check(&baseline.cap_off, &cap_off.hybrid) {
+            regression.mode = "cap off";
+            found.push(regression);
+        }
     }
     found
 }
@@ -530,7 +571,7 @@ pub fn check(baseline: &Metrics, current: &Metrics) -> Vec<Regression> {
 pub fn improved(baseline: &Metrics, current: &Metrics) -> bool {
     current.recall_at_5 > baseline.recall_at_5 + TOLERANCE
         || current.recall_at_8 > baseline.recall_at_8 + TOLERANCE
-        || current.ndcg_at_10 > baseline.ndcg_at_10 + TOLERANCE
+        || current.ndcg_at_8 > baseline.ndcg_at_8 + TOLERANCE
         || current.mrr > baseline.mrr + TOLERANCE
         || current.gate_accuracy > baseline.gate_accuracy + EPSILON
 }
@@ -543,7 +584,7 @@ mod tests {
         Metrics {
             recall_at_5: 0.80,
             recall_at_8: 0.90,
-            ndcg_at_10: 0.70,
+            ndcg_at_8: 0.70,
             mrr: 0.60,
             gate_accuracy: 0.95,
             false_gate_rate: 0.02,
@@ -574,10 +615,10 @@ mod tests {
         let base = metrics();
         let mut now = base;
         now.recall_at_5 -= 0.05;
-        now.ndcg_at_10 -= 0.05;
+        now.ndcg_at_8 -= 0.05;
         now.mrr -= 0.05;
         let names: Vec<_> = check(&base, &now).iter().map(|r| r.metric).collect();
-        assert_eq!(names, ["Recall@5", "nDCG@10", "MRR"]);
+        assert_eq!(names, ["Recall@5", "nDCG@8", "MRR"]);
     }
 
     #[test]
@@ -616,6 +657,7 @@ mod tests {
             cache_kind: CacheKind::Live,
             embedding_model: "amazon.titan-embed-text-v2:0".into(),
             hybrid: metrics(),
+            cap_off: metrics(),
         };
         std::fs::write(&path, baseline.to_json().unwrap()).unwrap();
         assert_eq!(Baseline::load(&path).unwrap(), baseline);
@@ -659,7 +701,7 @@ mod tests {
                 hybrid: 0.0,
             }],
             settings: "gate: dense distance at most 0.85".into(),
-            single_document: Some(ModeMetrics {
+            cap_off: Some(ModeMetrics {
                 dense: metrics(),
                 bm25: metrics(),
                 hybrid: metrics(),
@@ -673,7 +715,7 @@ mod tests {
         assert!(text.contains("| Recall@8 | 0.9000 | 0.9000 | 0.9000 |"));
         assert!(text.contains("DEV CACHE"));
         assert!(text.contains("| covered (false-gate rate) | 2 | 0.0000 | 0.5000 | 0.0000 |"));
-        assert!(text.contains("Single-document mode"));
+        assert!(text.contains("Cap-off mode"));
         assert!(text.contains("`lookup-01`"));
         assert!(text.contains("Returned pages: 1, 4-5."));
         let json = report.to_json().unwrap();
@@ -749,5 +791,58 @@ mod tests {
         assert!(sweep.iter().any(|r| r.rule.starts_with("(a)")));
         assert!(sweep.iter().any(|r| r.rule.starts_with("(b)")));
         assert!(sweep.iter().all(|r| (0.0..=1.0).contains(&r.gate_accuracy)));
+    }
+
+    #[test]
+    fn a_rise_of_the_false_gate_rate_fails_by_any_amount() {
+        let base = metrics();
+        let mut now = base;
+        now.false_gate_rate += 0.0132;
+        let found = check(&base, &now);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].metric, "False-gate rate");
+        now.false_gate_rate = base.false_gate_rate;
+        assert!(check(&base, &now).is_empty());
+    }
+
+    #[test]
+    fn the_cap_off_run_is_checked_with_the_same_tolerance() {
+        let baseline = Baseline {
+            cache_kind: CacheKind::Live,
+            embedding_model: "m".into(),
+            hybrid: metrics(),
+            cap_off: metrics(),
+        };
+        let mut worse = metrics();
+        worse.recall_at_8 -= 0.05;
+        let report = |cap_off: Metrics| Report {
+            cache_kind: CacheKind::Live,
+            embedding_model: "m".into(),
+            corpus_sha256: "0".into(),
+            questions: 1,
+            covered: 1,
+            not_covered: 0,
+            chunks: 1,
+            dense: metrics(),
+            bm25: metrics(),
+            hybrid: metrics(),
+            hybrid_by_kind: BTreeMap::new(),
+            gate_by_group: vec![],
+            settings: String::new(),
+            cap_off: Some(ModeMetrics {
+                dense: metrics(),
+                bm25: metrics(),
+                hybrid: cap_off,
+            }),
+            misses: vec![],
+            latency: None,
+            diagnostics: vec![],
+            gate_sweep: vec![],
+        };
+        assert!(check_report(&baseline, &report(metrics())).is_empty());
+        let found = check_report(&baseline, &report(worse));
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].mode, "cap off");
+        assert!(found[0].to_string().starts_with("cap off, Recall@8"));
     }
 }

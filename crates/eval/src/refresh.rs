@@ -332,6 +332,13 @@ where
     }
 }
 
+/// The error for a rewrite that gave no query (the model failed, timed out, or said nothing).
+fn rewrite_failed(id: &str) -> Error {
+    Error::Aws(format!(
+        "the rewrite of follow-up {id} gave no query. Nothing was stored for it: run the refresh again"
+    ))
+}
+
 fn eval_entry(model_id: &str) -> ModelEntry {
     ModelEntry {
         id: "eval".into(),
@@ -420,9 +427,9 @@ pub async fn build_live(evals: &Path, plan: &Plan, pages: Vec<PageData>) -> Resu
                 )
                 .await
                 .map_err(Error::Aws)?;
-                // The API uses the raw message when the rewrite fails. The cache keeps what the
-                // run would have searched, so the offline run is exact.
-                let query = better.unwrap_or_else(|| plain_query(q));
+                // The API uses the raw message when the rewrite fails, but a cache that holds the raw
+                // question as the "rewrite" would hide the failure and measure the wrong thing.
+                let query = better.ok_or_else(|| rewrite_failed(&q.id))?;
                 rewrites.insert(
                     rewrite_key(&plan.model_id, context, &q.question),
                     query.clone(),
@@ -660,7 +667,7 @@ pub async fn run_missing(
         )
         .await
         .map_err(Error::Aws)?;
-        let query = better.unwrap_or_else(|| plain_query(q));
+        let query = better.ok_or_else(|| rewrite_failed(&q.id))?;
         cache.rewrites.insert(
             rewrite_key(&cache.meta.rewrite_model, context, &q.question),
             query,
@@ -809,5 +816,21 @@ mod tests {
         assert!(more.cost_upper_bound_usd() < plan.cost_upper_bound_usd());
         assert!(plan.cost_upper_bound_usd() < 0.01);
         assert!(!plan.is_empty());
+    }
+
+    #[test]
+    fn the_grid_has_the_chunk_target_of_production() {
+        // The cache must hold the chunk embeddings of the production target, or the normal run fails.
+        assert!(CHUNK_TARGET_TOKENS.contains(&PRODUCTION_CHUNK_TOKENS));
+        assert_eq!(PRODUCTION_CHUNK_TOKENS, 400);
+    }
+
+    #[test]
+    fn a_failed_rewrite_is_an_error_that_names_the_question() {
+        let error = rewrite_failed("followup-11").to_string();
+        assert!(
+            error.contains("followup-11") && error.contains("gave no query"),
+            "{error}"
+        );
     }
 }

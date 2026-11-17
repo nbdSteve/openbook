@@ -22,20 +22,11 @@ use openbook_search::vectors::vector_key;
 use crate::Error;
 use crate::cache::{Cache, EmbeddingStore, rewrite_key};
 use crate::data::{Kind, Question, Section};
-use crate::metrics::{self, NDCG_DEPTH, Outcome as RunOutcome, RECALL_LARGE, Span};
+use crate::metrics::{self, Outcome as RunOutcome, RECALL_LARGE, Span};
 use crate::report::{GateRow, KindMetrics, Miss, ModeMetrics, QuestionDiag, Report, gate_sweep};
 
-/// The ranked lists have this many results, so nDCG@10 has ten places. The API returns the first
-/// `Params::final_sources` of them, and the fusion order is the same.
-pub fn ranking_params(params: &Params) -> Params {
-    Params {
-        final_sources: params.final_sources.max(NDCG_DEPTH),
-        ..*params
-    }
-}
-
-/// The document ID that every chunk gets in single-document mode.
-pub const SINGLE_DOCUMENT_ID: &str = "course";
+/// The document ID that every chunk gets in cap-off mode.
+pub const CAP_OFF_DOCUMENT_ID: &str = "course";
 
 /// One chunk is about this many characters per token.
 pub const CHARS_PER_TOKEN: usize = 4;
@@ -48,7 +39,7 @@ pub struct Options {
     pub chunk_chars: usize,
     /// Treat the whole PDF as one document: the per-document cap then sees one document. The chunks
     /// and their embeddings stay the same, so this isolates the effect of the cap.
-    pub single_document: bool,
+    pub cap_off: bool,
     pub dense_top_k: usize,
     pub lexical_top_k: usize,
 }
@@ -59,7 +50,7 @@ impl Options {
         Self {
             params: Params::for_embedding_model(embedding_model),
             chunk_chars: TARGET_CHARS,
-            single_document: false,
+            cap_off: false,
             dense_top_k: DENSE_TOP_K as usize,
             lexical_top_k: LEXICAL_TOP_K,
         }
@@ -71,8 +62,8 @@ impl Options {
     }
 
     /// The same options in the other document mode.
-    pub fn with_single_document(mut self, single: bool) -> Self {
-        self.single_document = single;
+    pub fn with_cap_off(mut self, single: bool) -> Self {
+        self.cap_off = single;
         self
     }
 
@@ -88,8 +79,8 @@ impl Options {
             self.dense_top_k,
             self.lexical_top_k,
             self.chunk_tokens(),
-            if self.single_document {
-                "single document"
+            if self.cap_off {
+                "cap off"
             } else {
                 "one document per section"
             }
@@ -149,7 +140,7 @@ pub struct Tuning {
     pub chunk_tokens: Option<usize>,
     pub dense_top_k: Option<usize>,
     pub lexical_top_k: Option<usize>,
-    pub single_document: bool,
+    pub cap_off: bool,
 }
 
 impl Tuning {
@@ -201,7 +192,7 @@ impl Tuning {
         }
         o.dense_top_k = self.dense_top_k.unwrap_or(o.dense_top_k);
         o.lexical_top_k = self.lexical_top_k.unwrap_or(o.lexical_top_k);
-        o.single_document = self.single_document;
+        o.cap_off = self.cap_off;
         o
     }
 }
@@ -255,11 +246,11 @@ pub fn build_chunks(
     Ok(out)
 }
 
-fn passage(chunk: &EvalChunk, single_document: bool) -> Passage {
+fn passage(chunk: &EvalChunk, cap_off: bool) -> Passage {
     Passage {
         key: chunk.key.clone(),
-        document_id: if single_document {
-            SINGLE_DOCUMENT_ID.to_owned()
+        document_id: if cap_off {
+            CAP_OFF_DOCUMENT_ID.to_owned()
         } else {
             chunk.document_id.clone()
         },
@@ -318,7 +309,7 @@ impl DenseSearch for MemoryDense {
 pub struct TantivyLexical {
     reader: Arc<Bm25Reader>,
     top_k: usize,
-    single_document: bool,
+    cap_off: bool,
 }
 
 #[async_trait]
@@ -334,8 +325,8 @@ impl LexicalSearch for TantivyLexical {
                 value: h.score,
                 passage: Passage {
                     key: h.chunk_id,
-                    document_id: if self.single_document {
-                        SINGLE_DOCUMENT_ID.to_owned()
+                    document_id: if self.cap_off {
+                        CAP_OFF_DOCUMENT_ID.to_owned()
                     } else {
                         h.document_id
                     },
@@ -365,7 +356,7 @@ impl Index {
         sections: &[Section],
         cache: &Cache,
         chunk_chars: usize,
-        single_document: bool,
+        cap_off: bool,
     ) -> Result<Index, Error> {
         let chunks = build_chunks(sections, &cache.pages, chunk_chars)?;
         if chunks.is_empty() {
@@ -379,7 +370,7 @@ impl Index {
                     chunk_chars / CHARS_PER_TOKEN
                 ))
             })?;
-            vectors.push((passage(chunk, single_document), vector));
+            vectors.push((passage(chunk, cap_off), vector));
         }
         let dir =
             tempfile::tempdir().map_err(|e| Error::Run(format!("temporary directory: {e}")))?;
@@ -410,7 +401,7 @@ impl Index {
             lexical: TantivyLexical {
                 reader,
                 top_k: LEXICAL_TOP_K,
-                single_document,
+                cap_off,
             },
             chunks,
             spans,
@@ -532,19 +523,11 @@ fn answer(
             })
             .collect()
     };
-    // The list that the API returns (`returned`) and a ten-deep list for nDCG@10 (`ranked`). With
-    // the soft cap the first places of the ten-deep list can differ from the shorter list.
-    let ranking = ranking_params(params);
-    let outcome = |pass: bool, lists: [&[Fused]; 2]| -> Result<RunOutcome, Error> {
-        let (returned, ranked) = if pass {
-            (gains(lists[0])?, gains(lists[1])?)
-        } else {
-            (Vec::new(), Vec::new())
-        };
+    let outcome = |pass: bool, list: &[Fused]| -> Result<RunOutcome, Error> {
+        let returned = if pass { gains(list)? } else { Vec::new() };
         Ok(RunOutcome {
             covered,
             gated: !pass,
-            ranked,
             returned,
             all: all.clone(),
         })
@@ -553,34 +536,23 @@ fn answer(
     // Hybrid: exactly what the API does after the two searches.
     let decision = decide_with(params, Some(dense.clone()), Some(lexical.clone()), terms);
     let hybrid_pass = decision.outcome != Outcome::NotCovered;
-    let hybrid_ranked = if hybrid_pass {
-        fuse_with(&ranking, dense, lexical)
-    } else {
-        Vec::new()
-    };
-    let hybrid = outcome(hybrid_pass, [&decision.fused, &hybrid_ranked])?;
+    let hybrid = outcome(hybrid_pass, &decision.fused)?;
 
     // Dense only and BM25 only: the dense or the lexical half of the gate and the same fusion code
     // on one list, so the cap and the depth are the same as for the hybrid run.
     let dense_inputs = gate_inputs(dense, &[], Default::default());
     let dense_pass = params.gate.passes_dense_only(&dense_inputs);
-    let (dense_returned, dense_ranked) = if dense_pass {
-        (
-            fuse_with(params, dense, &[]),
-            fuse_with(&ranking, dense, &[]),
-        )
+    let dense_returned = if dense_pass {
+        fuse_with(params, dense, &[])
     } else {
-        (Vec::new(), Vec::new())
+        Vec::new()
     };
     let bm25_inputs = gate_inputs(&[], lexical, terms);
     let bm25_pass = params.gate.passes_lexical_only(&bm25_inputs);
-    let (bm25_returned, bm25_ranked) = if bm25_pass {
-        (
-            fuse_with(params, &[], lexical),
-            fuse_with(&ranking, &[], lexical),
-        )
+    let bm25_returned = if bm25_pass {
+        fuse_with(params, &[], lexical)
     } else {
-        (Vec::new(), Vec::new())
+        Vec::new()
     };
 
     let gate = decision.gate;
@@ -597,8 +569,8 @@ fn answer(
         gated: !hybrid_pass,
     };
     Ok(Answers {
-        dense: outcome(dense_pass, [&dense_returned, &dense_ranked])?,
-        bm25: outcome(bm25_pass, [&bm25_returned, &bm25_ranked])?,
+        dense: outcome(dense_pass, &dense_returned)?,
+        bm25: outcome(bm25_pass, &bm25_returned)?,
         hybrid,
         hybrid_returned: decision.fused,
         diag,
@@ -749,18 +721,18 @@ fn gate_rows(run: &Run) -> Vec<GateRow> {
         .collect()
 }
 
-/// Runs every question and builds the report. A run that is not in single-document mode also runs
-/// the single-document mode, to report both.
+/// Runs every question and builds the report. A run that is not in cap-off mode also runs
+/// the cap-off mode, to report both.
 pub async fn run(
     sections: &[Section],
     questions: &[Question],
     cache: &Cache,
     opts: &Options,
 ) -> Result<Report, Error> {
-    let mut index = Index::build(sections, cache, opts.chunk_chars, opts.single_document)?;
+    let mut index = Index::build(sections, cache, opts.chunk_chars, opts.cap_off)?;
     index.set_candidates(opts.dense_top_k, opts.lexical_top_k);
     let main = run_questions(&index, questions, cache, &opts.params).await?;
-    let single_document = if opts.single_document {
+    let cap_off = if opts.cap_off {
         None
     } else {
         let mut single = Index::build(sections, cache, opts.chunk_chars, true)?;
@@ -808,7 +780,7 @@ pub async fn run(
         hybrid_by_kind,
         gate_by_group: gate_rows(&main),
         settings: opts.describe(),
-        single_document,
+        cap_off,
         misses: main.misses,
         latency: cache.meta.latency.clone(),
         gate_sweep: gate_sweep(&main.diagnostics),

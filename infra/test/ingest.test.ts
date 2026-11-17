@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { Match } from 'aws-cdk-lib/assertions';
 import { describe, expect, test } from 'vitest';
+import { defaultEmbeddingModelId } from '../lib/config';
 import { exampleValues, readTemplate, renderIamDocument } from '../scripts/render-iam';
 import { asArray, cdkJsonContext, fixtures, synth, type Json } from './helpers';
 
@@ -310,6 +311,17 @@ describe('the transcribe and embedding model rules', () => {
     expect(withModels(models1, { embeddingModelId: 'au.amazon.titan-embed-text-v2:0' })).toThrow(/on-demand model in Sydney/);
     expect(withModels(models1, { embeddingModelId: 'acme.embed-1' })).toThrow(/is not allowed/);
     expect(withModels(models1, { embeddingModelId: 'amazon.titan-embed-text-v3:0' })).not.toThrow();
+  });
+});
+
+describe('the embedding model that the relevance gate is calibrated for', () => {
+  test('the CDK default is the Rust constant, so a new default cannot turn the gate off with no sign', () => {
+    const rust = fs.readFileSync(path.join(__dirname, '../../crates/core/src/config.rs'), 'utf8');
+    const match = rust.match(/pub const DEFAULT_EMBEDDING_MODEL_ID: &str = "([^"]+)";/);
+    expect(match?.[1]).toBe(defaultEmbeddingModelId);
+    // The gate limit of retrieval.rs belongs to that one model.
+    const retrieval = fs.readFileSync(path.join(__dirname, '../../crates/search/src/retrieval.rs'), 'utf8');
+    expect(retrieval).toContain('pub const TITAN_V2_MODEL_ID: &str = openbook_core::config::DEFAULT_EMBEDDING_MODEL_ID;');
   });
 });
 

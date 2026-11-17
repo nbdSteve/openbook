@@ -32,7 +32,7 @@ cargo run -p openbook-eval -- offline
 cargo run -p openbook-eval -- offline --check
 ```
 
-The first command runs from the live cache `evals/cache`. The second one also compares the hybrid metrics with `evals/baseline.json` and exits with code 1 when a metric fell by more than 0.01 (absolute), or when gate accuracy fell at all. A missing cache entry is an error. The command never skips a question.
+The first command runs from the live cache `evals/cache`. The second one also compares the hybrid metrics with `evals/baseline.json` and exits with code 1 when a metric fell by more than 0.01 (absolute), or when gate accuracy fell at all, or when the false-gate rate rose at all. Both the normal run and the cap-off run are checked. `--check` cannot be combined with `--write-baseline`. A missing cache entry is an error. The command never skips a question.
 
 When a change makes the metrics better, update the baseline in the same commit:
 
@@ -52,11 +52,11 @@ For tuning, `offline` takes these flags. They change the numbers for one run, an
 | `--max-per-document N` | The soft per-document cap |
 | `--dense-candidates N`, `--lexical-candidates N` | How many candidates each retriever returns |
 | `--chunk-tokens N` | The chunk target (300, 400, and 600 are in the cache) |
-| `--single-document` | Treat the whole PDF as one document |
+| `--cap-off` | Turn the per-document cap off: every chunk gets the same document ID (the chunks and their section titles do not change) |
 | `--gate any\|dense\|combined` | The gate rule: any BM25 hit, the dense distance only, or the dense distance or a strong lexical match |
 | `--gate-distance X`, `--gate-coverage X`, `--gate-matched N` | The numbers of the gate rule |
 
-The report always shows the single-document mode too, and the gate inputs and the gate sweep.
+The report always shows the cap-off mode too, and the gate inputs and the gate sweep.
 
 ### The grid
 
@@ -89,7 +89,7 @@ It reads the normal AWS environment (`AWS_PROFILE`, `AWS_REGION`; the Region is 
 AWS_PROFILE=<profile> AWS_REGION=ap-southeast-2 cargo run -p openbook-eval -- refresh --missing-only
 ```
 
-`AWS_PROFILE=<profile> AWS_REGION=ap-southeast-2 make eval-live-missing` (with `YES=1` to start) is the short form. It reuses `evals/cache/pages`, does no page transcription, and does not need PDFium. It calls Bedrock only for the Titan embeddings and the follow-up rewrites that the cache does not have: new or changed questions, and the chunks of the other chunk targets. It prints each call and an upper bound of the cost first, and starts only with `--yes`. It keeps the models that the cache was made with, so the cache keys stay valid, and it drops entries that no run needs.
+`AWS_PROFILE=<profile> AWS_REGION=ap-southeast-2 make eval-live-missing` (with `YES=1` to start) is the short form. It reuses `evals/cache/pages`, does no page transcription, and does not need PDFium. It calls Bedrock only for the Titan embeddings and the follow-up rewrites that the cache does not have: new or changed questions, and the chunks of the other chunk targets. It prints the number of calls of each kind (and the ID of every follow-up question that it will rewrite) and an upper bound of the cost first, and starts only with `--yes`. A rewrite that returns nothing stops the run with an error; the raw question is never stored as the rewrite. It keeps the models that the cache was made with, so the cache keys stay valid, and it drops entries that no run needs.
 
 ### Refresh the development cache (no AWS)
 
@@ -103,10 +103,10 @@ The pages are the PDF text layer, the embeddings are fake (hashed words), and a 
 
 - The search query of a question is the question, cleaned and cut like the API does. A `followup` question uses the cached rewrite of its `context`.
 - A chunk is relevant when its page range includes a labeled page. A chunk that includes only a page next to a labeled page has gain 1 for nDCG (the labeled page has gain 2).
-- The ranked lists are ten results deep, so that nDCG@10 has ten places. The API returns the first eight.
+- The API returns at most `final_sources` (8) chunks. Every metric reads that returned list, as it is.
 - Dense only and BM25 only use the same gate rule and the same fusion code on one list. A covered question that the gate cuts off has no results, so it counts as a miss. The false-gate rate shows how often that happens.
 - A `not_covered` or `off_topic` question is right when the gate gives no sources. The report gives the gate for covered questions, `not_covered`, `off_topic`, and both together.
-- Recall@5, Recall@8, and MRR read the list that the API returns (`final_sources` long). nDCG@10 reads a list that is ten deep, so it has ten places.
+- Recall@5, Recall@8, and MRR read the list that the API returns (`final_sources` long). nDCG@8 reads the first 8 places of the same list.
 
 ## The golden set
 
