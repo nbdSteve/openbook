@@ -337,6 +337,14 @@ pub fn chunk_pages(pages: &[(u32, String)]) -> Vec<Chunk> {
 /// `chunk_pages` with another target size in characters. Production uses `TARGET_CHARS`. The
 /// evaluation tries other sizes. The hard limit `MAX_CHARS` stays the same.
 pub fn chunk_pages_with(pages: &[(u32, String)], target: usize) -> Vec<Chunk> {
+    // The running headers and footers of the book go first, so no heading path, embedded text, or
+    // BM25 field holds them. The ingestion worker and the evaluation both come through here.
+    chunk_stripped_pages(&crate::headers::strip_running_lines(pages).pages, target)
+}
+
+/// Chunks pages as they are, with no removal of running lines. The evaluation uses it to measure
+/// what the removal changes.
+pub fn chunk_stripped_pages(pages: &[(u32, String)], target: usize) -> Vec<Chunk> {
     let mut chunks: Vec<Chunk> = Vec::new();
     let mut stack: Vec<(usize, String)> = Vec::new();
     let mut current = Building::default();
@@ -464,6 +472,36 @@ mod tests {
         );
         let indexes: Vec<u32> = chunks.iter().map(|c| c.index).collect();
         assert_eq!(indexes, [0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn running_headers_do_not_reach_the_heading_path() {
+        let pages = pages(&[
+            "# BOOK SECTION ONE\n\n## Rules\n\nFirst rule text.",
+            "# BOOK CHAPTER ONE\n\nMore about the rules.",
+            "# BOOK SECTION ONE\n\nEven more about the rules.",
+            "# BOOK CHAPTER ONE\n\nThe last words about the rules.",
+            "# BOOK SECTION ONE\n\nAn extra page.",
+            "# BOOK CHAPTER ONE\n\nAnd one more page.",
+        ]);
+        let clean = chunk_pages(&pages);
+        let paths: Vec<&str> = clean.iter().map(|c| c.heading_path.as_str()).collect();
+        assert!(
+            paths
+                .iter()
+                .all(|p| !p.contains("CHAPTER") || *p == "BOOK CHAPTER ONE"),
+            "{paths:?}"
+        );
+        let text: String = clean.iter().map(|c| c.text.as_str()).collect();
+        assert!(text.contains("The last words about the rules."));
+        // Without the removal, the later copies of the header are headings of their own.
+        let raw = chunk_stripped_pages(&pages, TARGET_CHARS);
+        assert!(
+            raw.len() > clean.len(),
+            "{} against {}",
+            raw.len(),
+            clean.len()
+        );
     }
 
     #[test]
