@@ -110,6 +110,8 @@ function CourseShell({ course, setCourse, conversationId }: CourseShellProps) {
     courseId: course.id,
     conversationId,
     courseModel: course.model,
+    courseStyle: course.tutoringStyle,
+    allowStyleChoice: course.allowStyleChoice,
     limits: me.limits,
     onConversationCreated,
     onActivity,

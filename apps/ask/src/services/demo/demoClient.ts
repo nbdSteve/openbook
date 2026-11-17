@@ -1,6 +1,6 @@
 import { sha256Hex } from '@/services/api/client';
 import { readChatEvents } from '@/services/api/sse';
-import type { ChatEvent } from '@/services/api/types';
+import type { ChatEvent, TutoringStyle } from '@/services/api/types';
 
 /**
  * The client of the public demo endpoint. This is the only module that knows its name and its
@@ -68,9 +68,19 @@ async function toDemoError(response: Response): Promise<DemoError> {
  * Ask one question. It yields the same events as the course chat. It throws DemoError before the
  * stream starts (limits, validation) and for a network failure.
  */
-export async function* askDemo(options: { message: string; conversationId?: string; signal?: AbortSignal }): AsyncGenerator<ChatEvent> {
+export async function* askDemo(options: {
+  message: string;
+  conversationId?: string;
+  /** Only when the visitor picked a style. Without it the server uses the style of the demo course. */
+  style?: TutoringStyle;
+  signal?: AbortSignal;
+}): AsyncGenerator<ChatEvent> {
   const body = new TextEncoder().encode(
-    JSON.stringify({ message: options.message, ...(options.conversationId ? { conversationId: options.conversationId } : {}) }),
+    JSON.stringify({
+      message: options.message,
+      ...(options.conversationId ? { conversationId: options.conversationId } : {}),
+      ...(options.style ? { style: options.style } : {}),
+    }),
   );
   let response: Response;
   try {

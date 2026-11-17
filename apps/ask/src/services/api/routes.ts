@@ -9,6 +9,7 @@ import type {
   Member,
   Message,
   ModelInfo,
+  TutoringStyle,
   UploadTarget,
 } from './types';
 
@@ -87,7 +88,7 @@ export const getInsights = (courseId: string, signal?: AbortSignal) =>
 /** Open the chat stream. Failures before the stream starts throw ApiError. */
 export async function openChat(
   courseId: string,
-  body: { conversationId?: string; message: string; model?: string },
+  body: { conversationId?: string; message: string; model?: string; style?: TutoringStyle },
   signal?: AbortSignal,
 ): Promise<ReadableStream<Uint8Array>> {
   const response = await apiRequest(`/api/courses/${enc(courseId)}/chat`, {

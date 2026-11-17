@@ -107,3 +107,33 @@ export function Select({ label, hint, error, className, children, ...props }: Se
     </FieldShell>
   );
 }
+
+interface CheckboxProps extends Omit<InputHTMLAttributes<HTMLInputElement>, 'type'> {
+  label: string;
+  hint?: ReactNode;
+}
+
+export function Checkbox({ label, hint, className, ...props }: CheckboxProps) {
+  const id = useId();
+  return (
+    <div className="flex items-start gap-3">
+      <input
+        id={id}
+        type="checkbox"
+        className={clsx('mt-0.5 h-5 w-5 shrink-0 cursor-pointer rounded border-border-strong accent-accent', className)}
+        aria-describedby={hint ? `${id}-hint` : undefined}
+        {...props}
+      />
+      <div className="space-y-1">
+        <label htmlFor={id} className="block cursor-pointer text-sm font-medium text-text-primary">
+          {label}
+        </label>
+        {hint && (
+          <div id={`${id}-hint`} className="text-xs text-text-tertiary">
+            {hint}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

@@ -5,7 +5,7 @@ import { Globe } from 'lucide-react';
 import { Alert } from '@/components/ui/Alert';
 import { Button } from '@/components/ui/Button';
 import { ConfirmDialog } from '@/components/ui/Dialog';
-import { Input, Select, Textarea } from '@/components/ui/Field';
+import { Checkbox, Input, Select, Textarea } from '@/components/ui/Field';
 import { TUTORING_STYLES } from '@/lib/constants';
 import { describeApiError } from '@/services/api/errors';
 import { deleteCourse, updateCourse } from '@/services/api/routes';
@@ -20,6 +20,7 @@ export function SettingsTab() {
   const [name, setName] = useState(course.name);
   const [description, setDescription] = useState(course.description);
   const [style, setStyle] = useState<TutoringStyle>(course.tutoringStyle);
+  const [allowStyleChoice, setAllowStyleChoice] = useState(course.allowStyleChoice);
   const [model, setModel] = useState(course.model);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
@@ -31,6 +32,7 @@ export function SettingsTab() {
     name.trim() !== course.name ||
     description.trim() !== course.description ||
     style !== course.tutoringStyle ||
+    allowStyleChoice !== course.allowStyleChoice ||
     model !== course.model;
 
   const save = async (event: FormEvent) => {
@@ -42,6 +44,7 @@ export function SettingsTab() {
         name: name.trim(),
         description: description.trim(),
         tutoringStyle: style,
+        allowStyleChoice,
         ...(models.length > 0 ? { model } : {}),
       });
       setCourse({ ...updated, inviteCode: updated.inviteCode ?? course.inviteCode });
@@ -75,7 +78,7 @@ export function SettingsTab() {
         <Input label="Course name" required maxLength={80} value={name} onChange={(e) => setName(e.target.value)} />
         <Textarea label="Description" maxLength={500} rows={3} value={description} onChange={(e) => setDescription(e.target.value)} />
         <Select
-          label="Tutoring style"
+          label={allowStyleChoice ? 'Default tutoring style' : 'Tutoring style'}
           value={style}
           onChange={(e) => setStyle(e.target.value as TutoringStyle)}
           hint={TUTORING_STYLES.find((s) => s.id === style)?.description}
@@ -86,6 +89,16 @@ export function SettingsTab() {
             </option>
           ))}
         </Select>
+        <Checkbox
+          label="Let learners change the style"
+          checked={allowStyleChoice}
+          onChange={(e) => setAllowStyleChoice(e.target.checked)}
+          hint={
+            allowStyleChoice
+              ? 'Learners can pick another style for each conversation. New conversations start with the default above.'
+              : 'Every conversation uses the style above. Learners see it, but cannot change it.'
+          }
+        />
         {models.length > 0 && (
           <Select
             label="Default model"

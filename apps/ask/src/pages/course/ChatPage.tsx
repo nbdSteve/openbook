@@ -111,7 +111,7 @@ export function ChatPage() {
               <Mascot mood="idle" size={96} className="mx-auto mb-4" />
               <h2 className="font-serif text-title font-medium text-text-primary">What would you like to learn?</h2>
               <p className="mx-auto mt-3 max-w-md font-serif text-lg text-text-secondary">
-                Ask anything about {course.name}. The tutor uses the {styleName(course.tutoringStyle)} style.
+                Ask anything about {course.name}. {chat.styleLocked ? `The tutor uses the ${styleName(chat.style)} style.` : `The tutor starts in the ${styleName(chat.style)} style. You can change it below.`}
               </p>
               <CourseMaterials courseId={course.id} role={course.role} />
             </div>
@@ -146,6 +146,10 @@ export function ChatPage() {
             usage={me.usage}
             model={chat.model}
             onModelChange={chat.setModel}
+            style={chat.style}
+            onStyleChange={chat.setStyle}
+            styleLocked={chat.styleLocked}
+            styleLockedReason={course.role === 'owner' ? 'Fixed in course settings' : 'Fixed by your teacher'}
             onSend={send}
             onStop={chat.stop}
             note={course.role === 'student' ? 'Your teacher can see the questions you ask in this course.' : undefined}

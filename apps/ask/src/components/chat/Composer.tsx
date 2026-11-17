@@ -1,8 +1,9 @@
 import { useId, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { clsx } from 'clsx';
 import { Eye, Send, Square } from 'lucide-react';
-import type { Usage } from '@/services/api/types';
+import type { TutoringStyle, Usage } from '@/services/api/types';
 import { GlobalModelNote, ModelPicker } from './ModelPicker';
+import { StylePicker } from './StylePicker';
 
 const MAX_LENGTH = 4000;
 
@@ -11,6 +12,11 @@ interface ComposerProps {
   usage: Usage;
   model: string;
   onModelChange: (id: string) => void;
+  style: TutoringStyle;
+  onStyleChange: (style: TutoringStyle) => void;
+  /** The course owner fixed the style. */
+  styleLocked?: boolean;
+  styleLockedReason?: string;
   disabledReason?: string;
   /** A calm, always-visible note under the box (students are told their teacher sees their questions). */
   note?: string;
@@ -18,7 +24,20 @@ interface ComposerProps {
   onStop: () => void;
 }
 
-export function Composer({ streaming, usage, model, onModelChange, disabledReason, note, onSend, onStop }: ComposerProps) {
+export function Composer({
+  streaming,
+  usage,
+  model,
+  onModelChange,
+  style,
+  onStyleChange,
+  styleLocked,
+  styleLockedReason,
+  disabledReason,
+  note,
+  onSend,
+  onStop,
+}: ComposerProps) {
   const [value, setValue] = useState('');
   const textarea = useRef<HTMLTextAreaElement>(null);
   const labelId = useId();
@@ -96,8 +115,11 @@ export function Composer({ streaming, usage, model, onModelChange, disabledReaso
           </button>
         )}
       </div>
-      <div className="mt-1.5 flex items-center justify-between gap-3">
-        <ModelPicker value={model} onChange={onModelChange} disabled={streaming} describedBy={`${labelId}-global`} />
+      <div className="mt-1.5 flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <ModelPicker value={model} onChange={onModelChange} disabled={streaming} describedBy={`${labelId}-global`} />
+          <StylePicker value={style} onChange={onStyleChange} disabled={streaming} locked={styleLocked} lockedReason={styleLockedReason} />
+        </div>
         <p
           className={clsx('min-w-0 shrink-0 px-1 text-right text-xs', remaining <= 5 ? 'text-warning' : 'text-text-muted')}
           aria-live="polite"

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { DEMO_DEFAULT_STYLE } from '@/lib/constants';
 import type { ChatMessage } from '@/components/chat/useChatController';
-import type { Attribution, Source } from '@/services/api/types';
+import type { Attribution, Source, TutoringStyle } from '@/services/api/types';
 import { askDemo, DEMO_MAX_AGE_MS, DEMO_MAX_TURNS, DemoError, describeDemoError, type DemoErrorKind } from '@/services/demo/demoClient';
 
 export interface DemoProblem {
@@ -17,6 +18,9 @@ export interface DemoChat {
   notice: string | null;
   /** The credit lines of the books, from the last answer. */
   attribution: Attribution[];
+  /** The style of the next question: the visitor's pick, else the style of the demo course. */
+  style: TutoringStyle;
+  setStyle: (style: TutoringStyle) => void;
   ask: (text: string) => Promise<boolean>;
   stop: () => void;
   reset: () => void;
@@ -39,6 +43,9 @@ export function useDemoChat(): DemoChat {
   const [attribution, setAttribution] = useState<Attribution[]>([]);
   const conversation = useRef<{ id: string; turns: number; startedAt: number } | null>(null);
   const abort = useRef<AbortController | null>(null);
+  const [picked, setPicked] = useState<TutoringStyle | null>(null);
+  const pickedRef = useRef<TutoringStyle | null>(null);
+  pickedRef.current = picked;
 
   useEffect(() => () => abort.current?.abort(), []);
 
@@ -74,7 +81,7 @@ export function useDemoChat(): DemoChat {
     let began = false;
     let finished = false;
     try {
-      for await (const event of askDemo({ message, conversationId: current?.id, signal: controller.signal })) {
+      for await (const event of askDemo({ message, conversationId: current?.id, style: pickedRef.current ?? undefined, signal: controller.signal })) {
         began = true;
         switch (event.type) {
           case 'meta': {
@@ -142,8 +149,9 @@ export function useDemoChat(): DemoChat {
     setMessages([]);
     setProblem(null);
     setNotice(null);
+    setPicked(null);
     setStatus('idle');
   }, []);
 
-  return { messages, status, problem, notice, attribution, ask, stop, reset };
+  return { messages, status, problem, notice, attribution, style: picked ?? DEMO_DEFAULT_STYLE, setStyle: setPicked, ask, stop, reset };
 }

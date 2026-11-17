@@ -2,6 +2,7 @@ import { lazy, Suspense, useRef, useState, type FormEvent } from 'react';
 import { Link } from 'react-router';
 import { ArrowUp, RotateCcw, Square } from 'lucide-react';
 import { buttonStyles } from '@/components/ui/buttonStyles';
+import { StylePicker } from '@/components/chat/StylePicker';
 import { Mascot } from '@/components/ui/Mascot';
 import { cn } from '@/lib/cn';
 import type { DemoConfig } from '@/config/loadConfig';
@@ -190,21 +191,24 @@ export function DemoCard({ demo }: { demo: DemoConfig | undefined }) {
             </div>
           )}
 
-          <ul className="-mx-5 mt-4 flex gap-2 overflow-x-auto px-5 pb-1 [mask-image:linear-gradient(to_right,transparent,black_1.25rem,black_calc(100%-2rem),transparent)] sm:mx-0 sm:flex-wrap sm:overflow-visible sm:px-0 sm:[mask-image:none]" aria-label="Example questions">
-            {examples.map((example) => (
-              <li key={example} className="shrink-0">
-                <button
-                  type="button"
-                  // Not `disabled`: a scroll area on a phone needs a focusable child, and the chips are it.
-                  aria-disabled={streaming || undefined}
-                  onClick={() => !streaming && void submit(example)}
-                  className="min-h-9 whitespace-nowrap rounded-full border border-border bg-bg-primary px-3.5 py-1.5 text-left text-sm text-text-secondary transition-colors hover:border-border-strong hover:text-text-primary aria-disabled:opacity-50"
-                >
-                  {example}
-                </button>
-              </li>
-            ))}
-          </ul>
+          <div className="mt-4 flex items-start gap-2">
+            <StylePicker value={chat.style} onChange={chat.setStyle} disabled={streaming} placement="down" className="shrink-0" />
+            <ul className="-mr-5 flex min-w-0 flex-1 gap-2 overflow-x-auto pb-1 pr-5 [mask-image:linear-gradient(to_right,black_calc(100%-2rem),transparent)] sm:mr-0 sm:flex-wrap sm:overflow-visible sm:pr-0 sm:[mask-image:none]" aria-label="Example questions">
+              {examples.map((example) => (
+                <li key={example} className="shrink-0">
+                  <button
+                    type="button"
+                    // Not `disabled`: a scroll area on a phone needs a focusable child, and the chips are it.
+                    aria-disabled={streaming || undefined}
+                    onClick={() => !streaming && void submit(example)}
+                    className="min-h-9 whitespace-nowrap rounded-full border border-border bg-bg-primary px-3.5 py-1.5 text-left text-sm text-text-secondary transition-colors hover:border-border-strong hover:text-text-primary aria-disabled:opacity-50"
+                  >
+                    {example}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
 
           <Credits credits={credits} />
         </div>

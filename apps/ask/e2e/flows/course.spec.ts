@@ -265,6 +265,67 @@ test('a member can switch the model for a chat', async () => {
   await expect(student.getByRole('button', { name: 'Stop answer' })).toHaveCount(0, { timeout: CHAT_TIMEOUT });
 });
 
+test('a member changes the tutoring style in the middle of a conversation, and the owner can lock it', async () => {
+  const styleButton = (name: string) => student.getByRole('button', { name: new RegExp(`Tutoring style: ${name}`) });
+  const lastAnswer = () => student.getByTestId('assistant-message').last();
+  const sendAndWait = async (text: string) => {
+    await student.getByLabel('Message to Ask').fill(text);
+    await student.getByRole('button', { name: 'Send message' }).click();
+    await expect(student.getByRole('button', { name: 'Stop answer' })).toHaveCount(0, { timeout: CHAT_TIMEOUT });
+    await expect(lastAnswer()).toContainText(/\S/);
+  };
+
+  // A new conversation starts with the course default (the course was made with Step by step).
+  await student.goto(`/ask/courses/${courseId}`);
+  await expect(styleButton('Step by step')).toBeVisible();
+  await sendAndWait('Name one kind of triangle.');
+  // The fake model says which style reached it. Real models do not, so the deployed run skips this.
+  if (!DEPLOYED) await expect(lastAnswer()).toContainText('Tutoring style in use: step_by_step.');
+
+  // The pick applies from the next message, in the same conversation.
+  const conversation = student.url();
+  await styleButton('Step by step').click();
+  const menu = student.getByRole('menu', { name: /Tutoring style/ });
+  await expect(menu.getByRole('menuitemradio')).toHaveCount(5);
+  await menu.getByRole('menuitemradio', { name: /Hints/ }).click();
+  await expect(styleButton('Hints')).toBeFocused();
+  await sendAndWait('And a right triangle?');
+  expect(student.url()).toBe(conversation);
+  if (!DEPLOYED) await expect(lastAnswer()).toContainText('Tutoring style in use: hints.');
+  // A follow-up keeps it, and so does a reload. A new chat goes back to the default.
+  await sendAndWait('One more, please.');
+  if (!DEPLOYED) await expect(lastAnswer()).toContainText('Tutoring style in use: hints.');
+  await student.reload();
+  await expect(styleButton('Hints')).toBeVisible();
+  await student.goto(`/ask/courses/${courseId}`);
+  await expect(styleButton('Step by step')).toBeVisible();
+
+  // The owner locks the course. The student sees the fixed style and the reason, and cannot change it.
+  await teacher.goto(`/portal/courses/${courseId}?tab=settings`);
+  const lock = teacher.getByLabel('Let learners change the style');
+  await expect(lock).toBeChecked();
+  await lock.uncheck();
+  await teacher.getByRole('button', { name: 'Save changes' }).click();
+  await expect(teacher.getByText('Settings saved')).toBeVisible();
+  await student.goto(conversation);
+  await expect(styleButton('Step by step')).toHaveAttribute('aria-disabled', 'true');
+  await expect(student.getByTestId('style-locked-reason')).toHaveText('Fixed by your teacher');
+  await styleButton('Step by step').click();
+  await expect(student.getByRole('menu')).toHaveCount(0);
+  if (!DEPLOYED) {
+    await sendAndWait('Locked now.');
+    await expect(lastAnswer()).toContainText('Tutoring style in use: step_by_step.');
+  }
+
+  // Unlock again, so the other steps see the normal course.
+  await teacher.reload();
+  await teacher.getByLabel('Let learners change the style').check();
+  await teacher.getByRole('button', { name: 'Save changes' }).click();
+  await expect(teacher.getByText('Settings saved')).toBeVisible();
+  await student.goto(`/ask/courses/${courseId}`);
+  await expect(styleButton('Step by step')).not.toHaveAttribute('aria-disabled', 'true');
+});
+
 test('the teacher sees the student question in Insights', async () => {
   await teacher.goto(`/portal/courses/${courseId}?tab=insights`);
   const row = teacher.getByRole('listitem').filter({ hasText: QUESTION });

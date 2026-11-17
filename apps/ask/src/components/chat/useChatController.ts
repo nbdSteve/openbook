@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { describeApiError } from '@/services/api/errors';
 import { getConversation, openChat } from '@/services/api/routes';
 import { readChatEvents } from '@/services/api/sse';
-import type { Limits, Message, Source } from '@/services/api/types';
+import type { Limits, Message, Source, TutoringStyle } from '@/services/api/types';
 
 export interface ChatMessage extends Message {
   /** Set only on assistant messages that are not complete. */
@@ -21,6 +21,14 @@ export interface ChatController {
   /** The catalog ID the next message uses: the picked model, else the conversation's, else the course default. */
   model: string;
   setModel: (id: string) => void;
+  /**
+   * The style the next message uses. A locked course always uses its own style. Otherwise it is the picked style,
+   * else the conversation's, else the course default.
+   */
+  style: TutoringStyle;
+  setStyle: (style: TutoringStyle) => void;
+  /** The course owner fixed the style, so learners cannot change it. */
+  styleLocked: boolean;
   /** Returns false when the server refused the message before the stream began. */
   send: (text: string) => Promise<boolean>;
   stop: () => void;
@@ -33,6 +41,10 @@ interface Options {
   conversationId: string | undefined;
   /** The course default model. */
   courseModel: string;
+  /** The course default style. */
+  courseStyle: TutoringStyle;
+  /** False when the course owner locked the style. */
+  allowStyleChoice: boolean;
   limits: Limits;
   onConversationCreated: (conversationId: string) => void;
   onActivity: () => void;
@@ -45,13 +57,24 @@ const localId = (prefix: string) => `${prefix}-${Date.now()}-${localCounter++}`;
  * Owns the messages of the open conversation and the streaming answer. It lives above the routes,
  * so a stream survives the switch from "new chat" to the new conversation's URL.
  */
-export function useChatController({ courseId, conversationId, courseModel, limits, onConversationCreated, onActivity }: Options): ChatController {
+export function useChatController({
+  courseId,
+  conversationId,
+  courseModel,
+  courseStyle,
+  allowStyleChoice,
+  limits,
+  onConversationCreated,
+  onActivity,
+}: Options): ChatController {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [status, setStatus] = useState<ChatController['status']>(conversationId ? 'loading' : 'idle');
   const [loadError, setLoadError] = useState<string | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
   const [picked, setPicked] = useState<string | null>(null);
   const [conversationModel, setConversationModel] = useState<string | undefined>(undefined);
+  const [pickedStyle, setPickedStyle] = useState<TutoringStyle | null>(null);
+  const [conversationStyle, setConversationStyle] = useState<TutoringStyle | undefined>(undefined);
 
   // The conversation that `messages` shows. A new chat has none until the `meta` event.
   const shownId = useRef<string | undefined>(undefined);
@@ -74,6 +97,8 @@ export function useChatController({ courseId, conversationId, courseModel, limit
     setSendError(null);
     setPicked(null);
     setConversationModel(undefined);
+    setPickedStyle(null);
+    setConversationStyle(undefined);
     if (!conversationId) {
       setStatus('idle');
       return;
@@ -84,6 +109,7 @@ export function useChatController({ courseId, conversationId, courseModel, limit
         if (controller.signal.aborted) return;
         setMessages(result.messages);
         setConversationModel(result.conversation.model);
+        setConversationStyle(result.conversation.style);
         setStatus('idle');
       },
       (error: unknown) => {
@@ -104,6 +130,8 @@ export function useChatController({ courseId, conversationId, courseModel, limit
       // Always send the model that the picker shows. After a failed answer the server may still hold the
       // conversation's old model, so leaving it out could use a different model than the one on screen.
       const currentModel = picked ?? conversationModel ?? courseModel;
+      // The same for the style. A locked course sends none: the server uses the course style.
+      const currentStyle = allowStyleChoice ? (pickedStyle ?? conversationStyle ?? courseStyle) : undefined;
 
       streamAbort.current?.abort();
       const controller = new AbortController();
@@ -126,7 +154,7 @@ export function useChatController({ courseId, conversationId, courseModel, limit
       let began = false;
       let finished = false;
       try {
-        const body = await openChat(courseId, { conversationId: shownId.current, message, model: currentModel }, controller.signal);
+        const body = await openChat(courseId, { conversationId: shownId.current, message, model: currentModel, ...(currentStyle ? { style: currentStyle } : {}) }, controller.signal);
         began = true;
         for await (const event of readChatEvents(body)) {
           switch (event.type) {
@@ -138,6 +166,8 @@ export function useChatController({ courseId, conversationId, courseModel, limit
               }
               setConversationModel(event.model || undefined);
               setPicked(null);
+              if (event.style) setConversationStyle(event.style);
+              setPickedStyle(null);
               patch(assistantId, (m) => ({ ...m, model: event.model || undefined }));
               break;
             case 'sources':
@@ -185,12 +215,26 @@ export function useChatController({ courseId, conversationId, courseModel, limit
         onActivity();
       }
     },
-    [courseId, picked, conversationModel, courseModel, limits, onConversationCreated, onActivity],
+    [courseId, picked, conversationModel, courseModel, pickedStyle, conversationStyle, courseStyle, allowStyleChoice, limits, onConversationCreated, onActivity],
   );
 
   const stop = useCallback(() => streamAbort.current?.abort(), []);
   const dismissSendError = useCallback(() => setSendError(null), []);
 
   const model = picked ?? conversationModel ?? courseModel;
-  return { messages, status, loadError, sendError, model, setModel: setPicked, send, stop, dismissSendError };
+  const style = allowStyleChoice ? (pickedStyle ?? conversationStyle ?? courseStyle) : courseStyle;
+  return {
+    messages,
+    status,
+    loadError,
+    sendError,
+    model,
+    setModel: setPicked,
+    style,
+    setStyle: setPickedStyle,
+    styleLocked: !allowStyleChoice,
+    send,
+    stop,
+    dismissSendError,
+  };
 }

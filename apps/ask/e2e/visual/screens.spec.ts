@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
-import { COURSE_ID, CONVERSATIONS, OWNER_COURSE, STUDENT_COURSE_ID } from './data';
+import { COURSE_ID, CONVERSATIONS, OWNER_COURSE, STUDENT_COURSE, STUDENT_COURSE_ID } from './data';
 import { expectNoHorizontalOverflow, expectNoSeriousA11yViolations, prepare, type MockOptions, scrollThrough, VIEWPORTS, type Theme } from './fixtures';
 
 // Screenshots go to an ignored folder. Read them to check the screens by eye.
@@ -44,6 +44,18 @@ const DEMO_SCREENS: Screen[] = [
       await expect(thread.getByText('Which root would you like to check first?')).toBeVisible();
       await expect(page.getByRole('button', { name: 'Start over' })).toBeVisible();
       await expect(page.getByLabel('Your question')).toHaveAttribute('placeholder', 'Ask a follow-up');
+    },
+    fullPage: true,
+  },
+  {
+    name: 'landing-demo-style-open',
+    url: '/',
+    signedIn: false,
+    ready: heading(/answers from it/i),
+    act: async (page) => {
+      await expect(page.getByTestId('demo-thread').locator('.katex').first()).toBeVisible();
+      await page.getByRole('button', { name: /Tutoring style: Direct/ }).click();
+      await expect(page.getByRole('menu', { name: /Tutoring style/ }).getByRole('menuitemradio')).toHaveCount(5);
     },
     fullPage: true,
   },
@@ -368,6 +380,50 @@ const SCREENS: Screen[] = [
     act: async (page) => {
       await page.getByLabel('Model for your next message').selectOption('gpt-6-1-sol');
       await expect(page.getByTestId('global-note')).toBeVisible();
+    },
+  },
+  {
+    name: 'chat-style-picker-open',
+    url: `/ask/courses/${COURSE_ID}/c/${CONVERSATIONS[0].id}`,
+    signedIn: true,
+    ready: async (page) => {
+      await expect(page.getByRole('button', { name: /Tutoring style: Socratic/ })).toBeVisible();
+    },
+    act: async (page) => {
+      await page.getByRole('button', { name: /Tutoring style/ }).click();
+      const menu = page.getByRole('menu', { name: /Tutoring style/ });
+      await expect(menu.getByRole('menuitemradio')).toHaveCount(5);
+      await expect(menu.getByRole('menuitemradio', { name: /Socratic/ })).toBeFocused();
+    },
+  },
+  {
+    name: 'chat-style-changed',
+    url: `/ask/courses/${COURSE_ID}/c/${CONVERSATIONS[0].id}`,
+    signedIn: true,
+    ready: async (page) => {
+      await expect(page.getByRole('button', { name: /Tutoring style: Socratic/ })).toBeVisible();
+    },
+    act: async (page) => {
+      await page.getByRole('button', { name: /Tutoring style/ }).click();
+      await page.getByRole('menuitemradio', { name: /Step by step/ }).click();
+      await expect(page.getByRole('button', { name: /Tutoring style: Step by step/ })).toBeFocused();
+    },
+  },
+  {
+    name: 'chat-style-locked',
+    url: `/ask/courses/${STUDENT_COURSE_ID}`,
+    signedIn: true,
+    ready: async (page) => {
+      await heading('What would you like to learn?', 2)(page);
+      const picker = page.getByRole('button', { name: /Tutoring style: Hints/ });
+      await expect(picker).toHaveAttribute('aria-disabled', 'true');
+      await expect(page.getByTestId('style-locked-reason')).toHaveText('Fixed by your teacher');
+    },
+    mock: {
+      override: (path, method) =>
+        method === 'GET' && path === `/api/courses/${STUDENT_COURSE_ID}`
+          ? { status: 200, body: { course: { ...STUDENT_COURSE, allowStyleChoice: false } } }
+          : undefined,
     },
   },
   {

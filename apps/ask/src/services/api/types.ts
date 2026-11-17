@@ -1,7 +1,12 @@
 // Types from docs/api.md. Keep this file in step with the contract.
 
 export type Role = 'owner' | 'student';
-export type TutoringStyle = 'socratic' | 'hints' | 'step_by_step' | 'concepts' | 'direct';
+export const TUTORING_STYLE_IDS = ['socratic', 'hints', 'step_by_step', 'concepts', 'direct'] as const;
+export type TutoringStyle = (typeof TUTORING_STYLE_IDS)[number];
+
+export function isTutoringStyle(value: unknown): value is TutoringStyle {
+  return typeof value === 'string' && (TUTORING_STYLE_IDS as readonly string[]).includes(value);
+}
 export type DocumentStatus = 'uploading' | 'queued' | 'processing' | 'ready' | 'failed' | 'deleting';
 
 export interface User {
@@ -32,7 +37,10 @@ export interface Course {
   id: string;
   name: string;
   description: string;
+  /** The default style. It is the only style when `allowStyleChoice` is false. */
   tutoringStyle: TutoringStyle;
+  /** Learners can pick another style for a conversation. */
+  allowStyleChoice: boolean;
   /** The course default model, a ModelInfo.id. */
   model: string;
   role: Role;
@@ -78,6 +86,8 @@ export interface Conversation {
   title: string;
   /** Catalog ID of the last answer. */
   model: string;
+  /** The style of the last answer. Older conversations have none. */
+  style?: TutoringStyle;
   createdAt: string;
   updatedAt: string;
 }
@@ -98,6 +108,8 @@ export interface Message {
   sources?: Source[];
   /** Assistant messages only: the catalog ID that wrote it. */
   model?: string;
+  /** Assistant messages only: the style that the answer used. */
+  style?: TutoringStyle;
 }
 
 export interface ModelInfo {
@@ -127,6 +139,7 @@ export interface CourseInput {
   name: string;
   description?: string;
   tutoringStyle?: TutoringStyle;
+  allowStyleChoice?: boolean;
   model?: string;
 }
 
@@ -135,6 +148,8 @@ export type ChatEvent =
       type: 'meta';
       conversationId: string;
       model: string;
+      /** The style of the answer: the one the server used. */
+      style?: TutoringStyle;
       /** The course chat sends these three. The demo does not. */
       userMessageId?: string;
       assistantMessageId?: string;

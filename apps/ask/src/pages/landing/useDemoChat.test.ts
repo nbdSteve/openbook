@@ -15,7 +15,7 @@ const json = (status: number, code: string, extra: Record<string, unknown> = {})
 
 /** The bodies that the fake endpoint sends, in order. Each call also records the request body. */
 function fakeEndpoint(responses: (Response | (() => Response))[]) {
-  const bodies: { message: string; conversationId?: string }[] = [];
+  const bodies: { message: string; conversationId?: string; style?: string }[] = [];
   const queue = [...responses];
   vi.stubGlobal(
     'fetch',
@@ -177,5 +177,25 @@ describe('useDemoChat', () => {
     release?.();
     await act(async () => void (await first));
     expect(bodies.map((b) => b.message)).toEqual(['first']);
+  });
+
+  it('sends no style until the visitor picks one, then keeps it for the follow-ups until Start over', async () => {
+    const bodies = fakeEndpoint([new Response(answer('C1', 'One')), new Response(answer('C1', 'Two')), new Response(answer('C1', 'Three')), new Response(answer('C2', 'Four'))]);
+    const { result } = renderHook(() => useDemoChat());
+    expect(result.current.style).toBe('direct');
+    await act(async () => void (await result.current.ask('first')));
+    expect(bodies[0]).not.toHaveProperty('style');
+
+    act(() => result.current.setStyle('socratic'));
+    expect(result.current.style).toBe('socratic');
+    await act(async () => void (await result.current.ask('second')));
+    await act(async () => void (await result.current.ask('third')));
+    expect(bodies[1]).toEqual({ message: 'second', conversationId: 'C1', style: 'socratic' });
+    expect(bodies[2]).toEqual({ message: 'third', conversationId: 'C1', style: 'socratic' });
+
+    act(() => result.current.reset());
+    expect(result.current.style).toBe('direct');
+    await act(async () => void (await result.current.ask('fourth')));
+    expect(bodies[3]).toEqual({ message: 'fourth' });
   });
 });

@@ -1,4 +1,4 @@
-import type { Attribution, ChatEvent, Source } from './types';
+import { isTutoringStyle, type Attribution, type ChatEvent, type Source } from './types';
 
 export interface SseMessage {
   event: string;
@@ -102,6 +102,7 @@ export function toChatEvent(message: SseMessage): ChatEvent | null {
         type: 'meta',
         conversationId: String(payload.conversationId),
         model: String(payload.model ?? ''),
+        ...(isTutoringStyle(payload.style) && { style: payload.style }),
         ...(text(payload.userMessageId) !== undefined && { userMessageId: text(payload.userMessageId) }),
         ...(text(payload.assistantMessageId) !== undefined && { assistantMessageId: text(payload.assistantMessageId) }),
         ...(text(payload.title) !== undefined && { title: text(payload.title) }),
