@@ -241,7 +241,13 @@ describe('the deploy workflow', () => {
   test('reads every account value from an environment secret, never a variable', () => {
     expect(deploy.text).not.toMatch(/\bvars\./);
     const secrets = new Set([...deploy.text.matchAll(/secrets\.([A-Z_]+)/g)].map((m) => m[1]));
-    expect([...secrets].sort()).toEqual(['AWS_ACCOUNT_ID', 'AWS_CLOUDFORMATION_EXECUTION_ROLE_ARN', 'AWS_DEPLOY_ROLE_ARN']);
+    expect([...secrets].sort()).toEqual([
+      'AWS_ACCOUNT_ID',
+      'AWS_CLOUDFORMATION_EXECUTION_ROLE_ARN',
+      'AWS_DEPLOY_ROLE_ARN',
+      'OPENBOOK_CERTIFICATE_ARN',
+      'OPENBOOK_HOSTED_ZONE_ID',
+    ]);
     expect(deploy.text).not.toMatch(/arn:aws:iam::\d/);
   });
 
@@ -257,6 +263,29 @@ describe('the deploy workflow', () => {
     expect(step?.run).toContain('--role-arn "$AWS_CLOUDFORMATION_EXECUTION_ROLE_ARN"');
     expect(step?.env?.AWS_CLOUDFORMATION_EXECUTION_ROLE_ARN).toBe('${{ secrets.AWS_CLOUDFORMATION_EXECUTION_ROLE_ARN }}');
     expect(step?.run).not.toMatch(/--all|Openbook-dev/);
+  });
+
+  test('passes the certificate ARN and the hosted zone ID as parameters of Openbook-prod, from secrets', () => {
+    const step = deploySteps.find((s) => s.name === 'deploy');
+    expect(step?.run).toContain('--parameters "Openbook-prod:CertificateArn=$OPENBOOK_CERTIFICATE_ARN"');
+    expect(step?.run).toContain('--parameters "Openbook-prod:HostedZoneId=$OPENBOOK_HOSTED_ZONE_ID"');
+    expect(step?.env?.OPENBOOK_CERTIFICATE_ARN).toBe('${{ secrets.OPENBOOK_CERTIFICATE_ARN }}');
+    expect(step?.env?.OPENBOOK_HOSTED_ZONE_ID).toBe('${{ secrets.OPENBOOK_HOSTED_ZONE_ID }}');
+    // The build job has no secret, so the synthesized template cannot hold either value.
+    expect((build.steps.map((x) => JSON.stringify(x))).join('')).not.toMatch(/secrets\./);
+  });
+
+  test('masks a hosted zone ID in the deploy log', () => {
+    const step = deploySteps.find((s) => s.name === 'deploy');
+    expect(step?.run).toContain('<zone>');
+  });
+
+  test('reads SiteUrl, and requires the custom domain of cdk.json when there is one', () => {
+    const step = deploySteps.find((s) => s.name === 'read the site URL');
+    expect(step?.run).toContain('.context.stageDomains.prod.domainName');
+    expect(step?.run).toContain('"https://$domain"');
+    const cdkJson = JSON.parse(read('infra/cdk.json')) as { context: { stageDomains: { prod: { domainName: string } } } };
+    expect(cdkJson.context.stageDomains.prod.domainName).toBe('ask.steve.gg');
   });
 
   test('sends the cdk deploy output to a file and prints only a filtered summary', () => {
@@ -275,7 +304,7 @@ describe('the deploy workflow', () => {
     const root = deploySteps.find((s) => s.name === 'smoke test /');
     expect(health?.run).toContain('/api/health');
     expect(health?.run).toContain('.ok == true');
-    expect(root?.run).toContain('!= 200');
+    expect(root?.run).toContain('= 200');
     expect(names.indexOf('smoke test /api/health')).toBeGreaterThan(deployAt);
     expect(names.indexOf('smoke test /')).toBeGreaterThan(deployAt);
   });
@@ -476,5 +505,72 @@ describe('the retrieval evaluation', () => {
     // The grid is offline: no profile, no Bedrock.
     expect(target('eval-grid')).toMatch(/openbook-eval -- grid\n/);
     expect(target('eval-grid')).not.toMatch(/AWS|Bedrock/);
+  });
+});
+
+describe('the require the deployment configuration step', () => {
+  const step = (deploy.wf.jobs.deploy as Job).steps.find((x) => x.name === 'require the deployment configuration');
+  const account = '123456789012';
+  const good: Record<string, string> = {
+    AWS_ACCOUNT_ID: account,
+    AWS_DEPLOY_ROLE_ARN: `arn:aws:iam::${account}:role/deploy`,
+    AWS_CLOUDFORMATION_EXECUTION_ROLE_ARN: `arn:aws:iam::${account}:role/exec`,
+    OPENBOOK_CERTIFICATE_ARN: `arn:aws:acm:us-east-1:${account}:certificate/12345678-abcd-4321-abcd-123456789012`,
+    OPENBOOK_HOSTED_ZONE_ID: 'Z0123456789ABCDEFGHIJ',
+  };
+
+  const run = (override: Record<string, string | undefined>): { status: number | null; output: string } => {
+    const env: Record<string, string> = { PATH: process.env.PATH ?? '', HOME: os.tmpdir(), ...good };
+    for (const [k, v] of Object.entries(override)) {
+      if (v === undefined) delete env[k];
+      else env[k] = v;
+    }
+    const result = spawnSync('bash', ['-e', '-c', step?.run ?? ''], { encoding: 'utf8', env });
+    return { status: result.status, output: result.stdout + result.stderr };
+  };
+
+  test('declares both new secrets in its environment', () => {
+    expect(step?.env?.OPENBOOK_CERTIFICATE_ARN).toBe('${{ secrets.OPENBOOK_CERTIFICATE_ARN }}');
+    expect(step?.env?.OPENBOOK_HOSTED_ZONE_ID).toBe('${{ secrets.OPENBOOK_HOSTED_ZONE_ID }}');
+  });
+
+  test('accepts a consistent configuration', () => {
+    expect(run({}).status).toBe(0);
+  });
+
+  test.each(['OPENBOOK_CERTIFICATE_ARN', 'OPENBOOK_HOSTED_ZONE_ID'])('refuses a missing %s, and names it', (name) => {
+    for (const missing of [undefined, '']) {
+      const result = run({ [name]: missing });
+      expect(result.status).toBe(1);
+      expect(result.output).toContain(name);
+    }
+  });
+
+  test.each([
+    ['a certificate in another Region', `arn:aws:acm:ap-southeast-2:${account}:certificate/12345678-abcd-4321-abcd-123456789012`],
+    ['a certificate of another account', 'arn:aws:acm:us-east-1:999999999999:certificate/12345678-abcd-4321-abcd-123456789012'],
+    ['a role ARN', `arn:aws:iam::${account}:role/exec`],
+    ['a certificate with a suffix', `arn:aws:acm:us-east-1:${account}:certificate/12345678-abcd-4321-abcd-123456789012/x`],
+    ['a certificate ID, not an ARN', '12345678-abcd-4321-abcd-123456789012'],
+  ])('refuses %s as OPENBOOK_CERTIFICATE_ARN, and prints no value', (_what, value) => {
+    const result = run({ OPENBOOK_CERTIFICATE_ARN: value });
+    expect(result.status).toBe(1);
+    expect(result.output).toContain('OPENBOOK_CERTIFICATE_ARN');
+    expect(result.output).not.toContain(value);
+  });
+
+  test.each(['z0123456789', '/hostedzone/Z0123456789', 'Z!', 'Z012345678901234567890123456789012', 'Z0123 456', 'Z01\nX'])(
+    'refuses %j as OPENBOOK_HOSTED_ZONE_ID, and prints no value',
+    (value) => {
+      const result = run({ OPENBOOK_HOSTED_ZONE_ID: value });
+      expect(result.status).toBe(1);
+      expect(result.output).toContain('OPENBOOK_HOSTED_ZONE_ID');
+      expect(result.output).not.toContain(value);
+    },
+  );
+
+  test('never prints a value of a good configuration', () => {
+    const result = run({});
+    for (const value of Object.values(good)) expect(result.output).not.toContain(value);
   });
 });

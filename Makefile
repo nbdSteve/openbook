@@ -51,7 +51,7 @@ help: ## Show this list
 	@echo "Openbook commands:"
 	@awk 'BEGIN { FS = ":.*## " } /^[a-zA-Z0-9_-]+:.*## / { printf "  %-18s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 	@echo
-	@echo "Variables: STAGE=dev|prod (deploy), ALLOW_PROD=1 (needed for STAGE=prod), OPENBOOK_EMULATOR_PORT (default 9297)."
+	@echo "Variables: STAGE=dev|prod (deploy), ALLOW_PROD=1 (needed for STAGE=prod, with OPENBOOK_CERTIFICATE_ARN and OPENBOOK_HOSTED_ZONE_ID), OPENBOOK_EMULATOR_PORT (default 9297)."
 
 .PHONY: check
 check: ## Run every formatter check, linter, type check, and unit test
@@ -133,6 +133,9 @@ synth: ## Synthesize the CDK app for STAGE (needs built Lambda and web assets)
 	@$(call npm_install,infra)
 	cd infra && npx cdk synth --quiet -c stage=$(STAGE)
 
+# Prod has a custom domain (infra/cdk.json), so its certificate and hosted zone are parameters.
+DEPLOY_PARAMETERS = $(if $(filter prod,$(STAGE)),--parameters "Openbook-prod:CertificateArn=$$OPENBOOK_CERTIFICATE_ARN" --parameters "Openbook-prod:HostedZoneId=$$OPENBOOK_HOSTED_ZONE_ID")
+
 .PHONY: deploy
 deploy: ## Build and deploy Openbook-<stage> with your AWS_PROFILE (STAGE=dev by default)
 	@case "$(STAGE)" in \
@@ -146,6 +149,9 @@ deploy: ## Build and deploy Openbook-<stage> with your AWS_PROFILE (STAGE=dev by
 	@if [ -z "$${AWS_PROFILE:-}" ] && [ -z "$${AWS_ACCESS_KEY_ID:-}" ]; then \
 	  echo "error: set AWS_PROFILE (or AWS credentials) for the account to deploy to" >&2; exit 1; \
 	fi
+	@if [ "$(STAGE)" = prod ] && { [ -z "$${OPENBOOK_CERTIFICATE_ARN:-}" ] || [ -z "$${OPENBOOK_HOSTED_ZONE_ID:-}" ]; }; then \
+	  echo "error: prod has a custom domain. Set OPENBOOK_CERTIFICATE_ARN (an ACM certificate in us-east-1) and OPENBOOK_HOSTED_ZONE_ID (a Route 53 zone ID)." >&2; exit 1; \
+	fi
 	$(MAKE) build-lambdas build-web
 	@$(call npm_install,infra)
-	cd infra && npx cdk deploy Openbook-$(STAGE) -c stage=$(STAGE)
+	cd infra && npx cdk deploy Openbook-$(STAGE) -c stage=$(STAGE) $(DEPLOY_PARAMETERS)
