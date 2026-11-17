@@ -86,20 +86,23 @@ export async function mockBackend(page: Page, options: MockOptions = {}) {
   const courses = options.courses ?? COURSES;
   await page.route('**/config.json', (route) => json(route, options.demo === 'off' ? CONFIG : { ...CONFIG, demo: DEMO_CONFIG }));
   await page.route('**/api/demo/chat', async (route) => {
-    const stream = (body: string) => route.fulfill({ status: 200, contentType: 'text/event-stream', body });
+    // The demo route sets this header on every response. A response without it is not from the demo.
+    const headers = { 'x-openbook-demo': '1' };
+    const stream = (body: string) => route.fulfill({ status: 200, contentType: 'text/event-stream', headers, body });
+    const fail = (status: number, body: unknown) => route.fulfill({ status, contentType: 'application/json', headers, body: JSON.stringify(body) });
     switch (options.demoMode ?? 'answer') {
       case 'not_covered':
         return stream(DEMO_NOT_COVERED_STREAM);
       case 'stream_error':
         return stream(DEMO_ERROR_STREAM);
       case 'rate_limited':
-        return json(route, { error: { code: 'demo_rate_limited', message: 'Slow down', retryAfterSeconds: 42 } }, 429);
+        return fail(429, { error: { code: 'demo_rate_limited', message: 'Slow down', retryAfterSeconds: 42 } });
       case 'busy':
-        return json(route, { error: { code: 'demo_busy', message: 'Daily budget used' } }, 503);
+        return fail(503, { error: { code: 'demo_busy', message: 'Daily budget used' } });
       case 'unavailable':
-        return json(route, { error: { code: 'demo_unavailable', message: 'Off' } }, 503);
+        return fail(503, { error: { code: 'demo_unavailable', message: 'Off' } });
       case 'invalid':
-        return json(route, { error: { code: 'invalid_request', message: 'The question must be 1 to 300 characters.' } }, 400);
+        return fail(400, { error: { code: 'invalid_request', message: 'The question must be 1 to 300 characters.' } });
       case 'slow':
         // Hold the answer so the screen shows the waiting state.
         await new Promise((resolve) => setTimeout(resolve, 20_000));
