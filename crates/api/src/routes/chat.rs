@@ -35,7 +35,7 @@ use crate::sse::{ChatEvent, sse_response};
 use crate::{AppState, validate};
 
 /// Events wait in this channel until the SSE connection takes them.
-const EVENT_BUFFER: usize = 256;
+pub(crate) const EVENT_BUFFER: usize = 256;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -296,11 +296,11 @@ async fn prepare(
 }
 
 /// Sends an event. A closed channel means the client left; the task goes on, so the answer is still saved.
-async fn emit(tx: &mpsc::Sender<ChatEvent>, event: ChatEvent) {
+pub(crate) async fn emit(tx: &mpsc::Sender<ChatEvent>, event: ChatEvent) {
     let _ = tx.send(event).await;
 }
 
-fn error_event(code: &str, message: &str) -> ChatEvent {
+pub(crate) fn error_event(code: &str, message: &str) -> ChatEvent {
     ChatEvent::Error {
         code: code.to_owned(),
         message: message.to_owned(),
@@ -309,13 +309,13 @@ fn error_event(code: &str, message: &str) -> ChatEvent {
 
 /// Why a model call ended without a full answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Failure {
+pub(crate) enum Failure {
     Error,
     TimedOut,
 }
 
 /// Waits for the next model event within the time that is left.
-async fn next_event(
+pub(crate) async fn next_event(
     stream: &mut openbook_core::model::ModelStream,
     wait: Duration,
     deadline: Instant,

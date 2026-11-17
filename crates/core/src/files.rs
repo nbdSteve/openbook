@@ -136,6 +136,26 @@ impl Files {
         Ok(PresignedUpload { url, expires_at })
     }
 
+    /// Writes an object. The API never does this (the browser uploads with a presigned URL). The demo
+    /// provisioning command does it for the demo PDFs, which are in the repository.
+    pub async fn put_object(
+        &self,
+        key: &str,
+        content_type: &str,
+        bytes: Vec<u8>,
+    ) -> Result<(), FilesError> {
+        self.client
+            .put_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .content_type(content_type)
+            .body(bytes.into())
+            .send()
+            .await
+            .map_err(|e| err(&e))?;
+        Ok(())
+    }
+
     /// The size of the object, or `None` when it does not exist.
     pub async fn object_size(&self, key: &str) -> Result<Option<u64>, FilesError> {
         match self

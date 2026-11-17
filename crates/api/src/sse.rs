@@ -21,6 +21,11 @@ pub enum ChatEvent {
         title: String,
         model: String,
     },
+    /// The `meta` event of a demo answer: no conversation exists, so it has the model and the credits.
+    DemoMeta {
+        model: String,
+        attribution: Vec<openbook_core::demo::Attribution>,
+    },
     /// The sources of the answer. It comes after `meta` and before the first `delta`.
     Sources {
         sources: Vec<openbook_core::domain::Source>,
@@ -41,7 +46,7 @@ pub enum ChatEvent {
 impl ChatEvent {
     pub fn name(&self) -> &'static str {
         match self {
-            ChatEvent::Meta { .. } => "meta",
+            ChatEvent::Meta { .. } | ChatEvent::DemoMeta { .. } => "meta",
             ChatEvent::Sources { .. } => "sources",
             ChatEvent::Delta { .. } => "delta",
             ChatEvent::Done { .. } => "done",
@@ -64,6 +69,9 @@ impl ChatEvent {
                 "title": title,
                 "model": model,
             }),
+            ChatEvent::DemoMeta { model, attribution } => {
+                json!({ "model": model, "attribution": attribution })
+            }
             ChatEvent::Sources { sources } => json!({ "sources": sources }),
             ChatEvent::Delta { text } => json!({ "text": text }),
             ChatEvent::Done { usage, stop_reason } => json!({

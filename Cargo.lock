@@ -2429,6 +2429,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "openbook-demo"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "aws-config",
+ "aws-credential-types",
+ "aws-sdk-cognitoidentityprovider",
+ "aws-sdk-dynamodb",
+ "aws-sdk-s3",
+ "aws-sdk-s3vectors",
+ "aws-sdk-sqs",
+ "axum",
+ "base64 0.23.1",
+ "http-body-util",
+ "openbook-api",
+ "openbook-core",
+ "openbook-ingest",
+ "openbook-search",
+ "pdfium-render",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "openbook-eval"
 version = "0.1.0"
 dependencies = [

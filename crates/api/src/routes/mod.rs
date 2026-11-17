@@ -5,6 +5,7 @@ use crate::error::ApiError;
 pub mod chat;
 pub mod conversations;
 pub mod courses;
+pub mod demo;
 pub mod documents;
 pub mod health;
 pub mod insights;

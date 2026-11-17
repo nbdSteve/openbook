@@ -224,6 +224,17 @@ pub enum LimitHit {
 }
 
 impl LimitHit {
+    /// How long until this visitor can ask again: the end of the 10-minute window, or midnight UTC.
+    /// Always at least 1. The global limit has no better answer than the time to midnight.
+    pub fn retry_after_seconds(self, now: DateTime<Utc>) -> u64 {
+        let ts = now.timestamp();
+        let seconds = match self {
+            LimitHit::VisitorWindow => (ts.div_euclid(WINDOW_SECONDS) + 1) * WINDOW_SECONDS - ts,
+            LimitHit::VisitorDay | LimitHit::Global => 86_400 - ts.rem_euclid(86_400),
+        };
+        u64::try_from(seconds.max(1)).unwrap_or(1)
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             LimitHit::VisitorWindow => "visitor_window",
@@ -536,6 +547,25 @@ mod tests {
         assert!(reserve(&memory, "v", now, &limits).await.unwrap().is_err());
         first.release_all(&memory).await;
         assert!(reserve(&memory, "v", now, &limits).await.unwrap().is_ok());
+    }
+
+    #[test]
+    fn retry_after_points_at_the_end_of_the_window_or_the_day() {
+        let now = at("2026-11-17T10:03:30Z");
+        assert_eq!(LimitHit::VisitorWindow.retry_after_seconds(now), 390);
+        assert_eq!(
+            LimitHit::VisitorDay.retry_after_seconds(now),
+            13 * 3600 + 56 * 60 + 30
+        );
+        // The first second of a window waits a full window.
+        assert_eq!(
+            LimitHit::VisitorWindow.retry_after_seconds(at("2026-11-17T10:10:00Z")),
+            600
+        );
+        assert_eq!(
+            LimitHit::VisitorDay.retry_after_seconds(at("2026-11-17T23:59:59Z")),
+            1
+        );
     }
 
     #[test]

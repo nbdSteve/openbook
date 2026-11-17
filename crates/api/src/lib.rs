@@ -36,6 +36,8 @@ pub struct AppState {
     pub queue: IngestQueue,
     /// Time limits for model calls.
     pub chat_timeouts: routes::chat::ChatTimeouts,
+    /// The daily salt of the demo visitor hash, kept in memory after the first read.
+    pub demo_visitors: Arc<openbook_core::demo::Visitors>,
 }
 
 impl AppState {
@@ -81,7 +83,7 @@ impl AppState {
 
 /// Builds the router with every route of `docs/api.md` under `/api`.
 pub fn build_router(state: AppState) -> Router {
-    use routes::{chat, conversations, courses, documents, health, insights, me, models};
+    use routes::{chat, conversations, courses, demo, documents, health, insights, me, models};
     Router::new()
         .route("/api/health", get(health::health))
         .route("/api/me", get(me::me))
@@ -125,6 +127,8 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/api/courses/{course_id}/chat", post(chat::chat))
         .route("/api/courses/{course_id}/insights", get(insights::insights))
+        // The only route that has no sign-in. It reads the demo course and nothing else.
+        .route("/api/demo/chat", post(demo::chat))
         .fallback(routes::not_found)
         .method_not_allowed_fallback(routes::not_found)
         .layer(axum::middleware::from_fn(logging::log_request))

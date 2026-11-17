@@ -1,0 +1,47 @@
+{
+  "name": "Openbook demo course",
+  "description": "Short excerpts from two OpenStax open textbooks: College Algebra (exponents, quadratic equations, functions, and exponential functions) and American Government 2e (the roots of the Constitution and federalism).",
+  "tutoringStyle": "direct",
+  "coverage": "exponents and scientific notation, quadratic equations, functions, exponential functions, the roots of the US Constitution, and federalism",
+  "examples": [
+    "What is the product rule of exponents?",
+    "What was the Great Compromise?",
+    "What is the quadratic formula?",
+    "What is federalism?",
+    "How do you write a number in scientific notation?",
+    "What was Shays' Rebellion?"
+  ],
+  "sources": [
+    {
+      "files": [
+        "../evals/corpora/college-algebra/college-algebra-excerpt.pdf",
+        "../evals/corpus/college-algebra-excerpt.pdf"
+      ],
+      "attribution": {
+        "title": "College Algebra (first edition)",
+        "authors": "Jay Abramson (Arizona State University, senior contributing author), with contributing authors Valeree Falduto, Rachael Gross, David Lippman, Melonie Rasmussen, Rick Norwood, Nicholas Belloit, Jean-Marie Magnier, Harold Whipple, and Christina Fernandez",
+        "publisher": "OpenStax, Rice University",
+        "copyright": "2017 Rice University",
+        "license": "CC BY 4.0",
+        "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+        "sourceUrl": "https://openstax.org/details/books/college-algebra",
+        "changes": "Pages selected from the full book. The pages are not edited."
+      }
+    },
+    {
+      "files": [
+        "../evals/corpora/american-government/american-government-excerpt.pdf"
+      ],
+      "attribution": {
+        "title": "American Government 2e",
+        "authors": "Glen Krutz (University of Oklahoma, senior contributing author), with contributing authors Prosper Bernard Jr., Jennifer Danley-Scott, Ann Kordas, Christopher Lawrence, Tonya Neaves, Adam Newmark, Brooks D. Simpson, Joel Webb, Shawn Williams, and Rhonda Wrzenski",
+        "publisher": "OpenStax, Rice University",
+        "copyright": "2019 Rice University",
+        "license": "CC BY 4.0",
+        "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+        "sourceUrl": "https://openstax.org/details/books/american-government-2e",
+        "changes": "Pages selected from the full book, and the images compressed. The words on the pages are not edited."
+      }
+    }
+  ]
+}

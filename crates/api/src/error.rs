@@ -33,6 +33,18 @@ pub enum ApiError {
     CapacityExhausted,
     #[error("model unavailable")]
     ModelUnavailable,
+    /// The demo visitor used all questions of the 10-minute window or of the day.
+    #[error("demo rate limited")]
+    DemoRateLimited { retry_after_seconds: u64 },
+    /// The whole demo used all model calls of the day.
+    #[error("demo busy")]
+    DemoBusy,
+    /// The demo cannot run: it has no course yet, or the viewer address is missing.
+    #[error("demo unavailable")]
+    DemoUnavailable,
+    /// The demo is switched off (the kill switch). It has the code `demo_unavailable` and status 404.
+    #[error("demo off")]
+    DemoOff,
     /// A dependency that the request needs (the ingest queue) failed. The client can retry.
     #[error("unavailable")]
     Unavailable,
@@ -62,13 +74,17 @@ impl ApiError {
             ApiError::InvalidRequest(_) => StatusCode::BAD_REQUEST,
             ApiError::Unauthenticated => StatusCode::UNAUTHORIZED,
             ApiError::Forbidden(_) => StatusCode::FORBIDDEN,
-            ApiError::NotFound(_) => StatusCode::NOT_FOUND,
+            ApiError::NotFound(_) | ApiError::DemoOff => StatusCode::NOT_FOUND,
             ApiError::Conflict(_) | ApiError::LimitReached(_) => StatusCode::CONFLICT,
             ApiError::TooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
-            ApiError::QuotaExceeded | ApiError::TooManyAttempts => StatusCode::TOO_MANY_REQUESTS,
-            ApiError::CapacityExhausted | ApiError::ModelUnavailable | ApiError::Unavailable => {
-                StatusCode::SERVICE_UNAVAILABLE
-            }
+            ApiError::QuotaExceeded
+            | ApiError::TooManyAttempts
+            | ApiError::DemoRateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
+            ApiError::CapacityExhausted
+            | ApiError::ModelUnavailable
+            | ApiError::Unavailable
+            | ApiError::DemoBusy
+            | ApiError::DemoUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             ApiError::Internal => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -86,6 +102,9 @@ impl ApiError {
             ApiError::CapacityExhausted => "capacity_exhausted",
             ApiError::ModelUnavailable => "model_unavailable",
             ApiError::Unavailable => "unavailable",
+            ApiError::DemoRateLimited { .. } => "demo_rate_limited",
+            ApiError::DemoBusy => "demo_busy",
+            ApiError::DemoUnavailable | ApiError::DemoOff => "demo_unavailable",
             ApiError::Internal => "internal",
         }
     }
@@ -111,19 +130,47 @@ impl ApiError {
             }
             ApiError::ModelUnavailable => MODEL_UNAVAILABLE_MESSAGE.into(),
             ApiError::Unavailable => "The service is busy. Try again in a moment.".into(),
+            ApiError::DemoRateLimited { .. } => {
+                "You reached the demo limit for now. Try again later.".into()
+            }
+            ApiError::DemoBusy => "The demo is busy. Try again later.".into(),
+            ApiError::DemoUnavailable | ApiError::DemoOff => {
+                "The demo is not available right now.".into()
+            }
             ApiError::Internal => INTERNAL_MESSAGE.into(),
         }
     }
 
     /// The JSON body.
     pub fn body(&self) -> serde_json::Value {
-        json!({ "error": { "code": self.code(), "message": self.message() } })
+        let mut body = json!({ "error": { "code": self.code(), "message": self.message() } });
+        if let ApiError::DemoRateLimited {
+            retry_after_seconds,
+        } = self
+        {
+            body["error"]["retryAfterSeconds"] = json!(retry_after_seconds);
+        }
+        body
     }
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        (self.status(), Json(self.body())).into_response()
+        let retry_after = match &self {
+            ApiError::DemoRateLimited {
+                retry_after_seconds,
+            } => Some(*retry_after_seconds),
+            _ => None,
+        };
+        let mut response = (self.status(), Json(self.body())).into_response();
+        if let Some(seconds) = retry_after
+            && let Ok(value) = axum::http::HeaderValue::from_str(&seconds.to_string())
+        {
+            response
+                .headers_mut()
+                .insert(axum::http::header::RETRY_AFTER, value);
+        }
+        response
     }
 }
 
@@ -173,6 +220,16 @@ mod tests {
             (ApiError::CapacityExhausted, 503, "capacity_exhausted"),
             (ApiError::ModelUnavailable, 503, "model_unavailable"),
             (ApiError::Unavailable, 503, "unavailable"),
+            (
+                ApiError::DemoRateLimited {
+                    retry_after_seconds: 30,
+                },
+                429,
+                "demo_rate_limited",
+            ),
+            (ApiError::DemoBusy, 503, "demo_busy"),
+            (ApiError::DemoUnavailable, 503, "demo_unavailable"),
+            (ApiError::DemoOff, 404, "demo_unavailable"),
             (ApiError::Internal, 500, "internal"),
         ];
         for (error, status, code) in cases {
