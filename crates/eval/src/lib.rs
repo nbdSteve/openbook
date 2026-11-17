@@ -5,6 +5,7 @@
 //! question. The refresh builds the cache that makes the offline run deterministic.
 
 pub mod cache;
+pub mod corpus;
 pub mod data;
 pub mod grid;
 pub mod metrics;

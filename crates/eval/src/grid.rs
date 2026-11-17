@@ -1,17 +1,23 @@
 //! The tuning grid: every combination of the knobs of `docs/evaluation.md`, offline.
 //!
-//! The grid searches once for each chunk target, document mode, and candidate count, and fuses many
-//! times. It needs the cache to hold the chunk embeddings of every chunk target (`refresh`, or
-//! `refresh --missing-only` for a cache that was made before the grid existed).
+//! The grid searches once for each chunk target, document mode, candidate count, and corpus, and
+//! fuses many times. It needs the cache of every corpus to hold the chunk embeddings of every chunk
+//! target (`refresh`, or `refresh --missing-only` for a cache that was made before the grid
+//! existed). Each setting is scored on every corpus alone, and on all corpora pooled.
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
 use crate::Error;
+use crate::corpus::Corpus;
 use crate::metrics::{self, Metrics};
-use crate::offline::{CHARS_PER_TOKEN, Index, Options, Tuning, judge_all, search_all};
+use crate::offline::{
+    CHARS_PER_TOKEN, Candidates, Index, Options, Run, Tuning, cache_dir_of, judge_all, load,
+    search_all,
+};
 use crate::refresh::{CHUNK_TARGET_TOKENS, PRODUCTION_CHUNK_TOKENS};
 
 pub const RRF_KS: [f64; 3] = [30.0, 60.0, 100.0];
@@ -20,7 +26,12 @@ pub const FINAL_SOURCES: [usize; 3] = [6, 8, 10];
 pub const CANDIDATES: [usize; 2] = [20, 40];
 /// Most sources per document. 8 is the same as no cap at 6 or 8 final sources.
 pub const MAX_PER_DOCUMENT: [usize; 5] = [2, 3, 4, 6, 8];
-pub const LEXICAL_WEIGHTS: [f64; 2] = [0.5, 1.0];
+/// The weight of the BM25 list in the fusion. A weight below about 0.9 means that a chunk that only
+/// BM25 finds can never reach the sources at k 60 and 40 dense candidates (see `docs/retrieval.md`).
+pub const LEXICAL_WEIGHTS: [f64; 4] = [0.5, 0.75, 1.0, 1.5];
+
+/// The name of the pooled scope in the tables.
+pub const COMBINED: &str = "combined";
 
 /// One setting of the knobs.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -57,14 +68,33 @@ pub struct ModeResult {
     pub recall_returned: f64,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+impl ModeResult {
+    fn of(run: &Run) -> Self {
+        Self {
+            hybrid: metrics::aggregate(&run.hybrid),
+            recall_returned: metrics::recall_of_returned(&run.hybrid),
+        }
+    }
+}
+
+/// The result of one setting for one scope (one corpus, or all pooled), in both document modes.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GridRow {
-    pub knobs: Knobs,
+pub struct Pair {
     /// One document per section.
     pub sectioned: ModeResult,
     /// The whole PDF is one document.
     pub cap_off: ModeResult,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GridRow {
+    pub knobs: Knobs,
+    /// All corpora pooled.
+    pub combined: Pair,
+    /// Each corpus alone, by ID.
+    pub corpora: BTreeMap<String, Pair>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -76,26 +106,42 @@ pub struct Grid {
 }
 
 /// Runs the whole grid. `tuning` fixes what the grid does not vary (the gate rule above all).
-pub async fn run(evals: &Path, cache_dir: &Path, tuning: &Tuning) -> Result<Grid, Error> {
-    let loaded = crate::offline::load(evals, cache_dir)?;
-    let base = tuning.options(&loaded.cache.meta.embedding_model);
+pub async fn run(
+    corpora: &[Corpus],
+    dev: bool,
+    named_cache: Option<&Path>,
+    tuning: &Tuning,
+) -> Result<Grid, Error> {
+    let mut loaded = Vec::new();
+    for corpus in corpora {
+        loaded.push(load(corpus, &cache_dir_of(corpus, dev, named_cache))?);
+    }
+    let model = loaded[0].cache.meta.embedding_model.clone();
+    if loaded.iter().any(|l| l.cache.meta.embedding_model != model) {
+        return Err(Error::Cache(
+            "the corpora have caches from different embedding models".into(),
+        ));
+    }
+    let base = tuning.options(&model);
     let mut rows = Vec::new();
     for tokens in CHUNK_TARGET_TOKENS {
-        // Two indexes (document modes) for each chunk target.
-        let mut indexes = Vec::new();
-        for single in [false, true] {
-            indexes.push(Index::build(
-                &loaded.sections,
-                &loaded.cache,
-                tokens * CHARS_PER_TOKEN,
-                single,
-            )?);
+        // Two indexes (document modes) for each corpus and chunk target.
+        let mut indexes: Vec<[Index; 2]> = Vec::new();
+        for l in &loaded {
+            let build =
+                |single| Index::build(&l.sections, &l.cache, tokens * CHARS_PER_TOKEN, single);
+            indexes.push([build(false)?, build(true)?]);
         }
         for candidates in CANDIDATES {
-            let mut found = Vec::new();
-            for index in &mut indexes {
-                index.set_candidates(candidates, candidates);
-                found.push(search_all(index, &loaded.questions, &loaded.cache).await?);
+            // found[corpus][mode]
+            let mut found: Vec<[Vec<Candidates>; 2]> = Vec::new();
+            for (l, pair) in loaded.iter().zip(&mut indexes) {
+                let mut both = [Vec::new(), Vec::new()];
+                for (mode, index) in pair.iter_mut().enumerate() {
+                    index.set_candidates(candidates, candidates);
+                    both[mode] = search_all(index, &l.questions, &l.cache).await?;
+                }
+                found.push(both);
             }
             for k in RRF_KS {
                 for final_sources in FINAL_SOURCES {
@@ -106,14 +152,32 @@ pub async fn run(evals: &Path, cache_dir: &Path, tuning: &Tuning) -> Result<Grid
                             params.final_sources = final_sources;
                             params.max_per_document = max_per_document;
                             params.lexical_weight = lexical_weight;
-                            let mut modes = Vec::new();
-                            for (index, found) in indexes.iter().zip(&found) {
-                                let run = judge_all(index, &loaded.questions, found, &params)?;
-                                modes.push(ModeResult {
-                                    hybrid: metrics::aggregate(&run.hybrid),
-                                    recall_returned: metrics::recall_of_returned(&run.hybrid),
-                                });
+                            // runs[corpus][mode]
+                            let mut runs: Vec<[Run; 2]> = Vec::new();
+                            for ((l, pair), seen) in loaded.iter().zip(&indexes).zip(&found) {
+                                runs.push([
+                                    judge_all(&pair[0], &l.questions, &seen[0], &params)?,
+                                    judge_all(&pair[1], &l.questions, &seen[1], &params)?,
+                                ]);
                             }
+                            let mut per_corpus = BTreeMap::new();
+                            for (l, run) in loaded.iter().zip(&runs) {
+                                per_corpus.insert(
+                                    l.corpus.id.clone(),
+                                    Pair {
+                                        sectioned: ModeResult::of(&run[0]),
+                                        cap_off: ModeResult::of(&run[1]),
+                                    },
+                                );
+                            }
+                            let pooled = |mode: usize| {
+                                let parts: Vec<(&str, &Run)> = loaded
+                                    .iter()
+                                    .zip(&runs)
+                                    .map(|(l, r)| (l.corpus.id.as_str(), &r[mode]))
+                                    .collect();
+                                ModeResult::of(&Run::merged(&parts))
+                            };
                             rows.push(GridRow {
                                 knobs: Knobs {
                                     chunk_tokens: tokens,
@@ -123,8 +187,11 @@ pub async fn run(evals: &Path, cache_dir: &Path, tuning: &Tuning) -> Result<Grid
                                     max_per_document,
                                     lexical_weight,
                                 },
-                                sectioned: modes[0],
-                                cap_off: modes[1],
+                                combined: Pair {
+                                    sectioned: pooled(0),
+                                    cap_off: pooled(1),
+                                },
+                                corpora: per_corpus,
                             });
                         }
                     }
@@ -133,7 +200,7 @@ pub async fn run(evals: &Path, cache_dir: &Path, tuning: &Tuning) -> Result<Grid
         }
     }
     Ok(Grid {
-        embedding_model: loaded.cache.meta.embedding_model.clone(),
+        embedding_model: model,
         settings: base.describe(),
         rows,
     })
@@ -146,47 +213,109 @@ fn find<'a>(grid: &'a Grid, knobs: &Knobs) -> Option<&'a GridRow> {
 fn header(out: &mut String, first: &str) {
     let _ = writeln!(
         out,
-        "| {first} | R@5 | R@8 | Recall of list | nDCG@8 | MRR | Gate acc. | cap-off R@8 | cap-off nDCG@8 | cap-off MRR |"
+        "| {first} | R@5 | R@8 | Recall of list | nDCG@8 | MRR | Gate acc. | False gates | cap-off R@8 | cap-off nDCG@8 | cap-off MRR |"
     );
-    let _ = writeln!(out, "|---|---|---|---|---|---|---|---|---|---|");
+    let _ = writeln!(out, "|---|---|---|---|---|---|---|---|---|---|---|");
 }
 
-fn line(out: &mut String, label: &str, row: &GridRow) {
-    let (s, d) = (&row.sectioned, &row.cap_off);
+fn line(out: &mut String, label: &str, pair: &Pair) {
+    let (s, d) = (&pair.sectioned, &pair.cap_off);
     let _ = writeln!(
         out,
-        "| {label} | {:.4} | {:.4} | {:.4} | {:.4} | {:.4} | {:.4} | {:.4} | {:.4} | {:.4} |",
+        "| {label} | {:.4} | {:.4} | {:.4} | {:.4} | {:.4} | {:.4} | {:.4} | {:.4} | {:.4} | {:.4} |",
         s.hybrid.recall_at_5,
         s.hybrid.recall_at_8,
         s.recall_returned,
         s.hybrid.ndcg_at_8,
         s.hybrid.mrr,
         s.hybrid.gate_accuracy,
+        s.hybrid.false_gate_rate,
         d.hybrid.recall_at_8,
         d.hybrid.ndcg_at_8,
         d.hybrid.mrr
     );
 }
 
+type Pick = for<'a> fn(&'a GridRow, &str) -> Option<&'a Pair>;
+
+fn pick_combined<'a>(row: &'a GridRow, _scope: &str) -> Option<&'a Pair> {
+    Some(&row.combined)
+}
+
+fn pick_corpus<'a>(row: &'a GridRow, scope: &str) -> Option<&'a Pair> {
+    row.corpora.get(scope)
+}
+
 impl Grid {
-    /// One table per knob (the others at their production value), then the best of the whole grid.
-    /// `*` marks the production setting.
+    /// The IDs of the corpora of the grid.
+    pub fn corpus_ids(&self) -> Vec<&str> {
+        self.rows
+            .first()
+            .map(|r| r.corpora.keys().map(String::as_str).collect())
+            .unwrap_or_default()
+    }
+
+    /// One table per knob (the others at their production value) for all corpora pooled, then the
+    /// best settings of the whole grid, then the same tables for each corpus alone. `*` marks the
+    /// production setting.
     pub fn to_markdown(&self, production: &Knobs, top: usize) -> String {
         let mut out = String::new();
         let _ = writeln!(out, "# Retrieval tuning grid");
         let _ = writeln!(out);
+        let ids = self.corpus_ids();
         let _ = writeln!(
             out,
-            "{} settings, embedding model `{}`. {}.",
+            "{} settings, embedding model `{}`, corpora: {}. {}.",
             self.rows.len(),
             self.embedding_model,
+            ids.join(", "),
             self.settings
         );
         let _ = writeln!(out);
         let _ = writeln!(
             out,
-            "Each table changes one knob and keeps the others at production. `*` marks the production value. Columns: hybrid metrics with one document per section, then Recall@8, nDCG@8, and MRR when the whole PDF is one document. Recall of list is the share of questions with a relevant chunk anywhere in the returned list."
+            "Each table changes one knob and keeps the others at production. `*` marks the production value. Columns: hybrid metrics with one document per section, then Recall@8, nDCG@8, and MRR when the whole PDF is one document. Recall of list is the share of questions with a relevant chunk anywhere in the returned list. False gates is the false-gate rate: the share of covered questions that the gate cut off."
         );
+        if ids.len() > 1 {
+            self.scope_tables(
+                &mut out,
+                "Combined (all corpora pooled)",
+                COMBINED,
+                pick_combined,
+                production,
+            );
+            self.best_table(&mut out, top);
+            for id in &ids {
+                self.scope_tables(
+                    &mut out,
+                    &format!("Corpus: {id}"),
+                    id,
+                    pick_corpus,
+                    production,
+                );
+            }
+        } else if let Some(id) = ids.first() {
+            self.scope_tables(
+                &mut out,
+                &format!("Corpus: {id}"),
+                id,
+                pick_corpus,
+                production,
+            );
+            self.best_table(&mut out, top);
+        }
+        let _ = production_note(&mut out, PRODUCTION_CHUNK_TOKENS);
+        out
+    }
+
+    fn scope_tables(
+        &self,
+        out: &mut String,
+        title: &str,
+        scope: &str,
+        pick: Pick,
+        production: &Knobs,
+    ) {
         type Set = fn(&mut Knobs, f64);
         let experiments: [(&str, Vec<f64>, f64, Set); 6] = [
             ("RRF k", RRF_KS.to_vec(), production.rrf_k, |k, v| {
@@ -223,11 +352,13 @@ impl Grid {
                 |k, v| k.chunk_tokens = v as usize,
             ),
         ];
+        let _ = writeln!(out);
+        let _ = writeln!(out, "## {title}");
         for (name, values, default, set) in experiments {
             let _ = writeln!(out);
-            let _ = writeln!(out, "## {name}");
+            let _ = writeln!(out, "### {name}");
             let _ = writeln!(out);
-            header(&mut out, name);
+            header(out, name);
             for value in values {
                 let mut knobs = *production;
                 set(&mut knobs, value);
@@ -236,22 +367,25 @@ impl Grid {
                 } else {
                     ""
                 };
-                match find(self, &knobs) {
-                    Some(row) => line(&mut out, &format!("{value}{mark}"), row),
+                match find(self, &knobs).and_then(|row| pick(row, scope)) {
+                    Some(pair) => line(out, &format!("{value}{mark}"), pair),
                     None => {
                         let _ = writeln!(out, "| {value}{mark} | not in the grid |");
                     }
                 }
             }
         }
+    }
+
+    fn best_table(&self, out: &mut String, top: usize) {
         let mut best: Vec<&GridRow> = self.rows.iter().collect();
         best.sort_by(|a, b| {
             let key = |r: &GridRow| {
                 (
-                    r.sectioned.hybrid.gate_accuracy,
-                    r.sectioned.hybrid.recall_at_8,
-                    r.sectioned.hybrid.ndcg_at_8,
-                    r.sectioned.hybrid.mrr,
+                    r.combined.sectioned.hybrid.gate_accuracy,
+                    r.combined.sectioned.hybrid.recall_at_8,
+                    r.combined.sectioned.hybrid.ndcg_at_8,
+                    r.combined.sectioned.hybrid.mrr,
                 )
             };
             let (x, y) = (key(a), key(b));
@@ -265,7 +399,7 @@ impl Grid {
         let _ = writeln!(out);
         let _ = writeln!(
             out,
-            "Sorted by gate accuracy, then Recall@8, nDCG@8, and MRR (one document per section)."
+            "All corpora pooled. Sorted by gate accuracy, then Recall@8, nDCG@8, and MRR (one document per section)."
         );
         let _ = writeln!(out);
         let _ = writeln!(
@@ -278,7 +412,7 @@ impl Grid {
         );
         for row in best.into_iter().take(top) {
             let k = &row.knobs;
-            let (s, d) = (&row.sectioned, &row.cap_off);
+            let (s, d) = (&row.combined.sectioned, &row.combined.cap_off);
             let _ = writeln!(
                 out,
                 "| {} | {} | {} | {} | {} | {} | {:.4} | {:.4} | {:.4} | {:.4} | {:.4} | {:.4} | {:.4} | {:.4} |",
@@ -298,8 +432,6 @@ impl Grid {
                 d.hybrid.mrr
             );
         }
-        let _ = production_note(&mut out, PRODUCTION_CHUNK_TOKENS);
-        out
     }
 
     pub fn to_json(&self) -> Result<String, Error> {
@@ -337,28 +469,47 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_tables_mark_the_production_value_and_list_every_knob() {
-        let production = Knobs::production(&Options::production("amazon.titan-embed-text-v2:0"));
+    fn pair(a: f64, b: f64) -> Pair {
+        Pair {
+            sectioned: result(a),
+            cap_off: result(b),
+        }
+    }
+
+    fn grid_of(production: &Knobs, ids: &[&str]) -> Grid {
         let mut rows = Vec::new();
         for k in RRF_KS {
             rows.push(GridRow {
                 knobs: Knobs {
                     rrf_k: k,
-                    ..production
+                    ..*production
                 },
-                sectioned: result(0.9),
-                cap_off: result(0.8),
+                combined: pair(0.9, 0.8),
+                corpora: ids
+                    .iter()
+                    .map(|id| ((*id).to_owned(), pair(0.7, 0.6)))
+                    .collect(),
             });
         }
-        let grid = Grid {
+        Grid {
             embedding_model: "m".into(),
             settings: "s".into(),
             rows,
-        };
+        }
+    }
+
+    #[test]
+    fn the_tables_mark_the_production_value_and_list_every_knob() {
+        let production = Knobs::production(&Options::production("amazon.titan-embed-text-v2:0"));
+        let grid = grid_of(&production, &["algebra", "history"]);
         let text = grid.to_markdown(&production, 5);
-        assert!(text.contains("## RRF k"));
+        assert!(text.contains("## Combined (all corpora pooled)"));
+        assert!(text.contains("## Corpus: algebra"));
+        assert!(text.contains("## Corpus: history"));
+        assert!(text.contains("### RRF k"));
+        // The pooled table has the pooled numbers and the corpus tables have their own.
         assert!(text.contains("| 60 * | 0.9000 |"), "{text}");
+        assert!(text.contains("| 60 * | 0.7000 |"), "{text}");
         assert!(text.contains("| 30 | 0.9000 |"));
         // A knob value that the grid lacks is said, not skipped.
         assert!(text.contains("not in the grid"));
@@ -373,5 +524,15 @@ mod tests {
         }
         let back: Grid = serde_json::from_str(&grid.to_json().unwrap()).unwrap();
         assert_eq!(back, grid);
+    }
+
+    #[test]
+    fn one_corpus_has_no_pooled_section() {
+        let production = Knobs::production(&Options::production("amazon.titan-embed-text-v2:0"));
+        let grid = grid_of(&production, &["algebra"]);
+        let text = grid.to_markdown(&production, 5);
+        assert!(!text.contains("Combined"));
+        assert!(text.contains("## Corpus: algebra"));
+        assert!(text.contains("The best 5 settings"));
     }
 }

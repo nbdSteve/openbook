@@ -8,12 +8,15 @@ The evaluation runs the same retrieval code as the API (`openbook_search::retrie
 
 | Path | What |
 |---|---|
-| `corpus/college-algebra-excerpt.pdf` | 43 pages of the OpenStax book "College Algebra" (CC BY 4.0). See `corpus/ATTRIBUTION.md`. |
-| `corpus/sections.json` | The five sections of the excerpt. Each section is one document for the evaluation, so the per-document cap works as it does in a course with several PDFs. |
-| `golden.jsonl` | The golden questions. Page numbers are pages of the excerpt. |
-| `cache/` | The live cache (made by `refresh`, reviewed and committed like code). Not there until the first live refresh. |
-| `cache-dev/` | The development cache. It proves that the harness works. It is never a baseline. |
-| `baseline.json` | The hybrid metrics of the committed code, from the live cache. Not there until the first live refresh. |
+| `corpora/<id>/` | One corpus. Every command runs all corpora. `--corpus <id>` runs one. |
+| `corpora/college-algebra/` | 43 pages of the OpenStax book "College Algebra" (CC BY 4.0), a math corpus. |
+| `corpora/american-government/` | 39 pages of the OpenStax book "American Government 2e" (CC BY 4.0), a prose corpus: the origins of the Constitution and American federalism. |
+| `corpora/<id>/ATTRIBUTION.md` | The source, the licence, and the changes (page selection only). |
+| `corpora/<id>/sections.json` | The sections of the excerpt. Each section is one document for the evaluation, so the per-document cap works as it does in a course with several PDFs. |
+| `corpora/<id>/golden.jsonl` | The golden questions. Page numbers are pages of the excerpt. |
+| `corpora/<id>/cache/` | The live cache (made by `refresh`, reviewed and committed like code). |
+| `corpora/<id>/cache-dev/` | The development cache. It proves that the harness works. It is never a baseline. |
+| `baseline.json` | The hybrid metrics of the committed code, from the live caches: one entry for each corpus and one for all corpora pooled. |
 
 ## Commands
 
@@ -25,14 +28,14 @@ Run all commands from the repository root. The `make` targets are short forms: `
 cargo run -p openbook-eval -- offline --dev-cache
 ```
 
-This runs from `evals/cache-dev` and prints the metrics table. It writes `target/eval/report.json` and `target/eval/report.md`.
+This runs from the `cache-dev` of every corpus and prints the metrics table of all corpora pooled, then of each corpus. `--corpus <id>` runs one corpus (and `--cache DIR` then names its cache directory). It writes `target/eval/report.json` and `target/eval/report.md`.
 
 ```
 cargo run -p openbook-eval -- offline
 cargo run -p openbook-eval -- offline --check
 ```
 
-The first command runs from the live cache `evals/cache`. The second one also compares the hybrid metrics with `evals/baseline.json` and exits with code 1 when a metric fell by more than 0.01 (absolute), or when gate accuracy fell at all, or when the false-gate rate rose at all. Both the normal run and the cap-off run are checked. `--check` cannot be combined with `--write-baseline`. A missing cache entry is an error. The command never skips a question.
+The first command runs from the live cache of every corpus. The second one also compares the hybrid metrics with `evals/baseline.json` and exits with code 1 when a metric fell by more than 0.01 (absolute), or when gate accuracy fell at all, or when the false-gate rate rose at all. Every corpus and the pooled report are checked, each with the normal run and the cap-off run. The baseline and the run must have the same corpora (`--check` and `--write-baseline` refuse `--corpus`). `--check` cannot be combined with `--write-baseline`. A missing cache entry is an error. The command never skips a question.
 
 When a change makes the metrics better, update the baseline in the same commit:
 
@@ -79,9 +82,9 @@ This prints what it will call and about what it costs, and then stops. To start,
 1. Reads the corpus PDF with pdfium. A page with a poor text layer (math symbols, images) goes to the real Bedrock page transcription.
 2. Rewrites each follow-up question with the fast model, with the real `rewrite_query` of the API.
 3. Embeds every chunk and every question with Titan Text Embeddings v2.
-4. Writes `evals/cache/` (page Markdown, embeddings, rewrites, and the time of the query embedding calls).
+4. Writes the `cache/` of the corpus (page Markdown, embeddings, rewrites, and the time of the query embedding calls).
 
-It reads the normal AWS environment (`AWS_PROFILE`, `AWS_REGION`; the Region is `ap-southeast-2` only when none is set, so set `AWS_REGION=ap-southeast-2`). The model for transcription and rewrite is `au.anthropic.claude-haiku-4-5-20251001-v1:0` unless `OPENBOOK_EVAL_MODEL_ID` says another one. It does not touch S3, DynamoDB, SQS, or S3 Vectors. Review the diff of `evals/cache/`, then run `offline --write-baseline` and commit both.
+It reads the normal AWS environment (`AWS_PROFILE`, `AWS_REGION`; the Region is `ap-southeast-2` only when none is set, so set `AWS_REGION=ap-southeast-2`). The model for transcription and rewrite is `au.anthropic.claude-haiku-4-5-20251001-v1:0` unless `OPENBOOK_EVAL_MODEL_ID` says another one. It does not touch S3, DynamoDB, SQS, or S3 Vectors. Review the diff of the caches, then run `offline --write-baseline` and commit both.
 
 ### Add what the cache lacks (real AWS, small)
 
@@ -89,7 +92,7 @@ It reads the normal AWS environment (`AWS_PROFILE`, `AWS_REGION`; the Region is 
 AWS_PROFILE=<profile> AWS_REGION=ap-southeast-2 cargo run -p openbook-eval -- refresh --missing-only
 ```
 
-`AWS_PROFILE=<profile> AWS_REGION=ap-southeast-2 make eval-live-missing` (with `YES=1` to start) is the short form. It reuses `evals/cache/pages`, does no page transcription, and does not need PDFium. It calls Bedrock only for the Titan embeddings and the follow-up rewrites that the cache does not have: new or changed questions, and the chunks of the other chunk targets. It prints the number of calls of each kind (and the ID of every follow-up question that it will rewrite) and an upper bound of the cost first, and starts only with `--yes`. A rewrite that returns nothing stops the run with an error; the raw question is never stored as the rewrite. It keeps the models that the cache was made with, so the cache keys stay valid, and it drops entries that no run needs.
+`AWS_PROFILE=<profile> AWS_REGION=ap-southeast-2 make eval-live-missing` (with `YES=1` to start) is the short form. It fills what the caches of all corpora lack, in one plan. A corpus with a cache reuses its pages, does no page transcription, and gets Bedrock calls only for the Titan embeddings and the follow-up rewrites that its cache does not have: new or changed questions, the chunks of the other chunk targets, and chunks that changed with the chunker. A corpus without a cache gets the full live refresh (with the models of the other caches), so the command needs PDFium for it (`make eval-live-missing` fetches it). It prints the number of calls of each kind (and the ID of every follow-up question that it will rewrite) and an upper bound of the cost first, and starts only with `--yes`. A rewrite that returns nothing stops the run with an error; the raw question is never stored as the rewrite. It keeps the models that the cache was made with, so the cache keys stay valid, and it drops entries that no run needs.
 
 ### Refresh the development cache (no AWS)
 
@@ -110,6 +113,6 @@ The pages are the PDF text layer, the embeddings are fake (hashed words), and a 
 
 ## The golden set
 
-Each line of `golden.jsonl` is `{ "id", "question", "relevantPages", "kind" }`, and a `followup` also has `context` (the earlier question). The kinds are `lookup`, `paraphrase`, `notation`, `followup`, `not_covered`, and `off_topic`. The set needs at least 80 questions and at least 10 of each kind. The tests check this.
+Each line of `golden.jsonl` is `{ "id", "question", "relevantPages", "kind" }`, and a `followup` also has `context` (the earlier question). The kinds are `lookup`, `paraphrase`, `notation`, `followup`, `not_covered`, and `off_topic`. A set needs at least 60 questions and at least 10 of each kind, except `notation`, which only a math corpus has. The tests check this.
 
 Every question was written from the text of the pages and checked against the page. `not_covered` questions are plausible student questions about nearby math that the excerpt does not teach (hard negatives for the gate). A question is `not_covered` only when no page teaches the answer: a mention in a chapter outline or a list of learning objectives does not count. `off_topic` questions have no relation to the course: general knowledge, other school subjects, and small talk such as "hi" and "thanks, that makes sense". To add a question, find the page in the PDF, write the question and its page numbers, and run `offline --dev-cache` to see that the file still loads.

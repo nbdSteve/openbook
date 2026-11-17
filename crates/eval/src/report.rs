@@ -1,4 +1,5 @@
-//! The report (a Markdown table and a JSON file), the baseline, and the regression check.
+//! The report (a Markdown table and a JSON file), the baseline, and the regression check. A run
+//! over several corpora gives one report for each corpus and one for all of them pooled.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -243,6 +244,51 @@ pub fn gate_sweep(diags: &[QuestionDiag]) -> Vec<SweepRow> {
     rows
 }
 
+/// One running header or footer that the chunker no longer sees.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeaderLine {
+    pub section: String,
+    /// The first occurrence as written (it stays in the text).
+    pub text: String,
+    /// The page of the excerpt of the first occurrence.
+    pub first_page: u32,
+    /// On how many later pages the line was removed.
+    pub removed_pages: usize,
+}
+
+/// What the removal of running headers and footers did to the chunks of the production chunk
+/// target.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeaderStats {
+    /// Distinct running lines, summed over the sections (one document each).
+    pub running_lines: usize,
+    /// Lines that were removed from a page.
+    pub removed_lines: usize,
+    /// Chunks with the removal, and without it.
+    pub chunks: usize,
+    pub chunks_before: usize,
+    /// Chunks with a running header in the heading path, without the removal, and with it. What is
+    /// left after the removal is the first occurrence, which stays on purpose (it is the real
+    /// heading of the section).
+    pub chunks_with_header_before: usize,
+    pub chunks_with_header_after: usize,
+    pub lines: Vec<HeaderLine>,
+}
+
+impl HeaderStats {
+    /// Adds the counts of another corpus.
+    pub fn add(&mut self, other: &HeaderStats) {
+        self.running_lines += other.running_lines;
+        self.removed_lines += other.removed_lines;
+        self.chunks += other.chunks;
+        self.chunks_before += other.chunks_before;
+        self.chunks_with_header_before += other.chunks_with_header_before;
+        self.chunks_with_header_after += other.chunks_with_header_after;
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Report {
@@ -269,9 +315,93 @@ pub struct Report {
     pub diagnostics: Vec<QuestionDiag>,
     /// Every candidate gate rule applied to the diagnostics.
     pub gate_sweep: Vec<SweepRow>,
+    /// What the removal of running headers and footers changed.
+    pub headers: Option<HeaderStats>,
+}
+
+/// The report of one corpus.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CorpusReport {
+    pub id: String,
+    pub report: Report,
+}
+
+/// The reports of all corpora, and one report with their questions pooled.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SuiteReport {
+    pub corpora: Vec<CorpusReport>,
+    pub combined: Report,
+}
+
+impl SuiteReport {
+    pub fn to_json(&self) -> Result<String, Error> {
+        let mut text = serde_json::to_string_pretty(self).map_err(|e| Error::Run(e.to_string()))?;
+        text.push('\n');
+        Ok(text)
+    }
+
+    /// The combined report first (the gate sweep is only in this one), then each corpus.
+    pub fn to_markdown(&self) -> String {
+        let mut out = String::from("# Retrieval evaluation\n\n");
+        let ids: Vec<&str> = self.corpora.iter().map(|c| c.id.as_str()).collect();
+        let _ = writeln!(
+            out,
+            "{} corpus{}: {}.\n",
+            ids.len(),
+            if ids.len() == 1 { "" } else { "es" },
+            ids.join(", ")
+        );
+        if self.corpora.len() > 1 {
+            out.push_str(
+                &self
+                    .combined
+                    .markdown_titled("## Combined (all corpora pooled)", true),
+            );
+            out.push('\n');
+        }
+        for corpus in &self.corpora {
+            out.push_str(&corpus.report.markdown_titled(
+                &format!("## Corpus: {}", corpus.id),
+                self.corpora.len() == 1,
+            ));
+            out.push('\n');
+        }
+        out
+    }
 }
 
 impl Report {
+    /// One line about where the gate limit sits: the farthest covered question, and the nearest and
+    /// farthest questions that the course does not cover.
+    fn write_gate_distances(&self, out: &mut String) {
+        let range = |keep: &dyn Fn(&QuestionDiag) -> bool| {
+            let mut found: Vec<(f64, &str)> = self
+                .diagnostics
+                .iter()
+                .filter(|d| keep(d))
+                .filter_map(|d| d.best_dense_distance.map(|v| (v, d.id.as_str())))
+                .collect();
+            found.sort_by(|a, b| a.0.total_cmp(&b.0));
+            found
+        };
+        let covered = range(&|d| d.is_covered());
+        let not_covered = range(&|d| d.kind == Kind::NotCovered.name());
+        let off_topic = range(&|d| d.kind == Kind::OffTopic.name());
+        let (Some(worst), Some(nc_near), Some(ot_near)) =
+            (covered.last(), not_covered.first(), off_topic.first())
+        else {
+            return;
+        };
+        let _ = writeln!(out);
+        let _ = writeln!(
+            out,
+            "Best dense distance: the farthest covered question is {:.4} (`{}`). The nearest not_covered question is {:.4} (`{}`), the nearest off_topic question is {:.4} (`{}`).",
+            worst.0, worst.1, nc_near.0, nc_near.1, ot_near.0, ot_near.1
+        );
+    }
+
     pub fn to_json(&self) -> Result<String, Error> {
         let mut text = serde_json::to_string_pretty(self).map_err(|e| Error::Run(e.to_string()))?;
         text.push('\n');
@@ -279,8 +409,13 @@ impl Report {
     }
 
     pub fn to_markdown(&self) -> String {
+        self.markdown_titled("# Retrieval evaluation", true)
+    }
+
+    /// The report as Markdown, under a title line. `sweep` adds the gate sweep table.
+    pub fn markdown_titled(&self, title: &str, sweep: bool) -> String {
         let mut out = String::new();
-        let _ = writeln!(out, "# Retrieval evaluation");
+        let _ = writeln!(out, "{title}");
         let _ = writeln!(out);
         if self.cache_kind == CacheKind::Dev {
             let _ = writeln!(
@@ -380,7 +515,21 @@ impl Report {
                 latency.query_embedding_ms_p50, latency.query_embedding_ms_p95, latency.samples
             );
         }
-        if !self.gate_sweep.is_empty() {
+        self.write_gate_distances(&mut out);
+        if let Some(h) = &self.headers {
+            let _ = writeln!(out);
+            let _ = writeln!(
+                out,
+                "Running headers and footers: {} lines found, removed {} times. Chunks with a running header in the heading path: {} of {} before the removal, {} of {} after it (what is left is the first occurrence of each line, which stays).",
+                h.running_lines,
+                h.removed_lines,
+                h.chunks_with_header_before,
+                h.chunks_before,
+                h.chunks_with_header_after,
+                h.chunks
+            );
+        }
+        if sweep && !self.gate_sweep.is_empty() {
             let _ = writeln!(out);
             let _ = writeln!(
                 out,
@@ -436,18 +585,16 @@ impl Report {
     }
 }
 
-/// What `evals/baseline.json` holds: the hybrid metrics of the committed code.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// The hybrid metrics of one corpus (or of all pooled) in the baseline.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Baseline {
-    pub cache_kind: CacheKind,
-    pub embedding_model: String,
+pub struct ScopeBaseline {
     pub hybrid: Metrics,
     /// The hybrid metrics when the per-document cap is off (the whole PDF is one document).
     pub cap_off: Metrics,
 }
 
-impl Baseline {
+impl ScopeBaseline {
     /// The baseline of a report. It needs the cap-off run, so the report must not be a cap-off run.
     pub fn from_report(report: &Report) -> Result<Self, Error> {
         let cap_off = report.cap_off.as_ref().ok_or_else(|| {
@@ -456,10 +603,35 @@ impl Baseline {
             )
         })?;
         Ok(Self {
-            cache_kind: report.cache_kind,
-            embedding_model: report.embedding_model.clone(),
             hybrid: report.hybrid,
             cap_off: cap_off.hybrid,
+        })
+    }
+}
+
+/// What `evals/baseline.json` holds: the hybrid metrics of the committed code, for each corpus and
+/// for all corpora pooled.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Baseline {
+    pub cache_kind: CacheKind,
+    pub embedding_model: String,
+    pub corpora: BTreeMap<String, ScopeBaseline>,
+    pub combined: ScopeBaseline,
+}
+
+impl Baseline {
+    /// The baseline of a run over all corpora.
+    pub fn from_suite(suite: &SuiteReport) -> Result<Self, Error> {
+        let mut corpora = BTreeMap::new();
+        for c in &suite.corpora {
+            corpora.insert(c.id.clone(), ScopeBaseline::from_report(&c.report)?);
+        }
+        Ok(Self {
+            cache_kind: suite.combined.cache_kind,
+            embedding_model: suite.combined.embedding_model.clone(),
+            corpora,
+            combined: ScopeBaseline::from_report(&suite.combined)?,
         })
     }
 
@@ -486,6 +658,8 @@ impl Baseline {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Regression {
+    /// The corpus of the metric, or "combined". Empty when one report is checked alone.
+    pub scope: String,
     /// The mode of the metric: empty for the normal run, "cap off" for the cap-off run.
     pub mode: &'static str,
     pub metric: &'static str,
@@ -497,6 +671,11 @@ pub struct Regression {
 
 impl std::fmt::Display for Regression {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let scope = if self.scope.is_empty() {
+            String::new()
+        } else {
+            format!("{}, ", self.scope)
+        };
         let mode = if self.mode.is_empty() {
             String::new()
         } else {
@@ -504,7 +683,7 @@ impl std::fmt::Display for Regression {
         };
         write!(
             f,
-            "{mode}{}: {:.4}, the baseline is {:.4} and the limit is {:.4}",
+            "{scope}{mode}{}: {:.4}, the baseline is {:.4} and the limit is {:.4}",
             self.metric, self.current, self.baseline, self.lowest_allowed
         )
     }
@@ -524,6 +703,7 @@ pub fn check(baseline: &Metrics, current: &Metrics) -> Vec<Regression> {
         let lowest = base - TOLERANCE;
         if now < lowest - EPSILON {
             found.push(Regression {
+                scope: String::new(),
                 mode: "",
                 metric,
                 baseline: base,
@@ -534,6 +714,7 @@ pub fn check(baseline: &Metrics, current: &Metrics) -> Vec<Regression> {
     }
     if current.gate_accuracy < baseline.gate_accuracy - EPSILON {
         found.push(Regression {
+            scope: String::new(),
             mode: "",
             metric: "Gate accuracy",
             baseline: baseline.gate_accuracy,
@@ -544,6 +725,7 @@ pub fn check(baseline: &Metrics, current: &Metrics) -> Vec<Regression> {
     // A covered question that the gate cuts off is the worst error for a student: no tolerance.
     if current.false_gate_rate > baseline.false_gate_rate + EPSILON {
         found.push(Regression {
+            scope: String::new(),
             mode: "",
             metric: "False-gate rate",
             baseline: baseline.false_gate_rate,
@@ -554,9 +736,9 @@ pub fn check(baseline: &Metrics, current: &Metrics) -> Vec<Regression> {
     found
 }
 
-/// Checks both runs of a report against the baseline: the normal run and the cap-off run, with the
-/// same tolerance.
-pub fn check_report(baseline: &Baseline, report: &Report) -> Vec<Regression> {
+/// Checks both runs of a report against the baseline of its scope: the normal run and the cap-off
+/// run, with the same tolerance.
+pub fn check_report(scope: &str, baseline: &ScopeBaseline, report: &Report) -> Vec<Regression> {
     let mut found = check(&baseline.hybrid, &report.hybrid);
     if let Some(cap_off) = &report.cap_off {
         for mut regression in check(&baseline.cap_off, &cap_off.hybrid) {
@@ -564,7 +746,55 @@ pub fn check_report(baseline: &Baseline, report: &Report) -> Vec<Regression> {
             found.push(regression);
         }
     }
+    for regression in &mut found {
+        regression.scope = scope.to_owned();
+    }
     found
+}
+
+/// Checks every corpus and the pooled report against the baseline. The baseline and the run must
+/// have the same corpora.
+pub fn check_suite(baseline: &Baseline, suite: &SuiteReport) -> Result<Vec<Regression>, Error> {
+    let run_ids: Vec<&str> = suite.corpora.iter().map(|c| c.id.as_str()).collect();
+    let base_ids: Vec<&str> = baseline.corpora.keys().map(String::as_str).collect();
+    if run_ids != base_ids {
+        return Err(Error::Run(format!(
+            "the baseline has the corpora [{}] and the run has [{}]. Run `openbook-eval offline --write-baseline` in the commit that adds or removes a corpus.",
+            base_ids.join(", "),
+            run_ids.join(", ")
+        )));
+    }
+    let mut found = Vec::new();
+    for corpus in &suite.corpora {
+        found.extend(check_report(
+            &corpus.id,
+            &baseline.corpora[&corpus.id],
+            &corpus.report,
+        ));
+    }
+    found.extend(check_report(
+        "combined",
+        &baseline.combined,
+        &suite.combined,
+    ));
+    Ok(found)
+}
+
+/// True when a metric of any scope rose by more than the tolerance, so the baseline should be
+/// updated.
+pub fn suite_improved(baseline: &Baseline, suite: &SuiteReport) -> bool {
+    let scope = |b: &ScopeBaseline, r: &Report| {
+        improved(&b.hybrid, &r.hybrid)
+            || r.cap_off
+                .as_ref()
+                .is_some_and(|c| improved(&b.cap_off, &c.hybrid))
+    };
+    suite.corpora.iter().any(|c| {
+        baseline
+            .corpora
+            .get(&c.id)
+            .is_some_and(|b| scope(b, &c.report))
+    }) || scope(&baseline.combined, &suite.combined)
 }
 
 /// True when a metric rose by more than the tolerance, so the baseline should be updated.
@@ -653,11 +883,15 @@ mod tests {
         let path = dir.path().join("baseline.json");
         let error = Baseline::load(&path).unwrap_err().to_string();
         assert!(error.contains("--write-baseline"), "{error}");
+        let scope = ScopeBaseline {
+            hybrid: metrics(),
+            cap_off: metrics(),
+        };
         let baseline = Baseline {
             cache_kind: CacheKind::Live,
             embedding_model: "amazon.titan-embed-text-v2:0".into(),
-            hybrid: metrics(),
-            cap_off: metrics(),
+            corpora: BTreeMap::from([("algebra".to_owned(), scope)]),
+            combined: scope,
         };
         std::fs::write(&path, baseline.to_json().unwrap()).unwrap();
         assert_eq!(Baseline::load(&path).unwrap(), baseline);
@@ -707,8 +941,21 @@ mod tests {
                 hybrid: metrics(),
             }),
             latency: None,
-            diagnostics: vec![diag("lookup-01", "lookup", 0.5, 3, 3)],
+            diagnostics: vec![
+                diag("lookup-01", "lookup", 0.5, 3, 3),
+                diag("not-covered-01", "not_covered", 0.8, 3, 1),
+                diag("off-topic-01", "off_topic", 0.9, 1, 0),
+            ],
             gate_sweep: vec![],
+            headers: Some(HeaderStats {
+                running_lines: 2,
+                removed_lines: 6,
+                chunks: 10,
+                chunks_before: 12,
+                chunks_with_header_before: 7,
+                chunks_with_header_after: 3,
+                lines: vec![],
+            }),
         };
         let text = report.to_markdown();
         assert!(text.contains("| Metric | Dense only | BM25 only | Hybrid |"));
@@ -718,6 +965,8 @@ mod tests {
         assert!(text.contains("Cap-off mode"));
         assert!(text.contains("`lookup-01`"));
         assert!(text.contains("Returned pages: 1, 4-5."));
+        assert!(text.contains("the farthest covered question is 0.5000 (`lookup-01`)"));
+        assert!(text.contains("7 of 12 before the removal, 3 of 10 after it"));
         let json = report.to_json().unwrap();
         let back: Report = serde_json::from_str(&json).unwrap();
         assert_eq!(back, report);
@@ -805,17 +1054,15 @@ mod tests {
         assert!(check(&base, &now).is_empty());
     }
 
-    #[test]
-    fn the_cap_off_run_is_checked_with_the_same_tolerance() {
-        let baseline = Baseline {
-            cache_kind: CacheKind::Live,
-            embedding_model: "m".into(),
-            hybrid: metrics(),
-            cap_off: metrics(),
-        };
-        let mut worse = metrics();
-        worse.recall_at_8 -= 0.05;
-        let report = |cap_off: Metrics| Report {
+    fn scope(metrics: Metrics) -> ScopeBaseline {
+        ScopeBaseline {
+            hybrid: metrics,
+            cap_off: metrics,
+        }
+    }
+
+    fn report_with(hybrid: Metrics, cap_off: Metrics) -> Report {
+        Report {
             cache_kind: CacheKind::Live,
             embedding_model: "m".into(),
             corpus_sha256: "0".into(),
@@ -825,7 +1072,7 @@ mod tests {
             chunks: 1,
             dense: metrics(),
             bm25: metrics(),
-            hybrid: metrics(),
+            hybrid,
             hybrid_by_kind: BTreeMap::new(),
             gate_by_group: vec![],
             settings: String::new(),
@@ -838,11 +1085,94 @@ mod tests {
             latency: None,
             diagnostics: vec![],
             gate_sweep: vec![],
-        };
-        assert!(check_report(&baseline, &report(metrics())).is_empty());
-        let found = check_report(&baseline, &report(worse));
+            headers: None,
+        }
+    }
+
+    #[test]
+    fn the_cap_off_run_is_checked_with_the_same_tolerance() {
+        let baseline = scope(metrics());
+        let mut worse = metrics();
+        worse.recall_at_8 -= 0.05;
+        assert!(check_report("algebra", &baseline, &report_with(metrics(), metrics())).is_empty());
+        let found = check_report("algebra", &baseline, &report_with(metrics(), worse));
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].mode, "cap off");
-        assert!(found[0].to_string().starts_with("cap off, Recall@8"));
+        assert!(
+            found[0]
+                .to_string()
+                .starts_with("algebra, cap off, Recall@8"),
+            "{}",
+            found[0]
+        );
+    }
+
+    fn suite(corpora: &[(&str, Metrics)], combined: Metrics) -> SuiteReport {
+        SuiteReport {
+            corpora: corpora
+                .iter()
+                .map(|(id, m)| CorpusReport {
+                    id: (*id).to_owned(),
+                    report: report_with(*m, *m),
+                })
+                .collect(),
+            combined: report_with(combined, combined),
+        }
+    }
+
+    #[test]
+    fn every_corpus_and_the_pooled_report_are_checked() {
+        let mut worse = metrics();
+        worse.ndcg_at_8 -= 0.05;
+        let base = suite(&[("algebra", metrics()), ("history", metrics())], metrics());
+        let baseline = Baseline::from_suite(&base).unwrap();
+        assert_eq!(baseline.corpora.len(), 2);
+        assert!(check_suite(&baseline, &base).unwrap().is_empty());
+        assert!(!suite_improved(&baseline, &base));
+
+        // One corpus gets worse, and the pooled numbers hold: the check still fails.
+        let one = suite(&[("algebra", metrics()), ("history", worse)], metrics());
+        let found = check_suite(&baseline, &one).unwrap();
+        assert!(found.iter().all(|r| r.scope == "history"), "{found:?}");
+        assert_eq!(found.len(), 2, "the normal run and the cap-off run");
+        // The pooled report gets worse alone.
+        let pooled = suite(&[("algebra", metrics()), ("history", metrics())], worse);
+        let found = check_suite(&baseline, &pooled).unwrap();
+        assert!(found.iter().all(|r| r.scope == "combined"));
+        assert!(found[0].to_string().starts_with("combined, nDCG@8"));
+    }
+
+    #[test]
+    fn a_baseline_for_other_corpora_is_an_error_that_says_what_to_do() {
+        let base = suite(&[("algebra", metrics())], metrics());
+        let baseline = Baseline::from_suite(&base).unwrap();
+        let more = suite(&[("algebra", metrics()), ("history", metrics())], metrics());
+        let error = check_suite(&baseline, &more).unwrap_err().to_string();
+        assert!(
+            error.contains("[algebra]") && error.contains("[algebra, history]"),
+            "{error}"
+        );
+        assert!(error.contains("--write-baseline"), "{error}");
+    }
+
+    #[test]
+    fn a_cap_off_run_cannot_give_a_baseline() {
+        let mut one = suite(&[("algebra", metrics())], metrics());
+        one.corpora[0].report.cap_off = None;
+        assert!(Baseline::from_suite(&one).is_err());
+    }
+
+    #[test]
+    fn the_suite_markdown_shows_the_pooled_report_first_and_each_corpus() {
+        let two = suite(&[("algebra", metrics()), ("history", metrics())], metrics());
+        let text = two.to_markdown();
+        let combined = text.find("## Combined (all corpora pooled)").unwrap();
+        let algebra = text.find("## Corpus: algebra").unwrap();
+        let history = text.find("## Corpus: history").unwrap();
+        assert!(combined < algebra && algebra < history, "{text}");
+        let one = suite(&[("algebra", metrics())], metrics());
+        assert!(!one.to_markdown().contains("Combined"));
+        let back: SuiteReport = serde_json::from_str(&two.to_json().unwrap()).unwrap();
+        assert_eq!(back, two);
     }
 }

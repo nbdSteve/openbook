@@ -1,12 +1,16 @@
 //! The cache refresh.
 //!
 //! - `refresh --dev-cache` needs no AWS. The pages are the PDF text layer, the embeddings are fake,
-//!   and a follow-up is rewritten by joining it to its earlier question. It writes `evals/cache-dev/`.
-//!   It shows that the harness works. It never gives a baseline.
+//!   and a follow-up is rewritten by joining it to its earlier question. It writes the
+//!   `cache-dev/` of each corpus. It shows that the harness works. It never gives a baseline.
 //! - `refresh` (live) runs the real ingestion code on the corpus PDF on this machine: pdfium, the
 //!   real Bedrock page transcription for pages with a poor text layer, the real chunker, Titan
-//!   embeddings, and the real follow-up rewrite with the fast model. It writes `evals/cache/`.
-//!   It reads the normal AWS environment and prints what it will call before it calls anything.
+//!   embeddings, and the real follow-up rewrite with the fast model. It writes the `cache/` of each
+//!   corpus. It reads the normal AWS environment and prints what it will call before it calls
+//!   anything.
+//! - `refresh --missing-only` fills what the caches lack, for all corpora in one plan: a corpus
+//!   without a cache gets the full live refresh (page transcription included), and a corpus with
+//!   a cache gets only the embeddings and rewrites that it lacks.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -28,6 +32,7 @@ use openbook_search::retrieval::{MAX_QUERY_CHARS, clean_query, clip};
 
 use crate::Error;
 use crate::cache::{Cache, CacheKind, EmbeddingStore, FORMAT, Latency, Meta, rewrite_key};
+use crate::corpus::Corpus;
 use crate::data::{self, Kind, Question, Section};
 use crate::offline::{CHARS_PER_TOKEN, build_chunks};
 
@@ -52,25 +57,6 @@ pub const CHUNK_TARGET_TOKENS: [usize; 3] = [300, 400, 600];
 
 /// The production chunk target, in tokens.
 pub const PRODUCTION_CHUNK_TOKENS: usize = TARGET_CHARS / CHARS_PER_TOKEN;
-
-/// The only PDF in `evals/corpus`.
-pub fn corpus_path(evals: &Path) -> Result<PathBuf, Error> {
-    let dir = evals.join("corpus");
-    let mut found = Vec::new();
-    for entry in std::fs::read_dir(&dir).map_err(|e| Error::io(&dir, &e))? {
-        let path = entry.map_err(|e| Error::io(&dir, &e))?.path();
-        if path.extension().is_some_and(|e| e == "pdf") {
-            found.push(path);
-        }
-    }
-    match found.len() {
-        1 => Ok(found.remove(0)),
-        n => Err(Error::Data(format!(
-            "{} must hold exactly one PDF and it holds {n}",
-            dir.display()
-        ))),
-    }
-}
 
 /// Reads the pages of the corpus PDF with pdfium, like the ingestion worker does.
 pub async fn read_pages(pdf_path: &Path) -> Result<Vec<PageData>, Error> {
@@ -137,10 +123,10 @@ fn percentile(sorted: &[u64], p: f64) -> u64 {
 // ---- Dev cache
 
 /// Builds the development cache: no AWS.
-pub async fn build_dev(evals: &Path) -> Result<Cache, Error> {
-    let sections = data::load_sections(&evals.join("corpus/sections.json"))?;
-    let questions = data::load_golden(&evals.join("golden.jsonl"), data::page_total(&sections))?;
-    let pdf_path = corpus_path(evals)?;
+pub async fn build_dev(corpus: &Corpus) -> Result<Cache, Error> {
+    let sections = data::load_sections(&corpus.sections_path())?;
+    let questions = data::load_golden(&corpus.golden_path(), data::page_total(&sections))?;
+    let pdf_path = corpus.pdf_path()?;
     let page_data = read_pages(&pdf_path).await?;
     let total = data::page_total(&sections);
     if page_data.len() != total as usize {
@@ -206,6 +192,18 @@ fn file_name(path: &Path) -> String {
 
 // ---- Live refresh
 
+/// The models of a cache. A corpus that is added later uses the models of the corpora that are
+/// there, so that every cache has the same embedding model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Models {
+    pub chat: String,
+    pub embedding: String,
+}
+
+/// An upper bound of the cost of one transcribed page: 4096 output tokens at $5 per million, and at
+/// most 6000 input tokens at $1 per million.
+const TRANSCRIBE_UPPER_USD_PER_PAGE: f64 = 4096.0 * 5.0 / 1_000_000.0 + 6000.0 / 1_000_000.0;
+
 /// What a live refresh will call.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Plan {
@@ -216,10 +214,22 @@ pub struct Plan {
     /// Pages whose text layer is poor: each is one transcription call.
     pub transcribe_pages: Vec<u32>,
     pub embed_calls: usize,
+    /// The characters of the texts to embed, for the bound of the cost. Pages that a model
+    /// transcribes can give other chunks than the text layer, so this is an estimate.
+    pub embed_chars: usize,
     pub rewrite_calls: usize,
 }
 
 impl Plan {
+    /// An upper bound of the cost in US dollars: every page at the most that a call can cost, and
+    /// twice the embedding text of the text layer.
+    pub fn cost_upper_bound_usd(&self) -> f64 {
+        let embed_tokens = self.embed_chars as f64 / 2.0 * 2.0;
+        self.transcribe_pages.len() as f64 * TRANSCRIBE_UPPER_USD_PER_PAGE
+            + embed_tokens * EMBED_USD_PER_TOKEN
+            + self.rewrite_calls as f64 * REWRITE_UPPER_USD_PER_CALL
+    }
+
     pub fn cost_usd(&self) -> f64 {
         self.transcribe_pages.len() as f64 * TRANSCRIBE_USD_PER_PAGE
             + self.embed_calls as f64 * EMBED_USD_PER_CALL
@@ -269,10 +279,13 @@ fn env_or(name: &str, default: &str) -> String {
 }
 
 /// The plan for a live refresh. It reads the PDF locally and calls nothing.
-pub async fn plan_live(evals: &Path) -> Result<(Plan, Vec<PageData>), Error> {
-    let sections = data::load_sections(&evals.join("corpus/sections.json"))?;
-    let questions = data::load_golden(&evals.join("golden.jsonl"), data::page_total(&sections))?;
-    let pages = read_pages(&corpus_path(evals)?).await?;
+pub async fn plan_live(
+    corpus: &Corpus,
+    models: Option<&Models>,
+) -> Result<(Plan, Vec<PageData>), Error> {
+    let sections = data::load_sections(&corpus.sections_path())?;
+    let questions = data::load_golden(&corpus.golden_path(), data::page_total(&sections))?;
+    let pages = read_pages(&corpus.pdf_path()?).await?;
     let total = data::page_total(&sections);
     if pages.len() != total as usize {
         return Err(Error::Data(format!(
@@ -282,15 +295,23 @@ pub async fn plan_live(evals: &Path) -> Result<(Plan, Vec<PageData>), Error> {
     }
     let text: Vec<(u32, String)> = pages.iter().map(|p| (p.number, p.text.clone())).collect();
     let queries: Vec<String> = questions.iter().map(plain_query).collect();
-    let embed_calls = texts_to_embed(&sections, &text, &queries, &CHUNK_TARGET_TOKENS)?.len();
+    let to_embed = texts_to_embed(&sections, &text, &queries, &CHUNK_TARGET_TOKENS)?;
+    let embed_calls = to_embed.len();
+    let embed_chars: usize = to_embed.iter().map(|t| t.chars().count()).sum();
     let transcribe_pages: Vec<u32> = pages
         .iter()
         .filter(|p| p.needs_transcription && p.image.is_some())
         .map(|p| p.number)
         .collect();
     let plan = Plan {
-        model_id: env_or("OPENBOOK_EVAL_MODEL_ID", DEFAULT_MODEL_ID),
-        embedding_model: env_or("OPENBOOK_EMBEDDING_MODEL_ID", DEFAULT_EMBEDDING_MODEL_ID),
+        model_id: models.map_or_else(
+            || env_or("OPENBOOK_EVAL_MODEL_ID", DEFAULT_MODEL_ID),
+            |m| m.chat.clone(),
+        ),
+        embedding_model: models.map_or_else(
+            || env_or("OPENBOOK_EMBEDDING_MODEL_ID", DEFAULT_EMBEDDING_MODEL_ID),
+            |m| m.embedding.clone(),
+        ),
         region: std::env::var("AWS_REGION")
             .or_else(|_| std::env::var("AWS_DEFAULT_REGION"))
             .unwrap_or_else(|_| format!("{DEFAULT_REGION} (default)")),
@@ -298,6 +319,7 @@ pub async fn plan_live(evals: &Path) -> Result<(Plan, Vec<PageData>), Error> {
             .unwrap_or_else(|_| "(none: the default credential chain)".into()),
         transcribe_pages,
         embed_calls,
+        embed_chars,
         rewrite_calls: questions
             .iter()
             .filter(|q| q.kind == Kind::Followup)
@@ -354,10 +376,14 @@ fn eval_entry(model_id: &str) -> ModelEntry {
 }
 
 /// Runs the live refresh. The caller has shown the plan and has the go-ahead.
-pub async fn build_live(evals: &Path, plan: &Plan, pages: Vec<PageData>) -> Result<Cache, Error> {
-    let sections = data::load_sections(&evals.join("corpus/sections.json"))?;
-    let questions = data::load_golden(&evals.join("golden.jsonl"), data::page_total(&sections))?;
-    let pdf_path = corpus_path(evals)?;
+pub async fn build_live(
+    corpus: &Corpus,
+    plan: &Plan,
+    pages: Vec<PageData>,
+) -> Result<Cache, Error> {
+    let sections = data::load_sections(&corpus.sections_path())?;
+    let questions = data::load_golden(&corpus.golden_path(), data::page_total(&sections))?;
+    let pdf_path = corpus.pdf_path()?;
 
     let sdk = aws_config::defaults(aws_config::BehaviorVersion::latest())
         .region(
@@ -598,16 +624,16 @@ fn known_queries<'a>(questions: &'a [Question], cache: &Cache) -> (Vec<String>, 
 }
 
 /// Reads the live cache and works out what it lacks. It calls nothing.
-pub fn plan_missing(evals: &Path, cache_dir: &Path) -> Result<(MissingPlan, Cache), Error> {
-    let sections = data::load_sections(&evals.join("corpus/sections.json"))?;
-    let questions = data::load_golden(&evals.join("golden.jsonl"), data::page_total(&sections))?;
+pub fn plan_missing(corpus: &Corpus, cache_dir: &Path) -> Result<(MissingPlan, Cache), Error> {
+    let sections = data::load_sections(&corpus.sections_path())?;
+    let questions = data::load_golden(&corpus.golden_path(), data::page_total(&sections))?;
     let cache = Cache::load(cache_dir)?;
     if cache.meta.kind != CacheKind::Live {
         return Err(Error::Run(
             "--missing-only works on a live cache. A dev cache has no Bedrock calls to add.".into(),
         ));
     }
-    let sha = crate::cache::corpus_sha256(&corpus_path(evals)?)?;
+    let sha = crate::cache::corpus_sha256(&corpus.pdf_path()?)?;
     if sha != cache.meta.corpus_sha256 {
         return Err(Error::Cache(
             "the cache was made for another corpus file. Run a full `refresh`.".into(),
@@ -636,12 +662,12 @@ pub fn plan_missing(evals: &Path, cache_dir: &Path) -> Result<(MissingPlan, Cach
 
 /// Makes the calls of the plan and returns the completed cache. The pages stay as they are.
 pub async fn run_missing(
-    evals: &Path,
+    corpus: &Corpus,
     plan: &MissingPlan,
     mut cache: Cache,
 ) -> Result<Cache, Error> {
-    let sections = data::load_sections(&evals.join("corpus/sections.json"))?;
-    let questions = data::load_golden(&evals.join("golden.jsonl"), data::page_total(&sections))?;
+    let sections = data::load_sections(&corpus.sections_path())?;
+    let questions = data::load_golden(&corpus.golden_path(), data::page_total(&sections))?;
     let sdk = aws_config::defaults(aws_config::BehaviorVersion::latest())
         .region(
             aws_config::meta::region::RegionProviderChain::default_provider()
@@ -703,6 +729,196 @@ pub async fn run_missing(
     Ok(cache)
 }
 
+// ---- One plan for all corpora
+
+/// What the refresh does for one corpus.
+pub enum Action {
+    /// The corpus has no cache: the full live refresh, with the page transcription.
+    Full { plan: Plan, pages: Vec<PageData> },
+    /// The corpus has a live cache: only the calls for what the cache lacks.
+    Missing {
+        plan: MissingPlan,
+        cache: Box<Cache>,
+    },
+}
+
+pub struct Step {
+    pub corpus: Corpus,
+    pub action: Action,
+}
+
+/// The plan of one `refresh` command over one or more corpora.
+pub struct Refresh {
+    pub region: String,
+    pub profile: String,
+    pub steps: Vec<Step>,
+}
+
+fn current_region() -> String {
+    std::env::var("AWS_REGION")
+        .or_else(|_| std::env::var("AWS_DEFAULT_REGION"))
+        .unwrap_or_else(|_| format!("{DEFAULT_REGION} (default)"))
+}
+
+fn current_profile() -> String {
+    std::env::var("AWS_PROFILE").unwrap_or_else(|_| "(none: the default credential chain)".into())
+}
+
+/// Makes the plan. It reads the PDFs of the corpora that have no cache and calls nothing.
+///
+/// With `missing_only`, a corpus that has a live cache gets only the calls that its cache lacks,
+/// and a corpus that has none gets the full live refresh with the models of the other caches (so
+/// that all caches have one embedding model). Without it, every corpus gets the full refresh.
+pub async fn plan_refresh(corpora: &[Corpus], missing_only: bool) -> Result<Refresh, Error> {
+    let mut planned: Vec<Option<Action>> = Vec::new();
+    let mut models: Option<Models> = None;
+    for corpus in corpora {
+        let dir = corpus.cache_dir(false);
+        if missing_only && dir.join("meta.json").exists() {
+            let (plan, cache) = plan_missing(corpus, &dir)?;
+            models.get_or_insert_with(|| Models {
+                chat: plan.model_id.clone(),
+                embedding: plan.embedding_model.clone(),
+            });
+            planned.push(Some(Action::Missing {
+                plan,
+                cache: Box::new(cache),
+            }));
+        } else {
+            planned.push(None);
+        }
+    }
+    let mut steps = Vec::new();
+    for (corpus, action) in corpora.iter().zip(planned) {
+        let action = match action {
+            Some(action) => action,
+            None => {
+                let (plan, pages) = plan_live(corpus, models.as_ref()).await?;
+                Action::Full { plan, pages }
+            }
+        };
+        steps.push(Step {
+            corpus: corpus.clone(),
+            action,
+        });
+    }
+    Ok(Refresh {
+        region: current_region(),
+        profile: current_profile(),
+        steps,
+    })
+}
+
+impl Refresh {
+    /// True when no step has a call to make.
+    pub fn is_empty(&self) -> bool {
+        self.steps.iter().all(|s| match &s.action {
+            Action::Full { .. } => false,
+            Action::Missing { plan, .. } => plan.is_empty(),
+        })
+    }
+
+    /// An upper bound of the cost in US dollars.
+    pub fn cost_upper_bound_usd(&self) -> f64 {
+        self.steps
+            .iter()
+            .map(|s| match &s.action {
+                Action::Full { plan, .. } => plan.cost_upper_bound_usd(),
+                Action::Missing { plan, .. } => plan.cost_upper_bound_usd(),
+            })
+            .sum()
+    }
+
+    pub fn describe(&self) -> String {
+        let mut out = String::new();
+        out.push_str("openbook-eval refresh will call REAL AWS services with the credentials of this environment.\n");
+        out.push_str(&format!(
+            "  AWS profile: {}\n  AWS Region: {}\n",
+            self.profile, self.region
+        ));
+        for step in &self.steps {
+            out.push('\n');
+            match &step.action {
+                Action::Full { plan, .. } => {
+                    out.push_str(&format!(
+                        "Corpus {}: no cache yet, so this is the full live refresh. It reads {}.\n",
+                        step.corpus.id,
+                        step.corpus
+                            .pdf_path()
+                            .map(|p| file_name(&p))
+                            .unwrap_or_default()
+                    ));
+                    out.push_str(&format!(
+                        "  1. Bedrock Converse (page transcription), model {}: {} calls, one per page with a poor text layer (pages {:?}).\n",
+                        plan.model_id,
+                        plan.transcribe_pages.len(),
+                        plan.transcribe_pages
+                    ));
+                    out.push_str(&format!(
+                        "  2. Bedrock InvokeModel (embeddings), model {}: about {} calls, one per chunk (every chunk target of the grid) and one per question.\n",
+                        plan.embedding_model, plan.embed_calls
+                    ));
+                    out.push_str(&format!(
+                        "  3. Bedrock ConverseStream (rewrite of follow-up questions), model {}: {} calls.\n",
+                        plan.model_id, plan.rewrite_calls
+                    ));
+                    out.push_str(&format!(
+                        "  Bound for this corpus: ${:.4}.\n",
+                        plan.cost_upper_bound_usd()
+                    ));
+                }
+                Action::Missing { plan, .. } => {
+                    out.push_str(&format!(
+                        "Corpus {}: the cache has the pages. No page transcription.\n",
+                        step.corpus.id
+                    ));
+                    out.push_str(&format!(
+                        "  1. Bedrock InvokeModel (embeddings), model {}: {} calls for the texts that the cache does not have, and up to {} more for the rewritten follow-up queries.\n",
+                        plan.embedding_model,
+                        plan.embed_texts.len(),
+                        plan.rewrite_ids.len()
+                    ));
+                    out.push_str(&format!(
+                        "  2. Bedrock ConverseStream (rewrite of follow-up questions), model {}: {} calls{}.\n",
+                        plan.model_id,
+                        plan.rewrite_ids.len(),
+                        if plan.rewrite_ids.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" ({})", plan.rewrite_ids.join(", "))
+                        }
+                    ));
+                    out.push_str(&format!(
+                        "  Bound for this corpus: ${:.4}.\n",
+                        plan.cost_upper_bound_usd()
+                    ));
+                }
+            }
+        }
+        out.push_str(&format!(
+            "\nTotal: at most ${:.4} at list prices (an upper bound).\n",
+            self.cost_upper_bound_usd()
+        ));
+        out.push_str("It does not touch S3, DynamoDB, SQS, or S3 Vectors. It writes only to the cache directories of the corpora in evals/corpora/.\n");
+        out
+    }
+}
+
+/// Makes the calls of the plan. It returns the finished cache of each corpus, in order. The caller
+/// saves them.
+pub async fn run_refresh(refresh: Refresh) -> Result<Vec<(Corpus, Cache)>, Error> {
+    let mut done = Vec::new();
+    for step in refresh.steps {
+        eprintln!("== Corpus {}", step.corpus.id);
+        let cache = match step.action {
+            Action::Full { plan, pages } => build_live(&step.corpus, &plan, pages).await?,
+            Action::Missing { plan, cache } => run_missing(&step.corpus, &plan, *cache).await?,
+        };
+        done.push((step.corpus, cache));
+    }
+    Ok(done)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -726,6 +942,7 @@ mod tests {
             profile: "p".into(),
             transcribe_pages: vec![3, 4],
             embed_calls: 100,
+            embed_chars: 100_000,
             rewrite_calls: 18,
         };
         let text = plan.describe();
@@ -816,6 +1033,105 @@ mod tests {
         assert!(more.cost_upper_bound_usd() < plan.cost_upper_bound_usd());
         assert!(plan.cost_upper_bound_usd() < 0.01);
         assert!(!plan.is_empty());
+    }
+
+    fn cache_stub() -> Cache {
+        Cache {
+            meta: Meta {
+                format: FORMAT,
+                kind: CacheKind::Live,
+                corpus: "c.pdf".into(),
+                corpus_sha256: "00".into(),
+                embedding_model: "e".into(),
+                transcribe_model: Some("m".into()),
+                rewrite_model: "m".into(),
+                pages: 1,
+                transcribed_pages: 0,
+                fallback_pages: vec![],
+                latency: None,
+            },
+            pages: vec![(1, "Text".into())],
+            embeddings: EmbeddingStore::new("e", 8),
+            rewrites: Default::default(),
+        }
+    }
+
+    fn corpus(id: &str) -> Corpus {
+        Corpus {
+            id: id.into(),
+            dir: PathBuf::from("/nowhere").join(id),
+        }
+    }
+
+    #[test]
+    fn one_plan_covers_a_new_corpus_and_a_corpus_with_a_cache() {
+        let full = Plan {
+            model_id: "m".into(),
+            embedding_model: "e".into(),
+            region: "r".into(),
+            profile: "p".into(),
+            transcribe_pages: vec![5, 6],
+            embed_calls: 300,
+            embed_chars: 300_000,
+            rewrite_calls: 11,
+        };
+        let missing = MissingPlan {
+            model_id: "m".into(),
+            embedding_model: "e".into(),
+            region: "r".into(),
+            profile: "p".into(),
+            embed_texts: vec!["a".repeat(1000)],
+            rewrite_ids: vec![],
+        };
+        let refresh = Refresh {
+            region: "ap-southeast-2".into(),
+            profile: "p".into(),
+            steps: vec![
+                Step {
+                    corpus: corpus("history"),
+                    action: Action::Full {
+                        plan: full.clone(),
+                        pages: vec![],
+                    },
+                },
+                Step {
+                    corpus: corpus("algebra"),
+                    action: Action::Missing {
+                        plan: missing.clone(),
+                        cache: Box::new(cache_stub()),
+                    },
+                },
+            ],
+        };
+        let text = refresh.describe();
+        assert!(text.contains("AWS Region: ap-southeast-2"));
+        assert!(text.contains("Corpus history: no cache yet, so this is the full live refresh"));
+        assert!(text.contains("page transcription), model m: 2 calls"));
+        assert!(text.contains("Corpus algebra: the cache has the pages. No page transcription."));
+        assert!(text.contains("Total: at most $"));
+        assert!(!refresh.is_empty());
+        let total = full.cost_upper_bound_usd() + missing.cost_upper_bound_usd();
+        assert!((refresh.cost_upper_bound_usd() - total).abs() < 1e-12);
+        // Every page that is transcribed costs at most a few cents, and the whole plan stays small.
+        assert!(full.cost_upper_bound_usd() > 2.0 * 0.02);
+        assert!(refresh.cost_upper_bound_usd() < 1.0);
+
+        // A plan with only complete caches has nothing to call.
+        let done = Refresh {
+            region: "r".into(),
+            profile: "p".into(),
+            steps: vec![Step {
+                corpus: corpus("algebra"),
+                action: Action::Missing {
+                    plan: MissingPlan {
+                        embed_texts: vec![],
+                        ..missing
+                    },
+                    cache: Box::new(cache_stub()),
+                },
+            }],
+        };
+        assert!(done.is_empty());
     }
 
     #[test]
