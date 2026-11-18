@@ -1,0 +1,106 @@
+{
+  "schema": 1,
+  "settings": {
+    "chatModel": "au.anthropic.claude-sonnet-4-6",
+    "judgeModel": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "style": "socratic",
+    "rubricVersion": 2,
+    "promptFingerprint": "cb314f4c362a35de59fb72be680318cd65bcaf36cb6e56f4097e9968a484988a",
+    "selection": "all questions"
+  },
+  "pooled": {
+    "questions": 180,
+    "covered": {
+      "questions": 123,
+      "groundedCitationRate": 0.8699,
+      "citationPrecision": 0.8928,
+      "uncitedRate": 0.065,
+      "nonexistentCitationRate": 0.0,
+      "falseNotCoveredRate": 0.0,
+      "relevantSourceAvailableRate": 0.9919
+    },
+    "notCovered": {
+      "all": {
+        "questions": 33,
+        "saysNotCoveredRate": 0.9091,
+        "uncitedRate": 0.9394
+      },
+      "gated": {
+        "questions": 14,
+        "saysNotCoveredRate": 1.0,
+        "uncitedRate": 1.0
+      },
+      "notGated": {
+        "questions": 19,
+        "saysNotCoveredRate": 0.8421,
+        "uncitedRate": 0.8947
+      }
+    },
+    "offTopic": {
+      "all": {
+        "questions": 24,
+        "correctRate": 1.0
+      },
+      "smallTalk": {
+        "questions": 7,
+        "correctRate": 1.0
+      },
+      "subject": {
+        "questions": 17,
+        "correctRate": 1.0
+      },
+      "gatedRate": 1.0
+    },
+    "byKind": [
+      {
+        "kind": "lookup",
+        "questions": 36,
+        "uncitedRate": 0.0278,
+        "nonexistentCitationRate": 0.0,
+        "saysNotCoveredRate": 0.0,
+        "groundedCitationRate": 0.9444
+      },
+      {
+        "kind": "paraphrase",
+        "questions": 37,
+        "uncitedRate": 0.1622,
+        "nonexistentCitationRate": 0.0,
+        "saysNotCoveredRate": 0.0,
+        "groundedCitationRate": 0.7568
+      },
+      {
+        "kind": "notation",
+        "questions": 21,
+        "uncitedRate": 0.0476,
+        "nonexistentCitationRate": 0.0,
+        "saysNotCoveredRate": 0.0,
+        "groundedCitationRate": 0.8571
+      },
+      {
+        "kind": "followup",
+        "questions": 29,
+        "uncitedRate": 0.0,
+        "nonexistentCitationRate": 0.0,
+        "saysNotCoveredRate": 0.0,
+        "groundedCitationRate": 0.931
+      },
+      {
+        "kind": "not_covered",
+        "questions": 33,
+        "uncitedRate": 0.9394,
+        "nonexistentCitationRate": 0.0,
+        "saysNotCoveredRate": 0.9091,
+        "groundedCitationRate": 0.0
+      },
+      {
+        "kind": "off_topic",
+        "questions": 24,
+        "uncitedRate": 1.0,
+        "nonexistentCitationRate": 0.0,
+        "saysNotCoveredRate": 0.7083,
+        "groundedCitationRate": 0.0
+      }
+    ]
+  },
+  "corpora": {}
+}
