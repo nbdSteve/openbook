@@ -2,7 +2,6 @@ import { ApiError } from './client';
 import { completeDocument, createDocument, deleteDocument } from './routes';
 import type { CourseDocument, UploadTarget } from './types';
 
-/** PUT the file bytes to the presigned URL and report progress (0..1). */
 export function putFile(
   target: UploadTarget,
   file: Blob,
@@ -35,10 +34,6 @@ export function putFile(
   });
 }
 
-/**
- * The file reached storage, but `complete` answered 503 (the queue could not take the message). The
- * document is back in `uploading`, and calling `complete` again is safe, so the UI offers a retry.
- */
 export class UploadIncompleteError extends Error {
   readonly document: CourseDocument;
 
@@ -63,11 +58,6 @@ const defaultDeps: UploadDeps = {
   remove: deleteDocument,
 };
 
-/**
- * Upload one PDF: create the document, PUT the bytes with exactly the headers the API returned,
- * then call complete. If the PUT fails, delete the half-created document (best effort) so it does
- * not sit in `uploading` forever.
- */
 export async function uploadDocument(
   courseId: string,
   file: File,
@@ -94,7 +84,6 @@ export async function uploadDocument(
 
 export type UploadProblem = 'not_pdf' | 'empty' | 'too_large' | 'name_too_long';
 
-/** Check a file before upload. Returns a problem code, or null when the file is acceptable. */
 export function checkUploadFile(file: { name: string; size: number }, maxBytes: number): UploadProblem | null {
   if (!file.name.toLowerCase().endsWith('.pdf')) return 'not_pdf';
   if (file.size === 0) return 'empty';

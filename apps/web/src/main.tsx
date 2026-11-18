@@ -14,7 +14,6 @@ async function start() {
     root.render(<ConfigErrorScreen message={message} />);
     return;
   }
-  // Load the app only after the config is set: the auth code reads it when it first runs.
   let App: typeof import('./App').default;
   try {
     App = (await import('./App')).default;

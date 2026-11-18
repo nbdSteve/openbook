@@ -6,7 +6,6 @@ export interface PasswordRule {
   test: (password: string) => boolean;
 }
 
-/** The pool's rules (docs/api.md, "Accounts"). Symbols are allowed but not required. */
 export const PASSWORD_RULES: PasswordRule[] = [
   { id: 'length', label: `At least ${PASSWORD_MIN_LENGTH} characters`, test: (p) => p.length >= PASSWORD_MIN_LENGTH },
   { id: 'lower', label: 'A lower case letter', test: (p) => /[a-z]/.test(p) },
@@ -14,7 +13,6 @@ export const PASSWORD_RULES: PasswordRule[] = [
   { id: 'digit', label: 'A number', test: (p) => /\d/.test(p) },
 ];
 
-/** True when the password meets every rule. The app checks this before it calls the sign-in service. */
 export function passwordValid(password: string): boolean {
   return PASSWORD_RULES.every((rule) => rule.test(password));
 }

@@ -12,12 +12,10 @@ export interface SessionUser {
   email: string;
 }
 
-/** Refresh when fewer than this many seconds remain on the ID token. */
 export const REFRESH_MARGIN_SECONDS = 300;
 
 let pool: CognitoUserPool | null = null;
 
-/** A relative endpoint such as "/__aws/" is resolved against the page origin, so the file does not depend on the port. */
 export function resolveEndpoint(endpoint: string, origin: string = window.location.origin): string {
   return new URL(endpoint, origin).toString();
 }
@@ -34,7 +32,6 @@ function getPool(): CognitoUserPool {
   return pool;
 }
 
-/** Forget the cached pool. Tests use this when they change the config. */
 export function resetCognitoPool(): void {
   pool = null;
   inflight = null;
@@ -78,7 +75,6 @@ export function resendConfirmationCode(email: string): Promise<void> {
 
 export function signIn(email: string, password: string): Promise<SessionUser> {
   const user = userFor(email);
-  // The emulator does not implement SRP, so every stage uses USER_PASSWORD_AUTH (docs/api.md, "Accounts").
   user.setAuthenticationFlowType('USER_PASSWORD_AUTH');
   const details = new AuthenticationDetails({ Username: email.trim(), Password: password });
   return new Promise((resolve, reject) => {
@@ -112,12 +108,10 @@ export function confirmNewPassword(email: string, code: string, newPassword: str
   });
 }
 
-/** Remove the session from this browser without calling the service. */
 export function clearSession(): void {
   getPool().getCurrentUser()?.signOut();
 }
 
-/** Revoke the refresh token at the service (best effort, 3 s at most), then clear the local session. */
 export async function signOut(): Promise<void> {
   const user = getPool().getCurrentUser();
   if (!user) return;
@@ -130,7 +124,6 @@ export async function signOut(): Promise<void> {
 
 function getSession(user: CognitoUser): Promise<CognitoUserSession | null> {
   return new Promise((resolve) => {
-    // `getSession` refreshes the session by itself when a token has already expired.
     user.getSession((err: Error | null, session: CognitoUserSession | null) => {
       resolve(err || !session ? null : session);
     });
@@ -147,10 +140,6 @@ function refreshSession(user: CognitoUser, session: CognitoUserSession): Promise
 
 let inflight: Promise<CognitoUserSession | null> | null = null;
 
-/**
- * The current session. It refreshes first when the ID token has less than `marginSeconds` left,
- * so a request never carries a token that is about to expire. Concurrent callers share one refresh.
- */
 export function getValidSession(marginSeconds = REFRESH_MARGIN_SECONDS): Promise<CognitoUserSession | null> {
   if (inflight) return inflight;
   const user = getPool().getCurrentUser();
@@ -182,7 +171,6 @@ export async function restoreSession(): Promise<{ user: SessionUser; expiresAt: 
   return { user: sessionUser(session), expiresAt: session.getIdToken().getExpiration() };
 }
 
-/** Turn a Cognito error into a clear message. */
 export function describeAuthError(error: unknown): string {
   const name = error instanceof Error ? error.name : '';
   switch (name) {
@@ -201,7 +189,6 @@ export function describeAuthError(error: unknown): string {
     case 'NotAuthorizedException':
       return 'The email or password is not correct.';
     case 'UserNotFoundException':
-      // Same text as a wrong password, so the form does not reveal which emails have accounts.
       return 'The email or password is not correct.';
     case 'UserNotConfirmedException':
       return 'This email is not confirmed yet. Enter the code from your email.';

@@ -6,7 +6,6 @@ import { Button } from '@/components/ui/Button';
 import { ShellSkeleton } from '@/components/layout/ShellSkeleton';
 import { MeContext } from './MeContext';
 
-/** Loads `GET /api/me` once for the signed-in area. The first call also creates the profile. */
 export function MeProvider({ children }: { children: ReactNode }) {
   const { data, error, loading, reload } = useResource('me', getMe);
   const value = useMemo(() => (data ? { me: data, refresh: reload } : null), [data, reload]);

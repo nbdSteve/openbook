@@ -2,7 +2,6 @@ import { formatBytes } from '@/lib/format';
 import { ApiError } from './client';
 import type { Limits } from './types';
 
-/** A short, specific message for the user. `limits` makes the text more exact when known. */
 export function describeApiError(error: unknown, limits?: Limits): string {
   if (!(error instanceof ApiError)) {
     if (error instanceof TypeError) return 'Cannot reach the server. Check your connection and try again.';

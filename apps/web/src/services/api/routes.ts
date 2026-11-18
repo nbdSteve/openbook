@@ -13,7 +13,6 @@ import type {
   UploadTarget,
 } from './types';
 
-// One typed function per route in docs/api.md.
 
 const enc = encodeURIComponent;
 
@@ -66,7 +65,6 @@ export const completeDocument = async (courseId: string, documentId: string) =>
     )
   ).document;
 
-/** Returns the document in `deleting`. The worker removes it a little later. */
 export const deleteDocument = async (courseId: string, documentId: string) =>
   (await apiJson<{ document: CourseDocument }>(`/api/courses/${enc(courseId)}/documents/${enc(documentId)}`, { method: 'DELETE' })).document;
 
@@ -85,7 +83,6 @@ export const deleteConversation = (conversationId: string) =>
 export const getInsights = (courseId: string, signal?: AbortSignal) =>
   apiJson<Insights>(`/api/courses/${enc(courseId)}/insights`, { signal });
 
-/** Open the chat stream. Failures before the stream starts throw ApiError. */
 export async function openChat(
   courseId: string,
   body: { conversationId?: string; message: string; model?: string; style?: TutoringStyle },

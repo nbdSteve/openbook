@@ -9,16 +9,11 @@ interface Result<T> {
 export interface Resource<T> {
   data: T | undefined;
   error: unknown;
-  /** True until the first result for the current key arrives. Reloads do not set it. */
   loading: boolean;
   reload: () => void;
   update: (updater: (current: T) => T) => void;
 }
 
-/**
- * Load data when `key` changes (and when `reload` runs). Stale results for an old key are never
- * returned, and requests for an old key are aborted.
- */
 export function useResource<T>(key: string, load: (signal: AbortSignal) => Promise<T>): Resource<T> {
   const [result, setResult] = useState<Result<T>>();
   const [version, setVersion] = useState(0);

@@ -87,7 +87,6 @@ describe('uploadDocument when complete answers 503', () => {
     const error = await uploadDocument('C1', file, () => {}, undefined, d).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(UploadIncompleteError);
     expect((error as UploadIncompleteError).document.id).toBe('D1');
-    // The file is stored, so the half-created document must stay for the retry.
     expect(d.remove).not.toHaveBeenCalled();
   });
 

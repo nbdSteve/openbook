@@ -24,7 +24,6 @@ async function collect(options: Parameters<typeof askDemo>[0]): Promise<ChatEven
 }
 
 const errorBody = (code: string, extra: Record<string, unknown> = {}) => JSON.stringify({ error: { code, message: `${code} message`, ...extra } });
-// The demo route sets this header on every response it makes.
 const FROM_DEMO = { 'x-openbook-demo': '1' };
 
 afterEach(() => vi.unstubAllGlobals());
@@ -41,7 +40,6 @@ describe('askDemo', () => {
     const headers = init.headers as Record<string, string>;
     expect(headers['x-amz-content-sha256']).toMatch(/^[0-9a-f]{64}$/);
     expect(JSON.parse(new TextDecoder().decode(init.body as Uint8Array))).toEqual({ message: 'What is x?' });
-    // No account: the demo never sends a token.
     expect(headers['x-auth-token']).toBeUndefined();
   });
 

@@ -1,4 +1,3 @@
-/** Shown when /config.json fails. It uses no app providers, because none exist yet. */
 export function ConfigErrorScreen({ message }: { message: string }) {
   return (
     <div className="flex min-h-dvh flex-col items-center justify-center bg-bg-primary px-6 text-center">

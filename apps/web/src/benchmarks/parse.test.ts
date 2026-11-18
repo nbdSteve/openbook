@@ -3,7 +3,6 @@ import real from '../../../../evals/benchmarks.json';
 import fixture from './benchmarks.fixture.json';
 import { BenchmarksError, parseBenchmarks, percent, toLanding } from './parse';
 
-// The fixture is for the tests only. The build reads evals/benchmarks.json (see vite.config.ts).
 describe('parseBenchmarks', () => {
   it('reads the real evals/benchmarks.json, so a schema change fails here and at build time', () => {
     const b = parseBenchmarks(real);

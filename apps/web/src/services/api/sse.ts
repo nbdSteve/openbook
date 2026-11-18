@@ -5,11 +5,6 @@ export interface SseMessage {
   data: string;
 }
 
-/**
- * Incremental parser for Server-Sent Events. Feed it text chunks of any size. Lines can split
- * across chunks. It handles LF, CRLF, and CR line ends, ignores `:` comment lines, joins several
- * `data:` lines with a newline, and drops an event that has no blank-line terminator yet.
- */
 export class SseParser {
   private buffer = '';
   private event = '';
@@ -20,7 +15,6 @@ export class SseParser {
   push(chunk: string): SseMessage[] {
     const out: SseMessage[] = [];
     let text = chunk;
-    // A CRLF pair can split across chunks: drop the LF that follows a CR we already handled.
     if (this.lastWasCr && text.startsWith('\n')) text = text.slice(1);
     this.lastWasCr = text.endsWith('\r');
     this.buffer += text;
@@ -65,7 +59,6 @@ export class SseParser {
   }
 }
 
-/** Keep the credit lines that have the fields the page needs. */
 function readAttribution(items: unknown[]): Attribution[] {
   return items.flatMap((item): Attribution[] => {
     const a = item as Partial<Record<keyof Attribution, unknown>> | null;
@@ -82,11 +75,9 @@ function readAttribution(items: unknown[]): Attribution[] {
   });
 }
 
-/** Turn a decoded SSE message into a typed chat event. Unknown events return null. */
 const KNOWN_EVENTS = new Set(['meta', 'sources', 'delta', 'done', 'error']);
 
 export function toChatEvent(message: SseMessage): ChatEvent | null {
-  // An event the app does not know is ignored, whatever its data looks like.
   if (!KNOWN_EVENTS.has(message.event)) return null;
   let payload: Record<string, unknown>;
   try {
@@ -130,7 +121,6 @@ export function toChatEvent(message: SseMessage): ChatEvent | null {
   }
 }
 
-/** Read a byte stream and yield typed chat events. */
 export async function* readChatEvents(body: ReadableStream<Uint8Array>): AsyncGenerator<ChatEvent> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -143,7 +133,6 @@ export async function* readChatEvents(body: ReadableStream<Uint8Array>): AsyncGe
         const event = toChatEvent(message);
         if (!event) continue;
         yield event;
-        // `done` and `error` end the stream. Ignore anything after them.
         if (event.type === 'done' || event.type === 'error') return;
       }
     }

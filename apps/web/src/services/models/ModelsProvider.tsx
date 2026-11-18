@@ -3,10 +3,6 @@ import { useResource } from '@/lib/useResource';
 import { listModels } from '@/services/api/routes';
 import { ModelsContext, type ModelsContextValue } from './ModelsContext';
 
-/**
- * Loads the model catalog once after sign-in. It never blocks the screen: if the request fails,
- * the catalog is empty, the picker hides, and the server uses the course default.
- */
 export function ModelsProvider({ children }: { children: ReactNode }) {
   const { data } = useResource('models', listModels);
   const value = useMemo<ModelsContextValue>(() => {

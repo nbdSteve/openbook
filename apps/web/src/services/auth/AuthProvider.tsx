@@ -16,7 +16,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setStatus('signedOut');
   }, []);
 
-  // Refresh the ID token shortly before it expires, even in a tab that sits idle.
   const schedule = useRef<(expiresAt: number) => void>(() => {});
   useEffect(() => {
     schedule.current = (expiresAt) => {
@@ -49,7 +48,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     });
 
-    // Another tab signed in or out: follow it.
     const onStorage = (event: StorageEvent) => {
       if (event.key !== null && !event.key.startsWith('CognitoIdentityServiceProvider.')) return;
       cognito.restoreSession().then((restored) => {

@@ -1,6 +1,5 @@
 import type { DocumentStatus, TutoringStyle } from '@/services/api/types';
 
-// The server owns the prompts. The client only knows the IDs and what to call them.
 export const TUTORING_STYLES: { id: TutoringStyle; name: string; description: string }[] = [
   { id: 'socratic', name: 'Socratic', description: 'Asks guiding questions. Does not give the final answer first.' },
   { id: 'hints', name: 'Hints', description: 'Gives progressive hints. Gives the full answer only when asked again.' },

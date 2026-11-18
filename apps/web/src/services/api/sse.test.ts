@@ -81,7 +81,7 @@ describe('readChatEvents', () => {
 
   it('decodes multi-byte characters that split across chunks', async () => {
     const bytes = enc.encode('event: delta\ndata: {"text":"π≈3.14"}\n\n');
-    const cut = bytes.indexOf(0xcf) + 1; // inside the two-byte "π"
+    const cut = bytes.indexOf(0xcf) + 1;
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
         controller.enqueue(bytes.slice(0, cut));

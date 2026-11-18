@@ -1,6 +1,5 @@
 import { useSyncExternalStore } from 'react';
 
-/** Follow a CSS media query. */
 export function useMediaQuery(query: string): boolean {
   return useSyncExternalStore(
     (notify) => {

@@ -3,14 +3,18 @@ import { ThemeContext, type Theme } from './ThemeContext';
 
 const STORAGE_KEY = 'ask_theme';
 
+function systemTheme(): Theme {
+  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
+
 function initialTheme(): Theme {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored === 'light' || stored === 'dark') return stored;
   } catch {
-    // Storage can be blocked. Fall back to the system setting.
+    return systemTheme();
   }
-  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  return systemTheme();
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
@@ -26,7 +30,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       try {
         localStorage.setItem(STORAGE_KEY, next);
       } catch {
-        // The theme still changes for this visit.
+        return next;
       }
       return next;
     });

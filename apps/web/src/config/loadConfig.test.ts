@@ -27,7 +27,6 @@ describe('loadConfig', () => {
     expect(parseConfig({ ...valid, demo: { ...demo, enabled: false } }).demo).toBeUndefined();
     expect(parseConfig({ ...valid, demo: 'yes' }).demo).toBeUndefined();
     expect(parseConfig(valid).demo).toBeUndefined();
-    // Entries that are not well formed are dropped, not trusted.
     const messy = { enabled: true, sources: [{ title: 'x' }, demo.sources[0]], examples: ['ok', 3, ''] };
     expect(parseConfig({ ...valid, demo: messy }).demo).toEqual({ enabled: true, sources: demo.sources, examples: ['ok'] });
   });

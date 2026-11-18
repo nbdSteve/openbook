@@ -4,12 +4,10 @@ export interface DemoSource {
   url: string;
 }
 
-/** The public demo on the landing page. Missing or `enabled: false` means the page shows a static example. */
 export interface DemoConfig {
   enabled: boolean;
   sources: DemoSource[];
   examples: string[];
-  /** The model that answers demo questions. */
   model?: { label: string };
 }
 
@@ -19,7 +17,6 @@ export interface AppConfig {
   cognito: {
     userPoolId: string;
     clientId: string;
-    /** `null` for deployed stages. Locally it points at the Vite proxy for AWS Emulator. */
     endpoint: string | null;
   };
   demo?: DemoConfig;
@@ -36,10 +33,6 @@ function isString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
 }
 
-/**
- * Read the optional demo block. A bad or partial block never stops the app: the demo is then off
- * and the landing page shows its static example.
- */
 export function parseDemo(value: unknown): DemoConfig | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const v = value as Record<string, unknown>;
@@ -47,7 +40,6 @@ export function parseDemo(value: unknown): DemoConfig | undefined {
   const sources = Array.isArray(v.sources)
     ? v.sources.flatMap((item): DemoSource[] => {
         const s = item as Partial<DemoSource> | null;
-        // CC BY needs the title, the licence, and the source link, so an entry without all three is dropped.
         return s && isString(s.title) && isString(s.license) && isString(s.url) ? [{ title: s.title, license: s.license, url: s.url }] : [];
       })
     : [];
@@ -56,7 +48,6 @@ export function parseDemo(value: unknown): DemoConfig | undefined {
   return { enabled: true, sources, examples, ...(model && isString(model.label) ? { model: { label: model.label } } : {}) };
 }
 
-/** Check that a parsed JSON value has the shape in docs/api.md. */
 export function parseConfig(value: unknown): AppConfig {
   const v = value as Partial<AppConfig> | null;
   const c = v?.cognito as Partial<AppConfig['cognito']> | undefined;
@@ -78,7 +69,6 @@ export function parseConfig(value: unknown): AppConfig {
   };
 }
 
-/** Fetch `/config.json`. Throws ConfigError with a message fit for the error screen. */
 export async function loadConfig(fetchFn: typeof fetch = fetch): Promise<AppConfig> {
   let response: Response;
   try {

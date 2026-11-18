@@ -1,7 +1,3 @@
-/**
- * The one reader of evals/benchmarks.json. The landing page uses the view model below, never the
- * raw file, so a change of the file schema is a change in this module only.
- */
 
 export type RetrievalMode = 'hybrid' | 'dense' | 'bm25';
 
@@ -24,7 +20,6 @@ export interface Corpus {
   id: string;
   title: string;
   licence: string;
-  /** A URL. */
   source: string;
   pages: number;
   questions: number;
@@ -34,7 +29,6 @@ export interface Benchmarks {
   embeddingModel: string;
   questions: number;
   corpora: Corpus[];
-  /** Combined over every corpus. Each question weighs the same. */
   retrieval: Record<RetrievalMode, RetrievalMetrics>;
   gate: GateMetrics;
 }
@@ -90,7 +84,6 @@ function gate(value: unknown, path: string): GateMetrics {
   };
 }
 
-/** Check the file and return the numbers the landing page shows. Throws BenchmarksError with the path of the first problem. */
 export function parseBenchmarks(raw: unknown): Benchmarks {
   const v = obj(raw, 'file');
   if (v.schema !== SCHEMA) throw new BenchmarksError(`schema must be ${SCHEMA}, found ${String(v.schema)}`);
@@ -120,7 +113,6 @@ export function parseBenchmarks(raw: unknown): Benchmarks {
   };
 }
 
-/** "94%" for 0.94. Never "100%" for a value below 1, and never "0%" for a value above 0. */
 export function percent(value: number): string {
   const p = value * 100;
   if (value > 0 && p < 1) return '<1%';
@@ -128,15 +120,11 @@ export function percent(value: number): string {
   return `${Math.round(p)}%`;
 }
 
-/** The numbers that the landing page shows, and nothing else. The Vite plugin emits this object, so the page carries no unused data. */
 export interface LandingBenchmarks {
   questions: number;
   textbooks: number;
-  /** The publisher that every corpus title names in brackets, for example "OpenStax", or null when they differ. */
   publisher: string | null;
-  /** Recall at 8 of each search method. */
   recallAt8: Record<RetrievalMode, number>;
-  /** Recall at 1 of the method that the product uses (hybrid). */
   recallAt1: number;
   offTopicCaught: number;
 }
