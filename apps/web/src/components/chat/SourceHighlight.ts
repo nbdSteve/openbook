@@ -1,8 +1,8 @@
-import { createContext, useContext } from 'react';
+import { createContext, useContext, type Dispatch, type SetStateAction } from 'react';
 
 export interface SourceHighlight {
   active: number | null;
-  onActive: (n: number | null) => void;
+  onActive: Dispatch<SetStateAction<number | null>>;
 }
 
 export const SourceHighlightContext = createContext<SourceHighlight>({ active: null, onActive: () => {} });

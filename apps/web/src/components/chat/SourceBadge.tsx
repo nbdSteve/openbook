@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useEffectEvent, useId, useRef, useState, type ReactNode } from 'react';
 import { ChevronRight } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { cn } from '@/lib/cn';
@@ -57,11 +57,14 @@ export function SourceButton({ source, variant }: SourceButtonProps) {
         : { left, width, top: rect.bottom + 8, maxHeight: Math.min(roomBelow, POPOVER_MAX_HEIGHT) },
     );
   };
+  const clearHighlight = () => {
+    setsHighlight.current = false;
+    onActive((current) => (current === source.n ? null : current));
+  };
   const hide = () => {
     window.clearTimeout(hideTimer.current);
     setPinned(false);
-    setsHighlight.current = false;
-    onActive(null);
+    clearHighlight();
     setPosition(null);
   };
   const hideSoon = () => {
@@ -71,17 +74,14 @@ export function SourceButton({ source, variant }: SourceButtonProps) {
     }, 150);
   };
 
-  const latest = useRef({ show, onActive });
-  useEffect(() => {
-    latest.current = { show, onActive };
-  });
+  const showInEffect = useEffectEvent(show);
+  const clearHighlightInEffect = useEffectEvent(clearHighlight);
 
   useEffect(() => {
     if (!open) return;
     const close = () => {
       setPinned(false);
-      setsHighlight.current = false;
-      latest.current.onActive(null);
+      clearHighlightInEffect();
       setPosition(null);
     };
     const onKey = (e: KeyboardEvent) => {
@@ -94,7 +94,7 @@ export function SourceButton({ source, variant }: SourceButtonProps) {
       if (event.target instanceof Node && popover.current?.contains(event.target)) return;
       const rect = button.current?.getBoundingClientRect();
       if (!rect || rect.bottom < 0 || rect.top > window.innerHeight) close();
-      else latest.current.show();
+      else showInEffect();
     };
     window.addEventListener('scroll', follow, true);
     window.addEventListener('resize', follow);
@@ -114,7 +114,7 @@ export function SourceButton({ source, variant }: SourceButtonProps) {
 
   useEffect(
     () => () => {
-      if (setsHighlight.current) latest.current.onActive(null);
+      if (setsHighlight.current) clearHighlightInEffect();
     },
     [],
   );
