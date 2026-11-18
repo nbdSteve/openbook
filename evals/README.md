@@ -136,6 +136,18 @@ The first command prints the plan: the number of answer calls and judge calls, a
 | `--write-summary` | Write `evals/answers-summary.json` (needs all questions and all corpora) |
 | `--prune` | Remove the cached answers of the same style and the same questions that this prompt does not use |
 
+Numbers of the committed prompt (Socratic, 180 questions, pooled), before the prompt change and after it:
+
+| Metric | Before | After |
+|---|---|---|
+| Not covered: says "not covered" | 12.1% | 90.9% |
+| Covered: grounded citation rate | 27.6% | 87.0% |
+| Covered: citation precision | 90.5% | 89.3% |
+| Covered: false "not covered" rate | 0.0% | 0.0% |
+| Off topic: correct handling | 91.7% | 100.0% |
+
+The Direct style on the `not_covered` questions went from 27.3% to 93.9%. `answers-summary.json` has the numbers of the committed prompt, and `results/2026-11-18.md` has the history.
+
 The answers and judgments are committed in `corpora/<id>/answers/`. A run with a cache that holds everything calls nothing and needs no `--yes`. The report is `target/eval/answers.md` and `answers.json`.
 
 ## How a question is scored

@@ -75,3 +75,9 @@ The report goes to `target/eval/answers.md` and `answers.json`. `--write-summary
 ### The rule that the prompt follows
 
 When no source answers the question, the answer opens with one short sentence that says the course materials do not cover it, and then helps from general knowledge without citations. This holds when the gate cut off all sources and when sources were given but none is relevant. It holds for every tutoring style: a Socratic answer says it first. A greeting or thanks gets a normal short reply that does not talk about the course materials.
+
+### The numbers of the committed prompt
+
+`evals/answers-summary.json` holds the pooled metrics of the committed prompt, from the cache (Socratic, 180 questions, rubric version 2). The history, the judge check, and the before and after table are in `evals/results/2026-11-18.md`, "Answer evaluation". In short: the share of `not_covered` answers that say so went from 12.1% to 90.9% (100% gated, 84.2% not gated), small talk and subject questions are handled right in 100% of the cases, the grounded citation rate for covered questions went from 27.6% to 87.0%, and the false "not covered" rate is 0%.
+
+The server puts a short note before the last student message of a turn that had retrieval. A change to the prompt, to a note, or to the rubric changes the cache keys: run `make eval-answers` with `YES=1` for the affected questions, compare the numbers, and commit the cache and the summary together. `make eval` does not check the summary, because it has no network.
