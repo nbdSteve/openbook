@@ -16,12 +16,6 @@ import { EXAMPLE_MARKDOWN } from './src/pages/landing/exampleContent.ts';
 
 const BENCHMARKS_FILE = fileURLToPath(new URL('../../evals/benchmarks.json', import.meta.url));
 
-/**
- * `virtual:benchmarks` holds the numbers that the landing page shows, read from
- * evals/benchmarks.json at build time, so the page shows the numbers of the commit it is built from.
- * The file is checked here: a missing file, a bad number, or a renamed key fails the build, and the
- * visitor never sees a broken page. There is no fallback to sample numbers.
- */
 function benchmarksPlugin(): Plugin {
   const id = 'virtual:benchmarks';
   const resolved = `\0${id}`;
@@ -42,13 +36,6 @@ function benchmarksPlugin(): Plugin {
   };
 }
 
-/**
- * `virtual:example-answer` is the fixed example answer of the landing page, as a HAST tree. It is
- * rendered here, at build time, with the same Markdown, math, and KaTeX plugins as the chat. The
- * page turns the tree into React elements (not into an HTML string), so the first view needs
- * neither the Markdown parser nor the style attributes of raw HTML. The tree is our own constant,
- * never model output, so there is nothing to sanitize.
- */
 function exampleAnswerPlugin(): Plugin {
   const id = 'virtual:example-answer';
   const resolved = `\0${id}`;
@@ -59,7 +46,6 @@ function exampleAnswerPlugin(): Plugin {
       if (name !== resolved) return undefined;
       const processor = unified().use(remarkParse).use(remarkGfm).use(remarkMath).use(remarkRehype).use(rehypeKatex);
       const tree = await processor.run(processor.parse(EXAMPLE_MARKDOWN));
-      // Positions only make the file larger.
       return `export default ${JSON.stringify(tree, (key, value: unknown) => (key === 'position' ? undefined : value))};`;
     },
   };
@@ -69,11 +55,6 @@ const webPort = Number(process.env.OPENBOOK_WEB_PORT ?? 5173);
 const apiPort = process.env.OPENBOOK_API_PORT ?? '8787';
 const emulatorPort = process.env.OPENBOOK_EMULATOR_PORT ?? '9297';
 
-/**
- * Serve /config.json from the file named by OPENBOOK_WEB_CONFIG. Each local stack (make dev,
- * make e2e-local) has its own file, so both can run at once. Without the variable, Vite serves
- * public/config.json as usual.
- */
 function webConfigPlugin(): Plugin {
   return {
     name: 'openbook-web-config',
@@ -98,7 +79,6 @@ function webConfigPlugin(): Plugin {
 export default defineConfig({
   plugins: [react(), tailwindcss(), webConfigPlugin(), benchmarksPlugin(), exampleAnswerPlugin()],
   define: {
-    // amazon-cognito-identity-js expects a Node-style `global`.
     global: 'globalThis',
   },
   resolve: {
@@ -109,15 +89,12 @@ export default defineConfig({
   server: {
     port: webPort,
     strictPort: true,
-    // The landing page reads evals/benchmarks.json, which is outside this app.
     fs: { allow: ['../..'] },
     proxy: {
       '/api': {
         target: `http://127.0.0.1:${apiPort}`,
         changeOrigin: true,
       },
-      // AWS Emulator: Cognito calls and presigned S3 PUTs. The scripts set
-      // NODE_EXTRA_CA_CERTS to the emulator CA, so TLS verification stays on.
       '/__aws': {
         target: `https://127.0.0.1:${emulatorPort}`,
         changeOrigin: true,

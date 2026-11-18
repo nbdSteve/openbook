@@ -2,7 +2,6 @@ import { defineConfig, devices } from '@playwright/test';
 
 export default defineConfig({
   testDir: './e2e/flows',
-  // A real model and a real Cognito are slower than the local fakes.
   timeout: process.env.E2E_TARGET === 'deployed' ? 180_000 : 90_000,
   globalTeardown: './e2e/flows/global-teardown.ts',
   expect: { timeout: 15_000 },
@@ -12,8 +11,6 @@ export default defineConfig({
   use: {
     ...devices['Desktop Chrome'],
     baseURL: process.env.E2E_BASE_URL ?? 'http://localhost:5180',
-    // Off on purpose: the flows share contexts across serial tests, and the built-in trace fixture
-    // can hang on them. helpers.ts records a trace per context instead.
     trace: 'off',
   },
   projects: [{ name: 'flows' }],
