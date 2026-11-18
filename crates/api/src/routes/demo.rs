@@ -41,7 +41,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tracing::Instrument;
 
 use super::chat::{ChatTimeouts, EVENT_BUFFER, Failure, emit, error_event, next_event};
-use crate::error::{ApiError, MODEL_UNAVAILABLE_MESSAGE};
+use crate::error::{ApiError, INTERNAL_MESSAGE, MODEL_UNAVAILABLE_MESSAGE};
 use crate::extract::ApiJson;
 use crate::retrieval::{
     FINAL_SOURCES, MAX_QUERY_CHARS, REWRITE_HISTORY, REWRITE_MAX_TOKENS, Retrieval, SNIPPET_CHARS,
@@ -423,7 +423,24 @@ async fn run_demo(run: DemoRun, tx: mpsc::Sender<ChatEvent>) {
     }
     let mut history = earlier;
     history.push((MessageRole::User, message.clone()));
-    let nonce = new_tag_nonce();
+    let nonce = match new_tag_nonce() {
+        Ok(nonce) => nonce,
+        Err(error) => {
+            tracing::error!(%error, "no tag nonce");
+            budget.settle(&store, retrieval_cost).await;
+            visitor.release(&store).await;
+            log_turn(
+                "internal_error",
+                &model_id,
+                TokenUsage::default(),
+                retrieval_cost,
+                started,
+                None,
+            );
+            emit(&tx, error_event("internal", INTERNAL_MESSAGE)).await;
+            return;
+        }
+    };
     let mut system = build_system_prompt_for(
         &course.name,
         &course.description,
@@ -727,7 +744,7 @@ mod tests {
                 SourceMode::NotCovered,
                 SourceMode::Found(&sources),
             ] {
-                let nonce = openbook_core::prompt::new_tag_nonce();
+                let nonce = openbook_core::prompt::new_tag_nonce().unwrap();
                 let mut system =
                     build_system_prompt_for(&c.name, &c.description, style, mode, &nonce);
                 let sources_tokens = match mode {

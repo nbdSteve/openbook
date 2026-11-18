@@ -403,7 +403,16 @@ async fn run_chat(run: ChatRun, tx: mpsc::Sender<ChatEvent>) {
         )
         .await;
     }
-    let nonce = new_tag_nonce();
+    let nonce = match new_tag_nonce() {
+        Ok(nonce) => nonce,
+        Err(error) => {
+            tracing::error!(%error, "no tag nonce");
+            release_message(&run.store, &run.user.user_id, &date).await;
+            record_retrieval_only(&run, turn.usage).await;
+            emit(&tx, error_event("internal", INTERNAL_MESSAGE)).await;
+            return;
+        }
+    };
     let request = ChatRequest {
         system: build_system_prompt_for(
             &run.course.name,

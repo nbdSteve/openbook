@@ -303,10 +303,20 @@ pub fn unescape_text(text: &str) -> String {
         .replace("&amp;", "&")
 }
 
-pub fn new_tag_nonce() -> String {
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("no random bytes for the student tag: {0}")]
+pub struct NonceError(pub String);
+
+pub fn nonce_from(
+    fill: impl FnOnce(&mut [u8]) -> Result<(), String>,
+) -> Result<String, NonceError> {
     let mut bytes = [0u8; TAG_NONCE_CHARS / 2];
-    let _ = getrandom::fill(&mut bytes);
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    fill(&mut bytes).map_err(NonceError)?;
+    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+pub fn new_tag_nonce() -> Result<String, NonceError> {
+    nonce_from(|bytes| getrandom::fill(bytes).map_err(|e| e.to_string()))
 }
 
 pub fn student_tag(nonce: &str) -> String {
@@ -849,8 +859,8 @@ mod tests {
 
     #[test]
     fn the_tag_has_a_random_name_per_request() {
-        let first = new_tag_nonce();
-        let second = new_tag_nonce();
+        let first = new_tag_nonce().unwrap();
+        let second = new_tag_nonce().unwrap();
         assert_eq!(first.len(), TAG_NONCE_CHARS);
         assert!(first.chars().all(|c| c.is_ascii_hexdigit()));
         assert_ne!(first, second);
@@ -978,5 +988,17 @@ mod tests {
         assert!(!GATED_TURN_NOTE.contains("student_message"));
         assert!(!SOURCES_TURN_NOTE.contains("student_message"));
         assert!(!NOT_COVERED_NOTICE.contains("student_message"));
+    }
+
+    #[test]
+    fn a_failing_random_source_gives_an_error_and_never_a_known_nonce() {
+        let failed = nonce_from(|_| Err("no entropy".to_owned()));
+        assert_eq!(failed, Err(NonceError("no entropy".to_owned())));
+        assert!(failed.unwrap_err().to_string().contains("no entropy"));
+        let fixed = nonce_from(|bytes| {
+            bytes.copy_from_slice(&[0xab, 0xcd, 0x01, 0x02]);
+            Ok(())
+        });
+        assert_eq!(fixed.unwrap(), "abcd0102");
     }
 }
