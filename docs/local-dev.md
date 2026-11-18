@@ -6,7 +6,7 @@ Bedrock has no models in the emulator, so local runs use a deterministic fake mo
 ## What runs where
 
 ```
-Browser or Playwright ─► http://localhost:5173  (Vite dev server, apps/ask)
+Browser or Playwright ─► http://localhost:5173  (Vite dev server, apps/web)
                            ├─ /api/*   ─► http://127.0.0.1:8787  (openbook-api, local TCP listener)
                            └─ /__aws/* ─► https://127.0.0.1:9297 (AWS Emulator in Docker; Cognito calls and presigned S3 PUTs from the browser)
 openbook-api ─► AWS Emulator (DynamoDB, S3, Cognito JWKS; phase 2: S3 Vectors, SQS)
@@ -42,7 +42,7 @@ The Vite proxy trusts it through `NODE_EXTRA_CA_CERTS`.
 It also writes two files for each stack, in a folder of its own (`.local/dev` for `make dev`, `.local/e2e` for `make e2e-local`):
 
 - `<stack>/api.env`: the environment for `openbook-api`, written so that Bash can source it. It has stage `local`, `OPENBOOK_LISTEN_ADDR=127.0.0.1:<apiPort>`, `AWS_ENDPOINT_URL`, `AWS_REGION=us-east-1`, test keys, `AWS_CONFIG_FILE=/dev/null` and `AWS_SHARED_CREDENTIALS_FILE=/dev/null` (so no AWS profile can leak in), `OPENBOOK_CA_BUNDLE`, `OPENBOOK_COGNITO_REGION=us-east-1`, `OPENBOOK_COGNITO_JWKS_URL`, `OPENBOOK_COGNITO_ISSUER`, `OPENBOOK_PRESIGN_ENDPOINT=http://localhost:<webPort>/__aws`, and the model catalog (`OPENBOOK_MODELS`, `OPENBOOK_DEFAULT_CHAT_MODEL`, `OPENBOOK_FAST_MODEL`). The local catalog has two fake entries: `fake` (residency `au`, the default chat and fast model) and `fake-global` (residency `global`, to test the picker label). When `OPENBOOK_BEDROCK_PROFILE` is set, the file holds the deployed catalog from `infra/cdk.json` and that variable instead, and leaves the AWS file settings alone so that the profile can load.
-- `<stack>/web-config.json`: the web runtime config, with `cognito.endpoint = "/__aws/"` and `region` `us-east-1`. The scripts set `OPENBOOK_WEB_CONFIG` to this file, and the Vite dev server serves it at `/config.json`. The endpoint is relative, so the file does not depend on the web port. Nothing writes `apps/ask/public/config.json` any more.
+- `<stack>/web-config.json`: the web runtime config, with `cognito.endpoint = "/__aws/"` and `region` `us-east-1`. The scripts set `OPENBOOK_WEB_CONFIG` to this file, and the Vite dev server serves it at `/config.json`. The endpoint is relative, so the file does not depend on the web port. Nothing writes `apps/web/public/config.json` any more.
 
 The ingest worker reads the same `api.env`. It adds `OPENBOOK_INGEST_QUEUE_URL`, `OPENBOOK_VECTOR_BUCKET=openbook-local-vectors`, `OPENBOOK_EMBEDDING_MODEL_ID=fake` (a hashed bag of words, 1024 dimensions), `OPENBOOK_TRANSCRIBE_MODEL=fake`, and `OPENBOOK_PDFIUM_PATH`. The two fake catalog entries have `vision: true`. With `OPENBOOK_BEDROCK_PROFILE`, the embedding model and the transcribe model are the deployed ones (`embeddingModelId` and the fast model of `infra/cdk.json`) and the worker calls real Bedrock.
 
@@ -120,11 +120,11 @@ See `infra/README.md`.
 
 ## Run the browser flows against a deployed stack
 
-The same flows in `apps/ask/e2e/flows` can run against a deployed stack, for example `Openbook-dev`.
+The same flows in `apps/web/e2e/flows` can run against a deployed stack, for example `Openbook-dev`.
 They need AWS credentials that can call `cognito-idp:AdminCreateUser`, `AdminSetUserPassword`, and `AdminDeleteUser` on that stack's user pool.
 
 ```
-cd apps/ask
+cd apps/web
 npx playwright install chromium   # once
 AWS_PROFILE=<profile> E2E_BASE_URL=https://<stack>.cloudfront.net npm run e2e:deployed
 ```

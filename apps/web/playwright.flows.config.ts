@@ -1,10 +1,5 @@
 import { defineConfig, devices } from '@playwright/test';
 
-/**
- * The real end-to-end suite. It starts nothing itself. It needs the full local stack
- * (see docs/local-dev.md), or a deployed stack with E2E_TARGET=deployed. The base URL comes from E2E_BASE_URL (default http://localhost:5180).
- * `scripts/e2e-local.sh` runs it with: npm --prefix apps/ask run e2e -- --project=flows
- */
 export default defineConfig({
   testDir: './e2e/flows',
   // A real model and a real Cognito are slower than the local fakes.

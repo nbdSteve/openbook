@@ -4,7 +4,7 @@ This file guides people and coding agents who work in this repository. `CLAUDE.m
 
 ## Project
 
-Openbook is an open-source (AGPL-3.0) platform for tutoring that is grounded in course materials. Ask is its web app.
+Openbook is an open-source (AGPL-3.0) platform for tutoring that is grounded in course materials. Its web app has the landing page, the Ask area (`/ask`) and the Portal area (`/portal`).
 Read these before you change anything:
 
 - `docs/architecture.md`: hard rules, components, data model, configuration, phases.
@@ -17,7 +17,7 @@ Read these before you change anything:
 |---|---|
 | `crates/core` | `openbook-core`: configuration, auth (Cognito JWT), domain types, DynamoDB store, quotas, tutoring prompts, model providers |
 | `crates/api` | `openbook-api`: axum routes, SSE chat, Lambda and local entry points |
-| `apps/ask` | Ask web app: React 19, Vite, Tailwind 4, TypeScript |
+| `apps/web` | Openbook web app (landing page, Ask, Portal): React 19, Vite, Tailwind 4, TypeScript |
 | `infra` | AWS CDK app (TypeScript) for the `Openbook-<stage>` stacks, plus the deployment-role templates |
 | `scripts` | Local tooling: emulator, bootstrap, dev and end-to-end runners |
 | `docs` | Design documents |
@@ -38,7 +38,7 @@ Run `make help` for the full list. The main ones:
 ## Quality bar
 
 - Rust: `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`. No `unwrap()` or `expect()` outside tests and startup. Errors map to the codes in `docs/api.md`.
-- TypeScript: `npm run lint`, `npm run typecheck`, `npm test`, `npm run build` in `apps/ask` and in `infra`. No `any` without a comment that says why.
+- TypeScript: `npm run lint`, `npm run typecheck`, `npm test`, `npm run build` in `apps/web` and in `infra`. No `any`.
 - Tests protect behavior that matters: auth and membership checks, quota limits, the SSE event order, the API contract, and the CDK security settings. Do not write tests only to raise coverage.
 - A flaky test is a bug. Fix it; do not retry it.
 - If you see a lint error, a failing test, or a UI defect that is not yours, fix it anyway or report it.
@@ -62,6 +62,7 @@ Run `make help` for the full list. The main ones:
 
 ## Git
 
-- Small, focused commits with a clear subject line in the imperative mood.
+- No code comments or docstrings in added code. Put the facts into names, types and tests.
+- Commit subject: `type(scope): description`, lowercase, imperative, at most 72 characters. Commit body: `## Motivation`, `## What changed` and `## Testing`, each with 1 to 3 short plain sentences. Keep commits small and focused.
 - Never add `Co-authored-by` or similar trailers for an AI agent.
-- Never commit `.local/`, `apps/ask/public/config.json`, emulator files (`config`, `emulator_credentials`, `ca.pem`), rendered IAM documents, or build output.
+- Never commit `.local/`, `apps/web/public/config.json`, emulator files (`config`, `emulator_credentials`, `ca.pem`), rendered IAM documents, or build output.

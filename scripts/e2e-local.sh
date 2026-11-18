@@ -63,7 +63,7 @@ status=0
   export E2E_BASE_URL="http://localhost:${web_port}"
   export E2E_AWS_ENDPOINT="https://127.0.0.1:${emulator_port}"
   export NODE_EXTRA_CA_CERTS="${HOME}/.aws/emulator/${emulator_port}/ca.pem"
-  npm --prefix apps/ask run e2e -- --project=flows
+  npm --prefix apps/web run e2e -- --project=flows
 ) || status=$?
 
 if [ "$status" -ne 0 ]; then
