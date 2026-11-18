@@ -29,8 +29,8 @@ use openbook_core::domain::{
 };
 use openbook_core::model::{ChatModel, ChatRequest, ModelEvent, TokenUsage};
 use openbook_core::prompt::{
-    GATED_TURN_NOTE, NOT_COVERED_NOTICE, REWRITE_SYSTEM_PROMPT, SOURCES_TURN_NOTE, SourceMode,
-    build_system_prompt_for, rewrite_user_text, turns_for,
+    REWRITE_SYSTEM_PROMPT, STUDENT_MESSAGE_TAG, SourceContext, SourceMode, build_system_prompt_for,
+    escape_source, rewrite_user_text, turn_note, turns_for,
 };
 use openbook_core::store::Store;
 use serde::Deserialize;
@@ -85,15 +85,36 @@ pub fn client_ip(
 }
 
 pub fn system_prompt_tokens(course: &CourseRecord, style: TutoringStyle) -> u64 {
-    token_bound(&build_system_prompt_for(
-        &course.name,
-        &course.description,
-        style,
+    let one_source = [SourceContext {
+        n: u32::MAX,
+        document_name: "d".repeat(validate::MAX_FILENAME_CHARS),
+        page: Some(u32::MAX),
+        text: String::new(),
+    }];
+    let modes = [
         SourceMode::NotUsed,
-    )) + token_bound(NOT_COVERED_NOTICE)
-        + token_bound(GATED_TURN_NOTE)
-        + token_bound(SOURCES_TURN_NOTE)
+        SourceMode::NotCovered,
+        SourceMode::Found(&one_source),
+    ];
+    let wrapper = format!("\n\n<{STUDENT_MESSAGE_TAG}>\n\n</{STUDENT_MESSAGE_TAG}>");
+    modes
+        .into_iter()
+        .map(|mode| {
+            token_bound(&build_system_prompt_for(
+                &course.name,
+                &course.description,
+                style,
+                mode,
+            )) + turn_note(mode).map_or(0, |note| token_bound(note) + token_bound(&wrapper))
+        })
+        .max()
+        .unwrap_or(0)
         + token_bound(DEMO_PROMPT_NOTE)
+}
+
+pub fn answer_input_tokens(system_tokens: u64, history_tokens: u64, message: &str) -> u64 {
+    let sources_tokens = source_token_bound(FINAL_SOURCES * (SNIPPET_CHARS + SOURCE_WRAPPER_CHARS));
+    system_tokens + sources_tokens + history_tokens + token_bound(&escape_source(message))
 }
 
 /// The most that one turn can cost, in millionths of a US dollar. It is an upper bound:
@@ -111,8 +132,7 @@ pub fn worst_case_cost(
     message: &str,
     max_output: u64,
 ) -> Option<u64> {
-    let sources_tokens = source_token_bound(FINAL_SOURCES * (SNIPPET_CHARS + SOURCE_WRAPPER_CHARS));
-    let answer_input = system_tokens + sources_tokens + history_tokens + token_bound(message);
+    let answer_input = answer_input_tokens(system_tokens, history_tokens, message);
     let answer = chat.cost_micro_usd(answer_input, max_output)?;
     let rewrite = if history.is_empty() {
         0
@@ -657,5 +677,37 @@ mod tests {
             worst_case_cost(&sonnet, &free, 800, &[], 0, "q", 1000),
             None
         );
+    }
+    #[test]
+    fn the_reservation_is_not_smaller_than_the_real_request_in_every_mode() {
+        use openbook_core::prompt::SourceContext;
+        let c = course(true);
+        let message = "'".repeat(openbook_core::demo::MAX_MESSAGE_CHARS);
+        let sources: Vec<SourceContext> = (1..=FINAL_SOURCES as u32)
+            .map(|n| SourceContext {
+                n,
+                document_name: "d".repeat(validate::MAX_FILENAME_CHARS),
+                page: Some(u32::MAX),
+                text: "a".repeat(SNIPPET_CHARS),
+            })
+            .collect();
+        for style in TutoringStyle::ALL {
+            for mode in [
+                SourceMode::NotUsed,
+                SourceMode::NotCovered,
+                SourceMode::Found(&sources),
+            ] {
+                let mut system = build_system_prompt_for(&c.name, &c.description, style, mode);
+                system.push_str(DEMO_PROMPT_NOTE);
+                let turns = turns_for(&[(MessageRole::User, message.clone())], mode);
+                let real =
+                    token_bound(&system) + turns.iter().map(|t| token_bound(&t.text)).sum::<u64>();
+                let reserved = answer_input_tokens(system_prompt_tokens(&c, style), 0, &message);
+                assert!(
+                    reserved >= real,
+                    "{style:?} {mode:?}: reserved {reserved}, real {real}"
+                );
+            }
+        }
     }
 }

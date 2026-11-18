@@ -1501,6 +1501,69 @@ async fn chat_sends_sources_before_the_first_delta_and_the_fake_answer_cites_the
 
 #[tokio::test]
 #[ignore = "needs AWS Emulator; run make test-integration"]
+async fn the_model_gets_the_server_note_and_everything_else_keeps_the_raw_student_text() {
+    use openbook_core::prompt::{GATED_TURN_NOTE, SOURCES_TURN_NOTE, student_text};
+    let rewriter = ScriptedRewriter::new(Ok("Pythagorean theorem"));
+    let e = env_with_fast(rewriter.clone()).await;
+    e.two_documents().await;
+
+    let question = "What does the Pythagorean theorem say about a right triangle?";
+    let events = e
+        .chat(&e.owner, json!({"message": question, "model": "fake-fast"}))
+        .await;
+    let conversation = text(&events[0].1, "conversationId");
+    let first = rewriter.calls();
+    assert_eq!(first.len(), 1, "no rewrite for the first question");
+    let turn = &first[0].turns[0].text;
+    assert!(turn.starts_with(SOURCES_TURN_NOTE), "{turn}");
+    assert!(turn.contains(&format!(
+        "<student_message>\n{question}\n</student_message>"
+    )));
+    assert_eq!(student_text(turn), question);
+
+    let answer = answer_of(&events);
+    assert_eq!(answer, "Pythagorean theorem");
+    assert!(!answer.contains("Server note"));
+    let stored = e
+        .app
+        .get(&format!("/api/conversations/{conversation}"), &e.owner)
+        .await
+        .json();
+    let messages = stored["messages"].as_array().unwrap();
+    assert_eq!(messages[0]["content"], question);
+    assert_eq!(messages[1]["content"], answer);
+    assert!(!stored.to_string().contains("Server note"));
+
+    let follow_up = "And what about the hypotenuse?";
+    let events = e
+        .chat(
+            &e.owner,
+            json!({"conversationId": conversation, "message": follow_up, "model": "fake-fast"}),
+        )
+        .await;
+    assert!(!answer_of(&events).contains("Server note"));
+    let calls = rewriter.calls();
+    let chat_call = calls.last().unwrap();
+    assert_eq!(chat_call.turns.len(), 3);
+    assert_eq!(
+        chat_call.turns[0].text, question,
+        "the history keeps the raw text"
+    );
+    assert_eq!(chat_call.turns[1].text, "Pythagorean theorem");
+    let last = &chat_call.turns[2].text;
+    assert!(last.starts_with(SOURCES_TURN_NOTE) || last.starts_with(GATED_TURN_NOTE));
+    assert_eq!(student_text(last), follow_up);
+    let stored = e
+        .app
+        .get(&format!("/api/conversations/{conversation}"), &e.owner)
+        .await
+        .json();
+    assert!(!stored.to_string().contains("Server note"));
+    assert_eq!(stored["messages"][2]["content"], follow_up);
+}
+
+#[tokio::test]
+#[ignore = "needs AWS Emulator; run make test-integration"]
 async fn a_course_without_ready_documents_gets_no_sources_event_and_no_rewrite() {
     let rewriter = ScriptedRewriter::new(Ok("never used"));
     let e = env_with_fast(rewriter.clone()).await;

@@ -19,7 +19,7 @@ use openbook_core::demo::{self, DemoBudgets, DemoConversations, TurnReservation}
 use openbook_core::files::Files;
 use openbook_core::model::{ChatModel, ChatRequest, FakeChat, ModelError, ModelStream};
 use openbook_core::prompt::{
-    NOT_COVERED_NOTICE, REWRITE_SYSTEM_PROMPT, SOURCES_TURN_NOTE, without_turn_note,
+    NOT_COVERED_NOTICE, REWRITE_SYSTEM_PROMPT, SOURCES_TURN_NOTE, student_text,
 };
 use openbook_core::queue::IngestQueue;
 use openbook_core::store::Store;
@@ -584,7 +584,9 @@ async fn a_demo_question_streams_an_answer_with_sources_and_credits() {
     assert_eq!(requests[0].turns.len(), 1, "first turn");
     assert_eq!(
         requests[0].turns[0].text,
-        format!("{SOURCES_TURN_NOTE}\n\nWhat does the Pythagorean theorem say?")
+        format!(
+            "{SOURCES_TURN_NOTE}\n\n<student_message>\nWhat does the Pythagorean theorem say?\n</student_message>"
+        )
     );
     assert_eq!(requests[0].max_tokens, Some(1000), "the demo output limit");
     assert!(requests[0].system.contains("<source n=\"1\""));
@@ -1117,10 +1119,7 @@ async fn a_follow_up_uses_the_conversation_that_the_server_kept() {
     assert_eq!(turns.len(), 3);
     assert_eq!(turns[0].text, "What does the Pythagorean theorem say?");
     assert!(turns[1].text.contains("Pythagorean"));
-    assert_eq!(
-        without_turn_note(&turns[2].text),
-        "And how do builders use it?"
-    );
+    assert_eq!(student_text(&turns[2].text), "And how do builders use it?");
 
     // The conversation is stored for 24 hours, with two turns.
     let stored = env.provisioner.store.load(&id).await.unwrap().unwrap();
