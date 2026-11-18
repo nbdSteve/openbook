@@ -22,9 +22,20 @@ describe('safeNextPath', () => {
     ['a delete character', '/\u007f/evil.test'],
     ['a backslash after a segment', '/ask\\evil.test'],
     ['a path with no leading slash', 'evil.test/ask'],
+    ['the last control character, 0x1f', '/\u001f/evil.test'],
+    ['a javascript URL', 'javascript:alert(1)'],
     ['an empty value', ''],
   ])('falls back for %s', (_name, value) => {
     expect(safeNextPath(value)).toBe('/ask');
+  });
+
+  it('keeps a space, the first character after the control range', () => {
+    expect(safeNextPath('/ask/a b')).toBe('/ask/a b');
+  });
+
+  it('returns the custom fallback when it refuses a path', () => {
+    expect(safeNextPath('//evil.test', '/portal')).toBe('/portal');
+    expect(safeNextPath(null, '/portal')).toBe('/portal');
   });
 
   it('falls back for null', () => {

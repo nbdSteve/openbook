@@ -160,9 +160,7 @@ export async function flushTraces(testTitle: string, failed: boolean): Promise<v
       const file = path.join(process.cwd(), 'test-results', `trace-${testTitle.replace(/\W+/g, '-').slice(0, 60)}-${index++}.zip`);
       await context.tracing.stopChunk(failed ? { path: file } : undefined);
       await context.tracing.startChunk();
-    } catch {
-      continue;
-    }
+    } catch {}
   }
 }
 

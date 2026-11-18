@@ -19,6 +19,9 @@ export default defineConfig([
       ecmaVersion: 2022,
       globals: globals.browser,
     },
+    rules: {
+      'no-empty': ['error', { allowEmptyCatch: true }],
+    },
   },
   {
     files: ['vite.config.ts', 'vitest.config.ts', 'playwright.visual.config.ts', 'playwright.flows.config.ts', 'e2e/**/*.ts'],

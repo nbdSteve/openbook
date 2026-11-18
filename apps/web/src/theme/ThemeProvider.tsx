@@ -3,18 +3,12 @@ import { ThemeContext, type Theme } from './ThemeContext';
 
 const STORAGE_KEY = 'ask_theme';
 
-function systemTheme(): Theme {
-  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-}
-
 function initialTheme(): Theme {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored === 'light' || stored === 'dark') return stored;
-  } catch {
-    return systemTheme();
-  }
-  return systemTheme();
+  } catch {}
+  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
@@ -29,9 +23,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       const next = current === 'dark' ? 'light' : 'dark';
       try {
         localStorage.setItem(STORAGE_KEY, next);
-      } catch {
-        return next;
-      }
+      } catch {}
       return next;
     });
   }, []);
