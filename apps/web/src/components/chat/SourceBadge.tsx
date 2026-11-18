@@ -71,12 +71,17 @@ export function SourceButton({ source, variant }: SourceButtonProps) {
     }, 150);
   };
 
+  const latest = useRef({ show, onActive });
+  useEffect(() => {
+    latest.current = { show, onActive };
+  });
+
   useEffect(() => {
     if (!open) return;
     const close = () => {
       setPinned(false);
       setsHighlight.current = false;
-      onActive(null);
+      latest.current.onActive(null);
       setPosition(null);
     };
     const onKey = (e: KeyboardEvent) => {
@@ -89,7 +94,7 @@ export function SourceButton({ source, variant }: SourceButtonProps) {
       if (event.target instanceof Node && popover.current?.contains(event.target)) return;
       const rect = button.current?.getBoundingClientRect();
       if (!rect || rect.bottom < 0 || rect.top > window.innerHeight) close();
-      else show();
+      else latest.current.show();
     };
     window.addEventListener('scroll', follow, true);
     window.addEventListener('resize', follow);
@@ -107,13 +112,9 @@ export function SourceButton({ source, variant }: SourceButtonProps) {
 
   useEffect(() => () => window.clearTimeout(hideTimer.current), []);
 
-  const latest = useRef(onActive);
-  useEffect(() => {
-    latest.current = onActive;
-  });
   useEffect(
     () => () => {
-      if (setsHighlight.current) latest.current(null);
+      if (setsHighlight.current) latest.current.onActive(null);
     },
     [],
   );

@@ -7,12 +7,21 @@ describe('safeNextPath', () => {
     expect(safeNextPath('/ask/courses/X?tab=invite')).toBe('/ask/courses/X?tab=invite');
   });
 
+  it('keeps a path with non-ASCII characters', () => {
+    expect(safeNextPath('/ask/café/\u{1f600}')).toBe('/ask/café/\u{1f600}');
+  });
+
   it.each([
     ['an absolute URL', 'https://evil.test/'],
     ['a protocol-relative URL', '//evil.test'],
     ['a backslash trick', '/\\evil.test'],
     ['a tab that the URL parser drops', '/\t/evil.test'],
     ['a newline', '/\n/evil.test'],
+    ['a carriage return', '/\r/evil.test'],
+    ['a null character', '/\u0000/evil.test'],
+    ['a delete character', '/\u007f/evil.test'],
+    ['a backslash after a segment', '/ask\\evil.test'],
+    ['a path with no leading slash', 'evil.test/ask'],
     ['an empty value', ''],
   ])('falls back for %s', (_name, value) => {
     expect(safeNextPath(value)).toBe('/ask');
