@@ -58,7 +58,7 @@ check: ## Run every formatter check, linter, type check, and unit test
 	$(call part,rust fmt,Cargo.toml,cargo fmt --all --check)
 	$(call part,rust clippy,Cargo.toml,cargo clippy --workspace --all-targets -- -D warnings)
 	$(call part,rust test,Cargo.toml,cargo test --workspace)
-	$(call npm_check,apps/ask,web,lint typecheck test build)
+	$(call npm_check,apps/web,web,lint typecheck test build)
 	$(call npm_check,infra,infra,lint typecheck build test)
 	@echo "==> shellcheck"
 	@if command -v shellcheck > /dev/null; then \
@@ -141,9 +141,9 @@ build-lambdas: ## Build the API and ingest Lambdas for arm64, with libpdfium.so 
 	scripts/build-lambdas.sh
 
 .PHONY: build-web
-build-web: ## Build the web app (apps/ask/dist)
-	@$(call npm_install,apps/ask)
-	npm --prefix apps/ask run build
+build-web: ## Build the web app (apps/web/dist)
+	@$(call npm_install,apps/web)
+	npm --prefix apps/web run build
 
 .PHONY: synth
 synth: ## Synthesize the CDK app for STAGE (needs built Lambda and web assets)

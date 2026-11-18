@@ -109,10 +109,10 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: |
-            apps/ask/package-lock.json
+            apps/web/package-lock.json
             infra/package-lock.json
       - run: npm ci
-        working-directory: apps/ask
+        working-directory: apps/web
       - run: npm ci
         working-directory: infra
       # Builds the API and the ingest worker for arm64, and copies libpdfium.so (pinned by
@@ -121,7 +121,7 @@ jobs:
         run: make build-lambdas
       - name: build the web app
         run: npm run build
-        working-directory: apps/ask
+        working-directory: apps/web
       # The CDK tests protect the security settings and the IAM templates.
       - name: test the stack
         run: npm test

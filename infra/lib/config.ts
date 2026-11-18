@@ -322,7 +322,7 @@ export function resolveConfig(node: Node): OpenbookConfig {
     stage,
     apiAssetDir: path.resolve(infraRoot, str(node, 'apiAssetDir') ?? '../target/lambda/openbook-api'),
     ingestAssetDir: path.resolve(infraRoot, str(node, 'ingestAssetDir') ?? '../target/lambda/openbook-ingest'),
-    webAssetDir: path.resolve(infraRoot, str(node, 'webAssetDir') ?? '../apps/ask/dist'),
+    webAssetDir: path.resolve(infraRoot, str(node, 'webAssetDir') ?? '../apps/web/dist'),
     catalog,
     transcribeModel,
     embeddingModelId,

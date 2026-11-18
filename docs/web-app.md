@@ -1,6 +1,6 @@
 # Web app
 
-The web app lives in `apps/ask`. It is React 19, Vite, and Tailwind 4. The product is Openbook. Ask and Portal are the two areas of the app, and the landing page is the front door.
+The web app lives in `apps/web`. It is React 19, Vite, and Tailwind 4. The product is Openbook. Ask and Portal are the two areas of the app, and the landing page is the front door.
 
 ## Routes
 

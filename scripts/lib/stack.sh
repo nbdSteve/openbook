@@ -150,7 +150,7 @@ stack_run_web() {
     export OPENBOOK_API_PORT="$api_port"
     export OPENBOOK_WEB_PORT="$web_port"
     export OPENBOOK_WEB_CONFIG="$web_config"
-    exec npm --prefix apps/ask run dev
+    exec npm --prefix apps/web run dev
   )
 }
 

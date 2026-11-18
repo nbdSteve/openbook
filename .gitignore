@@ -8,7 +8,7 @@ cdk-outputs.json
 
 # Local environment (see docs/local-dev.md)
 /.local/
-/apps/ask/public/config.json
+/apps/web/public/config.json
 .aws-emulator/
 emulator_credentials
 ca.pem
