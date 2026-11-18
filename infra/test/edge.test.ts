@@ -42,6 +42,16 @@ describe('the host redirect', () => {
     expect(out.statusDescription).toBe('Moved Permanently');
   });
 
+  test('is cached for one day only, so a wrong mapping does not stay in browsers', () => {
+    const headers = withRedirects(event('ask.steve.gg', '/')).headers as Record<string, { value: string }>;
+    expect(headers['cache-control']?.value).toBe('max-age=86400');
+  });
+
+  test('portal.steve.gg drops the old query string, because the target is a fixed address', () => {
+    const out = withRedirects(event('portal.steve.gg', '/courses/X', { token: { value: 'abc' }, a: { value: '1' } }));
+    expect(location(out)).toBe('https://openbook.steve.gg/portal');
+  });
+
   test('ask.steve.gg keeps the path and the query string, so an invite link keeps its code', () => {
     for (const [uri, target] of [
       ['/', 'https://openbook.steve.gg/'],

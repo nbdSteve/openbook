@@ -27,6 +27,8 @@ export interface HostRedirect {
 }
 
 export const redirectStatus = 301;
+export const redirectStatusText = 'Moved Permanently';
+export const redirectMaxAgeSeconds = 86400;
 
 const redirectPart = (redirects: HostRedirect[]): string => {
   const map = Object.fromEntries(redirects.map((r) => [r.host, { target: r.target, keepPath: r.keepPath }]));
@@ -64,11 +66,14 @@ function redirectOf(request) {
   if (!Object.prototype.hasOwnProperty.call(REDIRECTS, host)) return null;
   var rule = REDIRECTS[host];
   var location = rule.keepPath ? rule.target + uri : rule.target;
-  var qs = queryString(request.querystring);
+  var qs = rule.keepPath ? queryString(request.querystring) : '';
   return {
     statusCode: ${redirectStatus},
-    statusDescription: 'Moved Permanently',
-    headers: { location: { value: qs ? location + '?' + qs : location } }
+    statusDescription: '${redirectStatusText}',
+    headers: {
+      location: { value: qs ? location + '?' + qs : location },
+      'cache-control': { value: 'max-age=${redirectMaxAgeSeconds}' }
+    }
   };
 }
 `;
