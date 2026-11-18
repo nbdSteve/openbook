@@ -38,16 +38,10 @@ function base64url(value: object): string {
   return Buffer.from(JSON.stringify(value)).toString('base64url');
 }
 
-/**
- * A token with no signature. It is for the tests only: the browser-side Cognito library does not
- * check signatures, and every API call is answered by a fixture, so no real server sees it.
- * The app itself has no sign-in bypass.
- */
 export function unsignedToken(claims: Record<string, unknown>): string {
   return `${base64url({ alg: 'none', typ: 'JWT' })}.${base64url(claims)}.`;
 }
 
-/** Seed the Cognito library's local-storage session, so the app starts signed in. */
 export async function seedSession(page: Page, email = USER.email) {
   const now = Math.floor(Date.now() / 1000);
   const claims = { sub: USER.id, email, iat: now, exp: now + 24 * 3600, iss: 'visual' };
@@ -66,28 +60,23 @@ export async function seedSession(page: Page, email = USER.email) {
   );
 }
 
-/** What POST /api/demo/chat does in a screen. */
 export type DemoMode = 'answer' | 'not_covered' | 'rate_limited' | 'busy' | 'unavailable' | 'invalid' | 'stream_error' | 'slow';
 
 export interface MockOptions {
-  /** `off` removes the demo block from /config.json. */
   demo?: 'on' | 'off';
   demoMode?: DemoMode;
   courses?: typeof COURSES;
   chatStream?: string;
-  /** Return a response to replace the default fixture for a request. */
   override?: (path: string, method: string) => { status: number; body?: unknown } | undefined;
 }
 
 const json = (route: Route, body: unknown, status = 200) =>
   route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
 
-/** Answer /config.json and every /api/** request from fixtures. */
 export async function mockBackend(page: Page, options: MockOptions = {}) {
   const courses = options.courses ?? COURSES;
   await page.route('**/config.json', (route) => json(route, options.demo === 'off' ? CONFIG : { ...CONFIG, demo: DEMO_CONFIG }));
   await page.route('**/api/demo/chat', async (route) => {
-    // The demo route sets this header on every response. A response without it is not from the demo.
     const headers = { 'x-openbook-demo': '1' };
     const stream = (body: string) => route.fulfill({ status: 200, contentType: 'text/event-stream', headers, body });
     const fail = (status: number, body: unknown) => route.fulfill({ status, contentType: 'application/json', headers, body: JSON.stringify(body) });
@@ -105,7 +94,6 @@ export async function mockBackend(page: Page, options: MockOptions = {}) {
       case 'invalid':
         return fail(400, { error: { code: 'invalid_request', message: 'The question must be 1 to 300 characters.' } });
       case 'slow':
-        // Hold the answer so the screen shows the waiting state.
         await new Promise((resolve) => setTimeout(resolve, 20_000));
         return stream(DEMO_ANSWER_STREAM);
       default:
@@ -116,7 +104,6 @@ export async function mockBackend(page: Page, options: MockOptions = {}) {
     const request = route.request();
     const path = new URL(request.url()).pathname;
     const method = request.method();
-    // The demo route above answers this one.
     if (path === '/api/demo/chat') return route.fallback();
 
     const replaced = options.override?.(path, method);
@@ -136,7 +123,6 @@ export async function mockBackend(page: Page, options: MockOptions = {}) {
       return json(route, { conversation, messages });
     }
     if (path.endsWith('/documents')) {
-      // Students see only ready documents (docs/api.md).
       const documents = path.includes(STUDENT_COURSE_ID) ? DOCUMENTS.filter((d) => d.status === 'ready') : DOCUMENTS;
       return json(route, { documents });
     }
@@ -162,7 +148,6 @@ export async function prepare(page: Page, theme: Theme, viewport: (typeof VIEWPO
   await mockBackend(page, options);
 }
 
-/** Scroll the whole page so the sections below the fold fade in, then return to the top. */
 export async function scrollThrough(page: Page) {
   const height = await page.evaluate(() => document.documentElement.scrollHeight);
   for (let y = 0; y < height; y += 400) {
@@ -173,7 +158,6 @@ export async function scrollThrough(page: Page) {
   await page.waitForTimeout(900);
 }
 
-/** The page must never scroll sideways. */
 export async function expectNoHorizontalOverflow(page: Page) {
   const overflow = await page.evaluate(() => {
     const doc = document.documentElement;
@@ -184,7 +168,6 @@ export async function expectNoHorizontalOverflow(page: Page) {
   );
 }
 
-/** Serious and critical accessibility problems (axe) fail the test. */
 export async function expectNoSeriousA11yViolations(page: Page) {
   const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
   const serious = results.violations.filter((v) => v.impact === 'serious' || v.impact === 'critical');

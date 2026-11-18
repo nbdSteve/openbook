@@ -3,20 +3,16 @@ import { expect, test, type Page } from '@playwright/test';
 import { COURSE_ID, CONVERSATIONS, OWNER_COURSE, STUDENT_COURSE, STUDENT_COURSE_ID } from './data';
 import { expectNoHorizontalOverflow, expectNoSeriousA11yViolations, prepare, type MockOptions, scrollThrough, VIEWPORTS, type Theme } from './fixtures';
 
-// Screenshots go to an ignored folder. Read them to check the screens by eye.
 const OUT = process.env.OPENBOOK_SCREENSHOT_DIR ?? path.join(import.meta.dirname, '..', '.screenshots');
 
 interface Screen {
   name: string;
   url: string;
   signedIn: boolean;
-  /** Wait until the screen is ready. */
   ready: (page: Page) => Promise<void>;
   fullPage?: boolean;
-  /** Extra steps before the screenshot (open a dialog, and so on). */
   act?: (page: Page) => Promise<void>;
   mobileOnly?: boolean;
-  /** Change what the fixture backend returns. */
   mock?: MockOptions;
 }
 
@@ -28,7 +24,6 @@ const ask = async (page: Page, chip = 'Factor x² − 5x + 6') => {
   await page.getByRole('button', { name: chip }).click();
 };
 
-/** The demo on the landing page, in each of its states. */
 const DEMO_SCREENS: Screen[] = [
   {
     name: 'landing-demo-answered',
@@ -38,7 +33,6 @@ const DEMO_SCREENS: Screen[] = [
     act: async (page) => {
       await ask(page);
       const thread = page.getByTestId('demo-thread');
-      // Two of eight passages are cited: two listed, six behind the disclosure.
       await expect(thread.getByRole('list', { name: 'Sources for this answer' }).getByRole('listitem')).toHaveCount(2);
       await expect(thread.getByRole('button', { name: '6 more passages found' })).toHaveAttribute('aria-expanded', 'false');
       await expect(thread.getByText('Which root would you like to check first?')).toBeVisible();
@@ -68,7 +62,6 @@ const DEMO_SCREENS: Screen[] = [
       await ask(page);
       await expect(page.getByTestId('demo-thread').getByText('Which root would you like to check first?')).toBeVisible();
       await page.getByRole('button', { name: 'Start over' }).click();
-      // The example comes back, and the focus is in the box, so the visitor can type at once.
       await expect(page.getByLabel('Your question')).toBeFocused();
       await expect(page.getByTestId('demo-thread').locator('.katex').first()).toBeVisible();
       await expect(page.getByRole('button', { name: 'Start over' })).toHaveCount(0);
@@ -115,7 +108,6 @@ const DEMO_SCREENS: Screen[] = [
       act: async (page) => {
         await ask(page);
         await expect(page.getByTestId('demo-problem')).toContainText(text);
-        // The example answer stays, and the visitor can try again.
         await expect(page.getByTestId('demo-thread').locator('.katex').first()).toBeVisible();
       },
     }),
@@ -138,7 +130,6 @@ const SCREENS: Screen[] = [
     name: 'landing',
     url: '/',
     signedIn: false,
-    // The fixed example shows until a visitor asks. Its answer needs the lazy renderer.
     ready: async (page) => {
       await heading(/answers from it/i)(page);
       await expect(page.getByTestId('demo-thread').locator('.katex').first()).toBeVisible();
@@ -216,7 +207,6 @@ const SCREENS: Screen[] = [
     name: 'chat-empty',
     url: `/ask/courses/${COURSE_ID}`,
     signedIn: true,
-    // Owners do not see the student note.
     ready: async (page) => {
       await heading('What would you like to learn?', 2)(page);
       await expect(page.getByTestId('composer-note')).toHaveCount(0);
@@ -253,11 +243,9 @@ const SCREENS: Screen[] = [
       await expect(page.locator('[data-variant="badge"]')).toHaveCount(5);
     },
     act: async (page) => {
-      // Open the entry with the long snippet. Hovering its badge highlights both.
       await page.locator('[data-variant="entry"][data-source-n="1"]').click();
       const dialog = page.getByRole('dialog', { name: /Source 1/ });
       await expect(dialog).toContainText('thylakoid membrane holds');
-      // The 2400-character passage scrolls inside the popover, so the end can be read.
       const scrolls = await dialog.evaluate((el) => el.scrollHeight > el.clientHeight);
       expect(scrolls).toBe(true);
       const atEnd = () => dialog.evaluate((el) => el.scrollTop + el.clientHeight >= el.scrollHeight - 1);
@@ -265,7 +253,6 @@ const SCREENS: Screen[] = [
       await dialog.evaluate((el) => el.scrollTo(0, el.scrollHeight));
       expect(await atEnd()).toBe(true);
       await expect(dialog).toContainText('END-OF-PASSAGE');
-      // Escape closes it and the focus returns to the entry.
       await page.keyboard.press('Escape');
       await expect(page.getByRole('dialog')).toHaveCount(0);
       await expect(page.locator('[data-variant="entry"][data-source-n="1"]')).toBeFocused();
@@ -282,7 +269,6 @@ const SCREENS: Screen[] = [
       await expect(page.getByRole('list', { name: 'Sources for this answer' })).toBeVisible();
     },
     act: async (page) => {
-      // Markup in a snippet is shown as text, never rendered.
       await page.locator('[data-variant="entry"][data-source-n="3"]').click();
       await expect(page.getByRole('dialog')).toContainText('<b>markup</b> & an ampersand');
       await expect(page.getByRole('dialog').locator('b')).toHaveCount(0);
@@ -293,7 +279,6 @@ const SCREENS: Screen[] = [
     url: `/ask/courses/${COURSE_ID}/c/TWOOFEIGHT`,
     signedIn: true,
     ready: async (page) => {
-      // Eight passages were retrieved. Two are cited, so two are listed and the rest are hidden.
       const list = page.getByRole('list', { name: 'Sources for this answer' });
       await expect(list.getByRole('listitem')).toHaveCount(2);
       await expect(list.getByRole('listitem').first()).toContainText('Introduction to Plant Biology');
@@ -320,7 +305,6 @@ const SCREENS: Screen[] = [
       await expect(page.getByRole('list', { name: 'Sources for this answer' })).toBeVisible();
     },
     act: async (page) => {
-      // The keyboard reaches the disclosure, opens it with Enter, and shows a focus ring.
       const toggle = page.getByTestId('other-sources-toggle');
       await toggle.focus();
       await page.keyboard.press('Enter');
@@ -447,11 +431,9 @@ const SCREENS: Screen[] = [
     name: 'chat-student',
     url: `/ask/courses/${STUDENT_COURSE_ID}`,
     signedIn: true,
-    // Students are told that their teacher can see their questions.
     ready: async (page) => {
       await heading('What would you like to learn?', 2)(page);
       await expect(page.getByTestId('composer-note')).toHaveText('Your teacher can see the questions you ask in this course.');
-      // The student sees only ready documents, and is told how many.
       await expect(page.getByTestId('materials')).toContainText('has 2 documents');
     },
   },
@@ -507,7 +489,6 @@ const SCREENS: Screen[] = [
 ];
 
 test.afterEach(async ({ page }) => {
-  // The slow demo route waits. Do not let it answer after the page is gone.
   await page.unrouteAll({ behavior: 'ignoreErrors' });
 });
 

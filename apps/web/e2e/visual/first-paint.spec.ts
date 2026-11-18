@@ -1,8 +1,6 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { prepare, VIEWPORTS } from './fixtures';
 
-// Above-the-fold content must be visible at first paint: no fade-in, no animation delay. Motion
-// is for sections below the fold. The check multiplies the opacity of the element and its ancestors.
 
 async function effectiveOpacity(locator: Locator): Promise<number> {
   return locator.evaluate((element) => {

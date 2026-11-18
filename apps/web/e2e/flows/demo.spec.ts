@@ -1,9 +1,6 @@
 import { expect, test, type APIRequestContext } from '@playwright/test';
 import { DEPLOYED } from './helpers';
 
-// The public demo, at the API level: no sign-in, a streamed answer with sources, and a follow-up on
-// the conversation that the server keeps. The local stack provisions the demo course with the fake
-// models before the tests start (scripts/e2e-local.sh), and the deployed demo needs a real provision.
 test.skip(DEPLOYED, 'The demo flow is checked on the local stack. A deployed stack has its own limits.');
 
 interface SseEvent {
@@ -24,7 +21,6 @@ function parseSse(text: string): SseEvent[] {
 async function ask(request: APIRequestContext, body: Record<string, unknown>) {
   const payload = JSON.stringify(body);
   return request.post('/api/demo/chat', {
-    // No x-auth-token: the demo is anonymous by design.
     headers: { 'content-type': 'application/json' },
     data: payload,
   });
@@ -70,7 +66,6 @@ test('a visitor without an account gets a streamed answer with sources, then a f
     .join('');
   expect(answer.length).toBeGreaterThan(0);
 
-  // The follow-up carries the conversation ID, and the server remembers the first turn.
   const second = await ask(request, { message: 'Can you give an example?', conversationId: meta.conversationId });
   expect(second.status()).toBe(200);
   const followUp = parseSse(await second.text());

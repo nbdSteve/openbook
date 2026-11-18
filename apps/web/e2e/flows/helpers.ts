@@ -10,21 +10,17 @@ import {
 } from '@aws-sdk/client-cognito-identity-provider';
 import { expect, type Browser, type BrowserContext, type Page } from '@playwright/test';
 
-/** `local` runs against the emulator stack. `deployed` runs against a real stack and sends no email. */
 export const DEPLOYED = (process.env.E2E_TARGET ?? 'local') === 'deployed';
 export const BASE_URL = process.env.E2E_BASE_URL ?? 'http://localhost:5180';
 export const AWS_ENDPOINT = process.env.E2E_AWS_ENDPOINT ?? 'https://127.0.0.1:9310';
 export const PASSWORD = 'Openbook-e2e-1';
 
-/** Real models take longer than the fake one. */
 export const CHAT_TIMEOUT = DEPLOYED ? 90_000 : 15_000;
 
-/** Users that a deployed run created. The global teardown deletes them, even when a worker restarted. */
 export const REGISTRY = path.join(process.cwd(), 'test-results', 'e2e-created-users.jsonl');
 
 let counter = 0;
 
-/** A fresh address for each run and each user. */
 export function uniqueEmail(label: string): string {
   return `e2e+${Date.now()}-${label}-${counter++}@openbook.test`;
 }
@@ -36,7 +32,6 @@ interface PoolInfo {
 
 let pool: PoolInfo | undefined;
 
-/** The user pool and Region come from the stack's own /config.json. */
 export async function poolInfo(): Promise<PoolInfo> {
   if (pool) return pool;
   const response = await fetch(`${BASE_URL}/config.json`);
@@ -46,10 +41,6 @@ export async function poolInfo(): Promise<PoolInfo> {
   return pool;
 }
 
-/**
- * Local: the AWS Emulator with test credentials (Node trusts its certificate through
- * NODE_EXTRA_CA_CERTS). Deployed: the real Region and the default credential chain (AWS_PROFILE).
- */
 export async function cognitoAdmin(): Promise<{ client: CognitoIdentityProviderClient; userPoolId: string }> {
   const { userPoolId, region } = await poolInfo();
   const client = DEPLOYED
@@ -62,11 +53,9 @@ export async function cognitoAdmin(): Promise<{ client: CognitoIdentityProviderC
   return { client, userPoolId };
 }
 
-/** Local only: the emulator sends no email, so confirm the user as an administrator. */
 export async function confirmUser(email: string): Promise<void> {
   const { client, userPoolId: UserPoolId } = await cognitoAdmin();
   await client.send(new AdminConfirmSignUpCommand({ UserPoolId, Username: email }));
-  // The API accepts only ID tokens with email_verified=true, and admin confirmation leaves it false.
   await client.send(
     new AdminUpdateUserAttributesCommand({
       UserPoolId,
@@ -76,10 +65,6 @@ export async function confirmUser(email: string): Promise<void> {
   );
 }
 
-/**
- * Deployed only: create a confirmed user without sending any email (MessageAction SUPPRESS) and
- * give it a permanent password. The user is recorded so the global teardown deletes it.
- */
 export async function createDeployedUser(email: string): Promise<void> {
   const { client, userPoolId: UserPoolId } = await cognitoAdmin();
   mkdirSync(path.dirname(REGISTRY), { recursive: true });
@@ -103,9 +88,7 @@ export async function deleteUser(email: string, userPoolId: string): Promise<voi
   await client.send(new AdminDeleteUserCommand({ UserPoolId: userPoolId, Username: email }));
 }
 
-/** Sign up in the UI and land on the verify screen. */
 export async function signUp(page: Page, email: string): Promise<void> {
-  // Wait for this page before typing: the page we came from also has an Email field.
   await expect(page.getByRole('heading', { name: 'Create your account' })).toBeVisible();
   await page.getByLabel('Email', { exact: true }).fill(email);
   await page.getByLabel('Password', { exact: true }).fill(PASSWORD);
@@ -113,7 +96,6 @@ export async function signUp(page: Page, email: string): Promise<void> {
   await expect(page.getByRole('heading', { name: 'Confirm your email' })).toBeVisible();
 }
 
-/** Fill the sign-in form and wait for the page after sign-in. */
 export async function signIn(page: Page, email: string): Promise<void> {
   await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible();
   await page.getByLabel('Email', { exact: true }).fill(email);
@@ -121,10 +103,6 @@ export async function signIn(page: Page, email: string): Promise<void> {
   await page.getByRole('button', { name: 'Sign in' }).click();
 }
 
-/**
- * Make a user that can sign in. Local: sign up in the UI, then confirm. Deployed: create the user
- * as an administrator (no email). Ends on the sign-in page.
- */
 export async function provisionUser(page: Page, email: string): Promise<void> {
   if (DEPLOYED) {
     await createDeployedUser(email);
@@ -137,18 +115,12 @@ export async function provisionUser(page: Page, email: string): Promise<void> {
   await page.goto('/signin');
 }
 
-/** The full path for a new user, ending on /ask. */
 export async function createSignedInUser(page: Page, email: string): Promise<void> {
   await provisionUser(page, email);
   await signIn(page, email);
   await expect(page).toHaveURL(/\/ask$/);
 }
 
-/**
- * Collect what a security-conscious reviewer would want to be empty: CSP violations, console
- * errors, and uncaught page errors. "Failed to load resource" lines are skipped, because the
- * flows trigger 404 and 429 answers on purpose (the app handles them and shows a message).
- */
 export const problems: string[] = [];
 
 export function watchContext(context: BrowserContext): void {
@@ -170,12 +142,8 @@ export function watchContext(context: BrowserContext): void {
   context.on('page', attach);
 }
 
-// The flows share contexts across serial tests, so the built-in per-test trace is off in the
-// config (it conflicts with shared contexts). Each context records its own trace instead, and a
-// failed test saves the trace of every open context.
 const open = new Set<BrowserContext>();
 
-/** A new browser context that is watched for CSP violations and console errors, and traced. */
 export async function newContext(browser: Browser): Promise<BrowserContext> {
   const context = await browser.newContext();
   watchContext(context);
@@ -185,7 +153,6 @@ export async function newContext(browser: Browser): Promise<BrowserContext> {
   return context;
 }
 
-/** After each test: save the traces of the open contexts when the test failed, then start a new chunk. */
 export async function flushTraces(testTitle: string, failed: boolean): Promise<void> {
   let index = 0;
   for (const context of [...open]) {
@@ -194,12 +161,11 @@ export async function flushTraces(testTitle: string, failed: boolean): Promise<v
       await context.tracing.stopChunk(failed ? { path: file } : undefined);
       await context.tracing.startChunk();
     } catch {
-      // The context closed during the test.
+      continue;
     }
   }
 }
 
-/** A new signed-in user in a new watched browser context. The caller closes the context. */
 export async function newUserPage(browser: Browser, label: string): Promise<{ page: Page; context: BrowserContext; email: string }> {
   const context = await newContext(browser);
   const page = await context.newPage();
@@ -214,7 +180,6 @@ export function courseIdFromUrl(url: string): string {
   return match[1];
 }
 
-/** Delete a course through the UI as its owner (Settings, typed confirmation). */
 export async function deleteCourseInUi(page: Page, courseId: string, name: string): Promise<void> {
   await page.goto(`/portal/courses/${courseId}?tab=settings`);
   await page.getByRole('button', { name: 'Delete course' }).click();

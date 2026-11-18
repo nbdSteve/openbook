@@ -8,7 +8,6 @@ import type {
   ModelInfo,
 } from '../../src/services/api/types';
 
-// Fixture data for the visual suite. The shapes follow docs/api.md.
 
 export const CONFIG = {
   stage: 'dev',
@@ -92,10 +91,8 @@ export const MESSAGES: Message[] = [
   },
 ];
 
-// About 2400 characters, the longest passage the API sends. The end marker proves that the whole text can be reached.
 const LONG_SNIPPET = `${'The thylakoid membrane holds the photosystems and the electron transport chain. When light reaches photosystem II, chlorophyll gives up electrons, and water is split to replace them. The electrons pass along the chain and drive a proton pump, so protons build up inside the thylakoid space. The protons flow back through ATP synthase, and the enzyme makes ATP from ADP and phosphate. '.repeat(7)}END-OF-PASSAGE`;
 
-/** One answer with four sources: long document names, a page-less source, and a very long snippet. */
 export const MESSAGES_MANY_SOURCES: Message[] = [
   { id: '01JMSG00000000000000000MA1', role: 'user', content: 'Where do the light reactions happen, and what do they produce?', createdAt: T },
   {
@@ -147,7 +144,6 @@ const EIGHT_PASSAGES: Message['sources'] = [
   { n: 8, documentId: 'D2', documentName: 'Introduction to Plant Biology: Cells, Tissues, and the Chemistry of Life (Third edition, complete course reader).pdf', page: 160, snippet: 'Plants store glucose as starch.' },
 ];
 
-/** Eight passages were retrieved. The answer cites only [3] and [1], so two are listed and six are hidden. */
 export const MESSAGES_TWO_OF_EIGHT: Message[] = [
   { id: '01JMSG00000000000000000T81', role: 'user', content: 'Where do the light reactions happen?', createdAt: T },
   {
@@ -160,7 +156,6 @@ export const MESSAGES_TWO_OF_EIGHT: Message[] = [
   },
 ];
 
-/** Eight passages were retrieved and the answer cites none of them. */
 export const MESSAGES_NONE_CITED: Message[] = [
   { id: '01JMSG00000000000000000NC1', role: 'user', content: 'Who won the cricket match?', createdAt: T },
   {
@@ -217,7 +212,6 @@ export const LONG_CHAT_STREAM = [
   'event: done\ndata: {"usage":{"inputTokens":10,"outputTokens":8},"stopReason":"end_turn"}\n\n',
 ].join('');
 
-// The public demo on the landing page (POST /api/demo/chat). The shapes follow the demo contract.
 
 export const DEMO_CONFIG = {
   enabled: true,
@@ -233,7 +227,6 @@ const sse = (event: string, data: unknown) => `event: ${event}\ndata: ${JSON.str
 const DEMO_META = { conversationId: 'DEMO000000000000000000001', userMessageId: 'u', assistantMessageId: 'a', title: 'Factor', model: 'claude-sonnet-4-6' };
 const DEMO_DONE = { usage: { inputTokens: 10, outputTokens: 10 }, stopReason: 'end_turn' };
 
-/** Eight passages were found. The answer cites two of them. */
 export const DEMO_SOURCES = [
   { n: 1, documentId: 'd1', documentName: 'College Algebra', page: 184, snippet: 'To factor a trinomial of the form x² + bx + c, find two numbers whose product is c and whose sum is b.' },
   { n: 2, documentId: 'd1', documentName: 'College Algebra', page: 185, snippet: 'The zero-product property: if a · b = 0, then a = 0 or b = 0.' },
@@ -253,7 +246,6 @@ export const DEMO_ANSWER_STREAM =
     .join('') +
   sse('done', DEMO_DONE);
 
-/** A question that the books do not cover: the answer has no sources event. */
 export const DEMO_NOT_COVERED_STREAM =
   sse('meta', DEMO_META) +
   sse('delta', { text: 'The books I can read do not seem to cover that question. Ask me about algebra or American government.' }) +
