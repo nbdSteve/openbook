@@ -29,8 +29,8 @@ use openbook_core::domain::{
 };
 use openbook_core::model::{ChatModel, ChatRequest, ModelEvent, TokenUsage};
 use openbook_core::prompt::{
-    NOT_COVERED_NOTICE, REWRITE_SYSTEM_PROMPT, SourceMode, build_system_prompt_for,
-    normalize_turns, rewrite_user_text,
+    GATED_TURN_NOTE, NOT_COVERED_NOTICE, REWRITE_SYSTEM_PROMPT, SOURCES_TURN_NOTE, SourceMode,
+    build_system_prompt_for, rewrite_user_text, turns_for,
 };
 use openbook_core::store::Store;
 use serde::Deserialize;
@@ -91,6 +91,8 @@ pub fn system_prompt_tokens(course: &CourseRecord, style: TutoringStyle) -> u64 
         style,
         SourceMode::NotUsed,
     )) + token_bound(NOT_COVERED_NOTICE)
+        + token_bound(GATED_TURN_NOTE)
+        + token_bound(SOURCES_TURN_NOTE)
         + token_bound(DEMO_PROMPT_NOTE)
 }
 
@@ -400,7 +402,7 @@ async fn run_demo(run: DemoRun, tx: mpsc::Sender<ChatEvent>) {
     system.push_str(DEMO_PROMPT_NOTE);
     let request = ChatRequest {
         system,
-        turns: normalize_turns(&history),
+        turns: turns_for(&history, turn.mode()),
         // The demo limit, which is at most the catalog limit of the model.
         max_tokens: Some(i32::try_from(max_output).unwrap_or(i32::MAX)),
         temperature: None,

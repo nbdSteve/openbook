@@ -8,7 +8,7 @@ use openbook_api::retrieval::source_lists;
 use openbook_core::catalog::{Catalog, ModelEntry};
 use openbook_core::domain::{MessageRole, TutoringStyle};
 use openbook_core::model::{ChatModel, ChatRequest};
-use openbook_core::prompt::{SourceMode, build_system_prompt_for, normalize_turns};
+use openbook_core::prompt::{SourceMode, build_system_prompt_for, turns_for};
 use openbook_search::retrieval::Outcome;
 
 use crate::Error;
@@ -210,7 +210,7 @@ pub fn build_request(
 ) -> ChatRequest {
     ChatRequest {
         system: build_system_prompt_for(course_name, "", style, mode),
-        turns: normalize_turns(&history_for(question)),
+        turns: turns_for(&history_for(question), mode),
         ..ChatRequest::default()
     }
 }
@@ -526,6 +526,36 @@ pub fn score_all(runs: &[CorpusRun], judge_model_id: &str) -> Result<Vec<Scored>
         }
     }
     Ok(scored)
+}
+
+pub fn details(runs: &[CorpusRun], judge_model_id: &str) -> Result<String, Error> {
+    let mut out = String::new();
+    for run in runs {
+        for item in &run.prepared {
+            let answer = run.answers.get(&item.key);
+            let judgment = run
+                .judgment_key_for(judge_model_id, item)
+                .and_then(|key| run.judgments.get(&key));
+            let line = serde_json::json!({
+                "corpus": item.corpus,
+                "id": item.question.id,
+                "kind": item.question.kind.name(),
+                "question": item.question.question,
+                "gated": item.gated,
+                "sources": item.sources,
+                "relevantSources": item.relevant_sources,
+                "citedMarkers": answer.map(|a| citations::markers(&a.text)),
+                "saysNotCovered": judgment.map(|j| j.says_not_covered),
+                "mentionsCourseMaterials": judgment.map(|j| j.mentions_course_materials),
+                "naturalReply": judgment.map(|j| j.natural_reply),
+                "reason": judgment.map(|j| j.reason.clone()),
+                "answer": answer.map(|a| a.text.clone()),
+            });
+            out.push_str(&line.to_string());
+            out.push('\n');
+        }
+    }
+    Ok(out)
 }
 
 pub struct Models {

@@ -9,7 +9,7 @@ use openbook_core::domain::TutoringStyle;
 use openbook_core::model::{
     ChatModel, ChatRequest, ModelError, ModelEvent, ModelStream, TokenUsage,
 };
-use openbook_core::prompt::NOT_COVERED_NOTICE;
+use openbook_core::prompt::{GATED_TURN_NOTE, NOT_COVERED_NOTICE, SOURCES_TURN_NOTE};
 use openbook_eval::answer_cache::Store;
 use openbook_eval::answer_report::{AnswerReport, Settings};
 use openbook_eval::answers::{
@@ -127,7 +127,10 @@ async fn the_derivative_question_gets_sources_that_do_not_answer_it() {
     assert!(item.request.system.contains("<source n=\"1\""));
     assert!(!item.request.system.contains(NOT_COVERED_NOTICE));
     assert_eq!(item.request.turns.len(), 1);
-    assert_eq!(item.request.turns[0].text, item.question.question);
+    assert_eq!(
+        item.request.turns[0].text,
+        format!("{SOURCES_TURN_NOTE}\n\n{}", item.question.question)
+    );
 }
 
 #[tokio::test]
@@ -143,6 +146,7 @@ async fn small_talk_is_gated_and_gets_the_notice() {
     let item = &run.prepared[0];
     assert!(item.gated && item.sources == 0);
     assert!(item.question.small_talk);
+    assert!(item.request.turns[0].text.starts_with(GATED_TURN_NOTE));
     assert!(item.request.system.contains(NOT_COVERED_NOTICE));
     assert!(!item.request.system.contains("<source "));
 }

@@ -258,7 +258,7 @@ impl ChatModel for FakeChat {
             .iter()
             .rev()
             .find(|t| t.role == MessageRole::User)
-            .map(|t| t.text.clone())
+            .map(|t| crate::prompt::without_turn_note(&t.text).to_owned())
             .unwrap_or_default();
         let input_chars = request.system.chars().count()
             + request

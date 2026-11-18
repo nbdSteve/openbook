@@ -518,6 +518,10 @@ async fn answers_command(args: &Args, evals: &Path) -> Result<ExitCode, Error> {
     );
     write_file(&out.join("answers.md"), &markdown)?;
     write_file(&out.join("answers.json"), &report.to_json()?)?;
+    write_file(
+        &out.join("answers-detail.jsonl"),
+        &answers::details(&runs, &choice.judge.model_id)?,
+    )?;
     eprintln!(
         "Wrote {} and answers.json",
         out.join("answers.md").display()
