@@ -13,7 +13,6 @@ const answer = (conversationId: string, text: string, withSources = true) =>
 const json = (status: number, code: string, extra: Record<string, unknown> = {}) =>
   new Response(JSON.stringify({ error: { code, message: code, ...extra } }), { status, headers: { 'x-openbook-demo': '1' } });
 
-/** The bodies that the fake endpoint sends, in order. Each call also records the request body. */
 function fakeEndpoint(responses: (Response | (() => Response))[]) {
   const bodies: { message: string; conversationId?: string; style?: string }[] = [];
   const queue = [...responses];
@@ -70,7 +69,6 @@ describe('useDemoChat', () => {
     await act(async () => void (await result.current.ask('one more')));
     expect(bodies[DEMO_MAX_TURNS]).toEqual({ message: 'one more' });
     expect(result.current.notice).toMatch(/fresh one/);
-    // The page starts empty again: only the new turn shows.
     expect(result.current.messages.map((m) => m.content)).toEqual(['one more', `Answer ${DEMO_MAX_TURNS}`]);
   });
 
@@ -82,7 +80,6 @@ describe('useDemoChat', () => {
     expect(bodies.map((b) => b.conversationId)).toEqual([undefined, 'C1']);
     expect(result.current.notice).toMatch(/ended/);
     expect(result.current.problem).toBeNull();
-    // The thread stays. The next follow-up uses the new ID.
     expect(result.current.messages).toHaveLength(4);
     await act(async () => void (await result.current.ask('third')));
   });
@@ -91,7 +88,6 @@ describe('useDemoChat', () => {
     const encoder = new TextEncoder();
     let sent = false;
     const broken = new ReadableStream<Uint8Array>({
-      // The first read gives the first events. The second read fails, like a dropped connection.
       pull(controller) {
         if (sent) controller.error(new TypeError('network error'));
         else controller.enqueue(encoder.encode(sse('meta', { conversationId: 'C1', model: 'm', attribution: [] }) + sse('delta', { text: 'Part of it' })));
@@ -157,7 +153,6 @@ describe('useDemoChat', () => {
         throw new Error('unused');
       },
     ]);
-    // A response that waits: the fetch promise itself is held.
     vi.stubGlobal(
       'fetch',
       vi.fn(async (_p: string, init: RequestInit) => {

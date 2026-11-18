@@ -6,12 +6,10 @@ interface DialogProps {
   open: boolean;
   title: string;
   onClose: () => void;
-  /** While true, Escape, the backdrop, and Close do nothing (a request is running). */
   locked?: boolean;
   children: ReactNode;
 }
 
-/** A modal on the native <dialog> element: focus trap, Escape to close, and backdrop. */
 export function Dialog({ open, title, onClose, locked = false, children }: DialogProps) {
   const ref = useRef<HTMLDialogElement>(null);
   const pressedBackdrop = useRef(false);
@@ -22,7 +20,6 @@ export function Dialog({ open, title, onClose, locked = false, children }: Dialo
     if (!el) return;
     if (open && !el.open) {
       el.showModal();
-      // Start on the first field, or on the control marked data-autofocus, not on Close.
       el.querySelector<HTMLElement>('[data-autofocus], input, textarea, select')?.focus();
     }
     if (!open && el.open) el.close();
@@ -40,7 +37,6 @@ export function Dialog({ open, title, onClose, locked = false, children }: Dialo
         pressedBackdrop.current = e.target === ref.current;
       }}
       onClick={(e) => {
-        // Close only when the press and the release were both on the backdrop (not at the end of a text selection).
         if (e.target === ref.current && pressedBackdrop.current && !locked) onClose();
       }}
       className="m-auto w-[calc(100%-2rem)] max-w-md rounded-2xl border border-border bg-surface p-0 shadow-lg"
@@ -75,7 +71,6 @@ interface ConfirmDialogProps {
   confirmLabel: string;
   danger?: boolean;
   busy?: boolean;
-  /** Disable the confirm button until this is true (for typed confirmations). */
   canConfirm?: boolean;
   onConfirm: () => void;
   onClose: () => void;

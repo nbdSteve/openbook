@@ -24,7 +24,6 @@ interface UploadItem {
   progress: number;
   phase: 'uploading' | 'finishing' | 'failed';
   error?: string;
-  /** Set when the file is stored but `complete` failed (503). Retrying `complete` is safe. */
   retryDocumentId?: string;
 }
 
@@ -51,7 +50,6 @@ function pagesLabel(count: number): string {
   return `${count} ${count === 1 ? 'page' : 'pages'}`;
 }
 
-/** What the worker is doing, in calm words. Ready, failed, and deleting have their own lines. */
 function ProgressNote({ status }: { status: DocumentStatus }) {
   if (status !== 'queued' && status !== 'processing') return null;
   return (
@@ -94,8 +92,6 @@ export function DocumentsTab() {
   const input = useRef<HTMLInputElement>(null);
   const counter = useRef(0);
 
-  // Poll every 5 seconds while a document waits for ingestion. Slow down a little when nothing changes (at most 10 s, so a document that becomes ready shows soon) and more when a
-  // poll fails, and pause while the tab is hidden.
   const waiting = docs.data?.some((d) => d.status === 'queued' || d.status === 'processing' || d.status === 'deleting') ?? false;
   const signature = docs.data?.map((d) => `${d.id}:${d.status}`).join(',') ?? '';
   const rhythm = useRef({ signature: '', unchanged: 0, failures: 0 });
@@ -117,7 +113,6 @@ export function DocumentsTab() {
     };
   }, [waiting, signature, docs.data, docs.error, reload]);
 
-  // Leaving the tab cancels uploads that are still running, so no file is left half sent.
   const controllers = useRef(new Map<string, AbortController>());
   useEffect(() => {
     const running = controllers.current;
@@ -162,7 +157,6 @@ export function DocumentsTab() {
     }
   };
 
-  /** Call `complete` again for a stored file. Used after a 503, and for a document stuck in `uploading`. */
   const retryComplete = async (documentId: string, uploadKey?: string) => {
     try {
       await completeDocument(course.id, documentId);
@@ -187,7 +181,6 @@ export function DocumentsTab() {
     setDeleting(true);
     try {
       const deleted = await deleteDocument(course.id, toDelete.id);
-      // The worker finishes the delete a little later. Show `deleting` now, and the poll sees it go.
       docs.update((list) => list.map((d) => (d.id === deleted.id ? deleted : d)));
       toast.success('Deleting the document');
       setToDelete(null);

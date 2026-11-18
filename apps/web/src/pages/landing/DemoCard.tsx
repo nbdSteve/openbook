@@ -10,8 +10,6 @@ import { DEMO_MAX_QUESTION } from '@/services/demo/demoClient';
 import { ExampleAnswer } from './ExampleAnswer';
 import { useDemoChat } from './useDemoChat';
 
-// The Markdown and KaTeX renderer is large. The example answer was rendered at build time, so the page
-// does not need it to look complete. It loads when the visitor first focuses the box or asks.
 const loadThread = () => import('./DemoThread');
 const DemoThread = lazy(loadThread);
 
@@ -35,7 +33,6 @@ interface Credit {
   url?: string;
 }
 
-/** The credit line of the books (CC BY needs the title, the publisher, and the licence of each one). */
 function Credits({ credits }: { credits: Credit[] }) {
   if (credits.length === 0) return null;
   return (
@@ -68,7 +65,6 @@ export function DemoCard({ demo }: { demo: DemoConfig | undefined }) {
   const streaming = chat.status === 'streaming';
   const examples = demo?.examples && demo.examples.length > 0 ? demo.examples.slice(0, 3) : FALLBACK_EXAMPLES;
 
-  // One polite live region announces the start and the end of an answer.
   const [announcement, setAnnouncement] = useState('');
   const [previous, setPrevious] = useState(chat.status);
   if (previous !== chat.status) {
@@ -94,7 +90,6 @@ export function DemoCard({ demo }: { demo: DemoConfig | undefined }) {
     }
   };
 
-  // After an answer, the books' own credit lines (from the stream) win over the ones in the config.
   const credits: Credit[] =
     chat.attribution.length > 0
       ? chat.attribution.map((a) => ({ title: a.title, publisher: a.publisher, license: a.license, url: a.sourceUrl }))
@@ -200,7 +195,6 @@ export function DemoCard({ demo }: { demo: DemoConfig | undefined }) {
               <li key={example} className="shrink-0">
                 <button
                   type="button"
-                  // Not `disabled`: a scroll area on a phone needs a focusable child, and the chips are it.
                   aria-disabled={streaming || undefined}
                   onClick={() => !streaming && void submit(example)}
                   className="min-h-9 whitespace-nowrap rounded-full border border-border bg-bg-primary px-3.5 py-1.5 text-left text-sm text-text-secondary transition-colors hover:border-border-strong hover:text-text-primary aria-disabled:opacity-50"

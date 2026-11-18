@@ -11,19 +11,11 @@ import { citationNumber } from '@/components/chat/sourceText';
 import type { Source } from '@/services/api/types';
 import { EXAMPLE_QUESTION } from './exampleContent';
 
-/** The pages in the example are examples too. */
 const EXAMPLE_SOURCES: Source[] = [
   { n: 1, documentId: 'example-1', documentName: 'College Algebra', page: 184, snippet: 'To factor a trinomial of the form x² + bx + c, find two numbers whose product is c and whose sum is b.' },
   { n: 2, documentId: 'example-1', documentName: 'College Algebra', page: 185, snippet: 'The zero-product property: if a · b = 0, then a = 0 or b = 0.' },
 ];
 
-/**
- * The example answer, before a visitor asks anything (and the only answer when the demo is off).
- * The Markdown and the math were rendered at build time (see `exampleAnswerPlugin` in
- * vite.config.ts), so this page needs no Markdown parser. The tree becomes React elements, never
- * an HTML string: React sets the style attributes of the math through the DOM, which a strict
- * Content-Security-Policy allows. The tree is our own constant, never model output.
- */
 export function ExampleAnswer() {
   const [active, setActive] = useState<number | null>(null);
   const content = useMemo(

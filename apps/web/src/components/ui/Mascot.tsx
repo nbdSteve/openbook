@@ -4,17 +4,13 @@ export type MascotMood = 'idle' | 'thinking' | 'happy' | 'puzzled';
 
 interface MascotProps {
   mood?: MascotMood;
-  /** Width in pixels. The height follows. */
   size?: number;
   className?: string;
-  /** Give the mascot a name for screen readers. Without it, the mascot is decoration. */
   label?: string;
 }
 
-/** The face is drawn on the light cloud, so it is always dark. The marks outside the cloud (dots, question mark, sparkles) follow the theme. */
 const INK = '#2A3B4D';
 
-/** The cloud outline and fill. It is drawn twice: a thick stroke under, the fill on top, so only the outer edge shows. */
 function Cloud({ filled }: { filled: boolean }) {
   const props = filled ? { fill: 'var(--mascot-body)' } : { fill: 'var(--mascot-edge)', stroke: 'var(--mascot-edge)', strokeWidth: 5, strokeLinejoin: 'round' as const };
   return (
@@ -84,11 +80,6 @@ function Face({ mood }: { mood: MascotMood }) {
   );
 }
 
-/**
- * The Ask mascot: a small cloud with four moods. Idle is the default. Thinking shows while an
- * answer streams, happy when it is done, and puzzled when the course does not cover the question.
- * The animations are small and stop when the reader asks for less motion.
- */
 export function Mascot({ mood = 'idle', size = 40, className, label }: MascotProps) {
   const a11y = label ? { role: 'img' as const, 'aria-label': label } : { 'aria-hidden': true as const };
   return (

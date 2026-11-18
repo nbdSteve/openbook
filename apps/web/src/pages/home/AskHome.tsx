@@ -54,7 +54,6 @@ function EmptyState({ onJoin }: { onJoin: () => void }) {
   );
 }
 
-/** The Ask area home: every course the user can ask in, joined or their own. */
 export function AskHome() {
   useDocumentTitle('Ask');
   const { data, error, loading, reload } = useResource('courses', listCourses);

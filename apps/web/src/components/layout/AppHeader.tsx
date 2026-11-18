@@ -4,7 +4,6 @@ import { ThemeToggle } from '@/components/ui/ThemeToggle';
 import { useAuth } from '@/services/auth/AuthContext';
 import { AreaSwitch } from './AreaSwitch';
 
-/** The top bar for the screens outside a course chat. It holds the Ask | Portal switch. */
 export function AppHeader() {
   const { user, signOut } = useAuth();
   return (

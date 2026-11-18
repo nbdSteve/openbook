@@ -13,7 +13,6 @@ import { AskVignette, SeeVignette, UploadVignette } from './Vignettes';
 
 const GITHUB_URL = 'https://github.com/nbdSteve/openbook';
 
-/** Fade a block in once, when it scrolls into view. Without motion (or without the observer) it is just there. */
 function Reveal({ children, className }: { children: ReactNode; className?: string }) {
   const ref = useRef<HTMLDivElement>(null);
   const [shown, setShown] = useState(false);
@@ -90,7 +89,6 @@ export function LandingPage() {
       </header>
 
       <main>
-        {/* The hero has no fade-in: it is the largest thing on the page, so it must show at first paint. */}
         <section className="mx-auto max-w-6xl px-5 pb-16 pt-12 sm:px-8 sm:pb-24 sm:pt-16">
           <h1 className="max-w-5xl font-serif text-display font-medium tracking-[-0.02em] text-text-primary">
             Upload your material. <em className="block text-accent">The tutor answers from it.</em>

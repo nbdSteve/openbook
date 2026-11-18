@@ -81,7 +81,6 @@ function EmptyState({ onCreate }: { onCreate: (mode: CourseMode) => void }) {
   );
 }
 
-/** The Portal area home: the courses the user owns. Anyone who is signed in can make one. */
 export function PortalHome() {
   useDocumentTitle('Portal');
   const { data, error, loading, reload } = useResource('courses', listCourses);

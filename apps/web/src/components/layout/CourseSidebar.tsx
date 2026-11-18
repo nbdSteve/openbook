@@ -14,7 +14,6 @@ interface CourseSidebarProps {
   activeConversationId?: string;
   email: string;
   open: boolean;
-  /** True when the sidebar is off screen and must not take focus (small screens, menu closed). */
   hidden: boolean;
   onClose: () => void;
   onDeleteConversation: (conversation: Conversation) => void;

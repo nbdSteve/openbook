@@ -2,10 +2,6 @@ function Bar({ className }: { className: string }) {
   return <div aria-hidden="true" className={`animate-pulse rounded-lg bg-bg-tertiary ${className}`} />;
 }
 
-/**
- * The app shell (sidebar and header) with placeholder blocks. It shows while the session and the
- * first API calls load, so the page keeps its shape instead of showing a lone spinner.
- */
 export function ShellSkeleton({ label = 'Loading' }: { label?: string }) {
   return (
     <div role="status" className="relative flex h-dvh overflow-hidden bg-bg-primary">

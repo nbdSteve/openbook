@@ -12,11 +12,8 @@ export interface DemoProblem {
 export interface DemoChat {
   messages: ChatMessage[];
   status: 'idle' | 'streaming';
-  /** A problem that stopped the last question before any answer began. */
   problem: DemoProblem | null;
-  /** A friendly note, for example that the conversation was full and a new one began. */
   notice: string | null;
-  /** The credit lines of the books, from the last answer. */
   attribution: Attribution[];
   style: TutoringStyle;
   setStyle: (style: TutoringStyle) => void;
@@ -28,12 +25,6 @@ export interface DemoChat {
 let counter = 0;
 const localId = (prefix: string) => `${prefix}-${Date.now()}-${counter++}`;
 
-/**
- * The state of the landing page demo: a small version of the course chat. It keeps the
- * conversation ID from the `meta` event so follow-ups work. After the turn limit or the age limit
- * it starts a new conversation and says so. The server does the same when it no longer knows the
- * ID: the `meta` event then has a new ID, and the notice says so.
- */
 export function useDemoChat(): DemoChat {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [status, setStatus] = useState<DemoChat['status']>('idle');
@@ -69,14 +60,12 @@ export function useDemoChat(): DemoChat {
     setProblem(null);
     setNotice(fresh ? 'That conversation was full, so this is a fresh one.' : null);
     setStatus('streaming');
-    // A new conversation starts with an empty page.
     setMessages((all) => [
       ...(current ? all : []),
       { id: userId, role: 'user', content: message, createdAt: now },
       { id: assistantId, role: 'assistant', content: '', createdAt: now, state: 'streaming' },
     ]);
 
-    // Like the course chat: once an event has come, the question and the partial answer stay, whatever happens next.
     let began = false;
     let finished = false;
     try {
@@ -90,7 +79,6 @@ export function useDemoChat(): DemoChat {
               turns: (continued && current ? current.turns : 0) + 1,
               startedAt: continued && current ? current.startedAt : Date.now(),
             };
-            // The server forgot the old conversation (it expired, or it is not known): this is a new one.
             if (current && !continued) setNotice('That conversation ended, so this is a fresh one.');
             if (event.style) setServed(event.style);
             if (event.attribution && event.attribution.length > 0) setAttribution(event.attribution);
@@ -113,7 +101,6 @@ export function useDemoChat(): DemoChat {
         }
       }
       if (!finished) {
-        // The stream ended with no `done`, or with no event at all: never leave the bubble thinking.
         patch(assistantId, (m) => ({ ...m, state: 'failed', error: 'The connection closed before the answer was complete.' }));
       }
       return true;
@@ -130,7 +117,6 @@ export function useDemoChat(): DemoChat {
         }));
         return true;
       }
-      // Nothing streamed: take the pending messages back and show the problem under the box.
       setMessages((all) => all.filter((m) => m.id !== userId && m.id !== assistantId));
       setProblem({ kind: error instanceof DemoError ? error.kind : 'other', message: describeDemoError(error) });
       setNotice(null);

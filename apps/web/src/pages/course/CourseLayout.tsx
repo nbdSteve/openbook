@@ -20,10 +20,6 @@ import { useAuth } from '@/services/auth/AuthContext';
 import { useMe } from '@/services/me/MeContext';
 import type { ChatCourseContextValue } from './CourseContext';
 
-/**
- * Wraps the chat and manage screens of one course. It owns the course, the conversation list, and
- * the chat controller, so a streaming answer survives route changes inside the course.
- */
 export function CourseLayout() {
   const { courseId = '', conversationId } = useParams();
   const course = useResource(`course:${courseId}`, (signal) => getCourse(courseId, signal));
@@ -82,7 +78,6 @@ function CourseShell({ course, setCourse, conversationId }: CourseShellProps) {
   const desktop = useMediaQuery('(min-width: 1024px)');
   const menuButton = useRef<HTMLButtonElement>(null);
 
-  // On small screens the sidebar is a drawer: move focus in, let Escape close it, and move focus back.
   useEffect(() => {
     if (!sidebarOpen) return;
     document.querySelector<HTMLElement>('[data-sidebar-close]')?.focus();

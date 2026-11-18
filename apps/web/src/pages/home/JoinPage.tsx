@@ -12,11 +12,6 @@ import { describeApiError } from '@/services/api/errors';
 import { joinCourse } from '@/services/api/routes';
 import { useAuth } from '@/services/auth/AuthContext';
 
-/**
- * `/join/:inviteCode`. The sign-in guard has already run, so the user is signed in here. Joining
- * needs a click, because joining shows the user's email to the course owner and any web page can
- * link to this address.
- */
 export function JoinPage() {
   useDocumentTitle('Join a course');
   const { inviteCode = '' } = useParams();

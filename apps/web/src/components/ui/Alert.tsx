@@ -10,7 +10,6 @@ interface AlertProps {
 
 const icons = { error: AlertCircle, warning: AlertCircle, success: CheckCircle2, info: Info };
 
-/** Errors use role="alert" so screen readers announce them at once. */
 export function Alert({ tone = 'info', children, className }: AlertProps) {
   const Icon = icons[tone];
   return (

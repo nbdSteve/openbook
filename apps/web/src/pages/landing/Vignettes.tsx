@@ -1,6 +1,5 @@
 import { Mascot } from '@/components/ui/Mascot';
 
-// Three small drawings for "How it works". They use the theme colors, so they follow light and dark.
 
 function Page({ x, y, w = 56, h = 72, lines = 4, className = '' }: { x: number; y: number; w?: number; h?: number; lines?: number; className?: string }) {
   return (
@@ -13,7 +12,6 @@ function Page({ x, y, w = 56, h = 72, lines = 4, className = '' }: { x: number; 
   );
 }
 
-/** Upload PDFs: a stack of pages with an arrow going in. */
 export function UploadVignette() {
   return (
     <svg viewBox="0 0 160 110" className="h-full w-full" aria-hidden="true">
@@ -32,7 +30,6 @@ export function UploadVignette() {
   );
 }
 
-/** Ask anything: a question line, and the mascot reading it. */
 export function AskVignette() {
   return (
     <svg viewBox="0 0 160 110" className="h-full w-full" aria-hidden="true">
@@ -50,7 +47,6 @@ export function AskVignette() {
   );
 }
 
-/** See the page: a page with one line marked, and a footnote note beside it. */
 export function SeeVignette() {
   return (
     <svg viewBox="0 0 160 110" className="h-full w-full" aria-hidden="true">

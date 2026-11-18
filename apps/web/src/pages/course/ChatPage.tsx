@@ -18,7 +18,6 @@ function documentsCount(n: number): string {
   return `${n} ${n === 1 ? 'document' : 'documents'}`;
 }
 
-/** Tell the reader what the tutor can use: how many ready documents the course has. */
 function CourseMaterials({ courseId, role }: { courseId: string; role: 'owner' | 'student' }) {
   const docs = useResource(`documents:${courseId}`, (signal) => listDocuments(courseId, signal));
   if (!docs.data) return null;
@@ -57,7 +56,6 @@ export function ChatPage() {
   const stick = useRef(true);
   const streaming = chat.status === 'streaming';
 
-  // One polite live region announces the start and the end of an answer. Reading every token would be noise.
   const [announcement, setAnnouncement] = useState('');
   const [previousStatus, setPreviousStatus] = useState(chat.status);
   if (previousStatus !== chat.status) {
@@ -73,7 +71,6 @@ export function ChatPage() {
     if (el) stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX;
   }, []);
 
-  // Follow the answer while the reader is at the bottom. Do not fight a reader who scrolled up.
   const last = chat.messages[chat.messages.length - 1];
   useEffect(() => {
     const el = scroller.current;

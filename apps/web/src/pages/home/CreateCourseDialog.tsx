@@ -12,7 +12,6 @@ import { useMe } from '@/services/me/MeContext';
 
 export type CourseMode = 'class' | 'personal';
 
-/** Both modes create the same kind of course. The personal one presets a name and talks to a single learner. */
 export function CreateCourseDialog({ open, mode, onClose }: { open: boolean; mode: CourseMode; onClose: () => void }) {
   const navigate = useNavigate();
   const { me } = useMe();

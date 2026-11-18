@@ -1,5 +1,3 @@
-// The fixed example on the landing page. This file has no imports: the Vite config reads it at build time
-// (see `exampleAnswerPlugin` in vite.config.ts). A citation is a link to `#cite-n`, as the chat parser writes it.
 
 export const EXAMPLE_QUESTION = 'How do I solve x² − 5x + 6 = 0?';
 

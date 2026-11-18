@@ -2,7 +2,6 @@ import { Link } from 'react-router';
 import { cn } from '@/lib/cn';
 import { Mascot } from './Mascot';
 
-/** The Openbook wordmark with the mascot. Links home. */
 export function Logo({ className, to = '/' }: { className?: string; to?: string }) {
   return (
     <Link

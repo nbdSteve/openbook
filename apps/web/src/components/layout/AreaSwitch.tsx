@@ -6,7 +6,6 @@ const AREAS = [
   { to: '/portal', label: 'Portal' },
 ];
 
-/** Moves between the two areas of the app: Ask (learn) and Portal (manage courses). One click either way. */
 export function AreaSwitch({ className }: { className?: string }) {
   return (
     <nav aria-label="Areas" className={cn('inline-flex rounded-full bg-bg-tertiary p-0.5', className)}>

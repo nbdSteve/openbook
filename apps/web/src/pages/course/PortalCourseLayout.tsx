@@ -14,7 +14,6 @@ import { describeApiError } from '@/services/api/errors';
 import { getCourse } from '@/services/api/routes';
 import type { CourseContextValue } from './CourseContext';
 
-/** One course in the Portal: the header, the course name, and the management tabs below. Only the owner is let in. */
 export function PortalCourseLayout() {
   const { courseId = '' } = useParams();
   const course = useResource(`course:${courseId}`, (signal) => getCourse(courseId, signal));
@@ -43,7 +42,6 @@ export function PortalCourseLayout() {
       </div>
     );
   }
-  // Students use the course in Ask. Only the owner manages it.
   if (course.data.role !== 'owner') return <Navigate to={`/ask/courses/${course.data.id}`} replace />;
 
   const context: CourseContextValue = { course: course.data, setCourse: (next) => course.update(() => next) };

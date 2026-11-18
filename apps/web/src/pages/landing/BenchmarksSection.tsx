@@ -2,7 +2,6 @@ import { ArrowUpRight } from 'lucide-react';
 import { benchmarks, METHOD_URL, percent, type RetrievalMode } from '@/benchmarks';
 import { cn } from '@/lib/cn';
 
-// Plain names for the three ways of searching. The page never shows nDCG or MRR: they mean nothing to a visitor.
 const METHODS: { key: RetrievalMode; label: string }[] = [
   { key: 'hybrid', label: 'Openbook (keywords + meaning)' },
   { key: 'dense', label: 'Meaning only (vectors)' },
@@ -16,7 +15,6 @@ function textbooks(count: number, publisher: string | null): string {
   return `${number} ${publisher ? `${publisher} ` : ''}${count === 1 ? 'textbook' : 'textbooks'}`;
 }
 
-/** A ring that fills to `value` (0 to 1). The number sits in the middle. */
 function Ring({ value, label }: { value: number; label: string }) {
   const r = 42;
   const c = 2 * Math.PI * r;
@@ -43,7 +41,6 @@ function Ring({ value, label }: { value: number; label: string }) {
   );
 }
 
-/** The retrieval numbers of this build, in plain words. */
 export function BenchmarksSection() {
   const { recallAt8, recallAt1, offTopicCaught, questions, textbooks: count, publisher } = benchmarks;
   return (

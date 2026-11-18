@@ -4,7 +4,6 @@ interface State {
   failed: boolean;
 }
 
-/** Last line of defence: an error while rendering (or a page chunk that fails to load) shows this screen, not a blank page. */
 export class ErrorBoundary extends Component<{ children: ReactNode }, State> {
   state: State = { failed: false };
 
@@ -13,7 +12,6 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, State> {
   }
 
   componentDidCatch(error: Error, info: ErrorInfo): void {
-    // There is no error service. The browser console is the only place a developer can look.
     console.error('Openbook hit an unexpected error', error, info.componentStack);
   }
 
