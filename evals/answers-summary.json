@@ -5,7 +5,7 @@
     "judgeModel": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
     "style": "socratic",
     "rubricVersion": 3,
-    "promptFingerprint": "2fc417f0b68030e4dbd3d98428e31be5c253a894c25a5204503024b16121a842",
+    "promptFingerprint": "a56beadf02ba329030effab0f551fc3826f3f249f254442edd80289be5519309",
     "selection": "all questions",
     "turnNote": true
   },
@@ -13,9 +13,9 @@
     "questions": 180,
     "covered": {
       "questions": 123,
-      "groundedCitationRate": 0.9187,
-      "citationPrecision": 0.9044,
-      "uncitedRate": 0.0081,
+      "groundedCitationRate": 0.935,
+      "citationPrecision": 0.9229,
+      "uncitedRate": 0.0163,
       "nonexistentCitationRate": 0.0,
       "falseNotCoveredRate": 0.0,
       "relevantSourceAvailableRate": 0.9919
@@ -25,7 +25,7 @@
         "questions": 33,
         "saysNotCoveredRate": 0.9697,
         "opensWithStatementRate": 0.9697,
-        "uncitedRate": 1.0
+        "uncitedRate": 0.9697
       },
       "gated": {
         "questions": 14,
@@ -37,13 +37,13 @@
         "questions": 19,
         "saysNotCoveredRate": 0.9474,
         "opensWithStatementRate": 0.9474,
-        "uncitedRate": 1.0
+        "uncitedRate": 0.9474
       }
     },
     "offTopic": {
       "all": {
         "questions": 24,
-        "correctRate": 0.9583,
+        "correctRate": 1.0,
         "opensWithStatementRate": null
       },
       "smallTalk": {
@@ -53,8 +53,8 @@
       },
       "subject": {
         "questions": 17,
-        "correctRate": 0.9412,
-        "opensWithStatementRate": 0.9412
+        "correctRate": 1.0,
+        "opensWithStatementRate": 1.0
       },
       "gatedRate": 1.0
     },
@@ -62,18 +62,18 @@
       {
         "kind": "lookup",
         "questions": 36,
-        "uncitedRate": 0.0,
+        "uncitedRate": 0.0278,
         "nonexistentCitationRate": 0.0,
         "saysNotCoveredRate": 0.0,
-        "groundedCitationRate": 1.0
+        "groundedCitationRate": 0.9722
       },
       {
         "kind": "paraphrase",
         "questions": 37,
-        "uncitedRate": 0.0,
+        "uncitedRate": 0.027,
         "nonexistentCitationRate": 0.0,
         "saysNotCoveredRate": 0.0,
-        "groundedCitationRate": 0.8919
+        "groundedCitationRate": 0.8649
       },
       {
         "kind": "notation",
@@ -81,20 +81,20 @@
         "uncitedRate": 0.0,
         "nonexistentCitationRate": 0.0,
         "saysNotCoveredRate": 0.0,
-        "groundedCitationRate": 0.8571
+        "groundedCitationRate": 0.9524
       },
       {
         "kind": "followup",
         "questions": 29,
-        "uncitedRate": 0.0345,
+        "uncitedRate": 0.0,
         "nonexistentCitationRate": 0.0,
         "saysNotCoveredRate": 0.0,
-        "groundedCitationRate": 0.8966
+        "groundedCitationRate": 0.9655
       },
       {
         "kind": "not_covered",
         "questions": 33,
-        "uncitedRate": 1.0,
+        "uncitedRate": 0.9697,
         "nonexistentCitationRate": 0.0,
         "saysNotCoveredRate": 0.9697,
         "groundedCitationRate": 0.0
@@ -104,7 +104,7 @@
         "questions": 24,
         "uncitedRate": 1.0,
         "nonexistentCitationRate": 0.0,
-        "saysNotCoveredRate": 0.6667,
+        "saysNotCoveredRate": 0.7083,
         "groundedCitationRate": 0.0
       }
     ]
