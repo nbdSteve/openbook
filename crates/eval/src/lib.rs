@@ -4,11 +4,16 @@
 //! in-memory dense index, and runs the shared retrieval core of `openbook-search` for every golden
 //! question. The refresh builds the cache that makes the offline run deterministic.
 
+pub mod answer_cache;
+pub mod answer_report;
+pub mod answers;
 pub mod benchmarks;
 pub mod cache;
+pub mod citations;
 pub mod corpus;
 pub mod data;
 pub mod grid;
+pub mod judge;
 pub mod metrics;
 pub mod offline;
 pub mod refresh;

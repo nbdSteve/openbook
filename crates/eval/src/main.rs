@@ -3,11 +3,16 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use openbook_core::domain::TutoringStyle;
+use openbook_core::model::BedrockChat;
+use openbook_eval::answer_report::{AnswerReport, Settings};
 use openbook_eval::benchmarks::{self, Benchmarks};
 use openbook_eval::cache::{Cache, CacheKind};
+use openbook_eval::data::Kind;
+use openbook_eval::judge::RUBRIC_VERSION;
 use openbook_eval::offline::{GateKind, Tuning};
 use openbook_eval::report::{Baseline, check_suite, suite_improved};
-use openbook_eval::{Error, corpus, default_evals_dir, grid, offline, refresh};
+use openbook_eval::{Error, answers, corpus, data, default_evals_dir, grid, offline, refresh};
 use openbook_search::headers::HeaderMode;
 
 const USAGE: &str = "\
@@ -17,6 +22,9 @@ Usage:
   openbook-eval grid    [--dev-cache] [--corpus ID] [--cache DIR] [--evals DIR] [--out DIR] [TUNING]
   openbook-eval refresh [--dev-cache] [--missing-only] [--yes] [--corpus ID] [--cache DIR] [--evals DIR]
   openbook-eval readme  [--check] [--evals DIR] [--readme FILE]
+  openbook-eval answers [--kind KINDS] [--sample-covered N] [--seed N] [--style ID] [--model ID]
+                        [--judge-model ID] [--catalog FILE] [--corpus ID] [--evals DIR] [--yes]
+                        [--write-summary] [--prune]
 
 The corpora are the directories of evals/corpora. Without --corpus every command works on all of
 them, and the report shows each corpus and all of them pooled. --cache needs --corpus.
@@ -38,6 +46,21 @@ readme    Writes the benchmark tables of evals/benchmarks.json between the marke
           --check            writes nothing and exits 1 when the README block is stale
 grid      Runs the whole tuning grid offline and writes grid.md and grid.json (default: target/eval).
           Chunk targets other than the production one need their chunk embeddings in the cache.
+answers   LIVE: answers every selected golden question with the real prompt and the default chat
+          model, judges the answers, and writes target/eval/answers.md and answers.json. The answer
+          cache is evals/corpora/<id>/answers. It prints the calls and a cost bound first, and
+          calls only with --yes. When everything is cached it calls nothing and needs no --yes.
+          --kind KINDS       comma list of covered, lookup, paraphrase, notation, followup,
+                             not_covered, off_topic (default: all)
+          --sample-covered N a seeded sample of N covered questions (the other kinds stay whole)
+          --seed N           the seed of the sample (default 1)
+          --style ID         tutoring style (default: the product default)
+          --model ID         catalog ID of the chat model (default: the catalog default)
+          --judge-model ID   catalog ID of the judge (default: the catalog fast model)
+          --catalog FILE     the cdk.json with the model catalog (default: infra/cdk.json)
+          --write-summary    writes evals/answers-summary.json (all questions, all corpora only)
+          --prune            removes the cached answers of the same style and the same questions that
+                             this run does not use (stale prompts), and their judgments
 refresh   Builds the caches.
           --dev-cache        no AWS: the PDF text layer and fake embeddings, into each cache-dev
           --missing-only     LIVE: fills what the caches lack, for all corpora in one plan. A corpus
@@ -67,6 +90,15 @@ struct Args {
     markdown: Option<PathBuf>,
     out: Option<PathBuf>,
     tuning: Tuning,
+    kinds: Vec<Kind>,
+    sample_covered: Option<usize>,
+    seed: Option<u64>,
+    style: Option<String>,
+    model: Option<String>,
+    judge_model: Option<String>,
+    catalog: Option<PathBuf>,
+    write_summary: bool,
+    prune: bool,
 }
 
 fn parse(argv: impl Iterator<Item = String>) -> Result<Args, String> {
@@ -108,6 +140,19 @@ fn parse(argv: impl Iterator<Item = String>) -> Result<Args, String> {
             "--chunk-tokens" => t.chunk_tokens = Some(number(value(&mut argv, &flag)?, &flag)?),
             "--cap-off" => t.cap_off = true,
             "--tiny" => args.tiny = true,
+            "--kind" => args.kinds.extend(
+                answers::parse_kinds(&value(&mut argv, &flag)?).map_err(|e| e.to_string())?,
+            ),
+            "--sample-covered" => {
+                args.sample_covered = Some(number(value(&mut argv, &flag)?, &flag)?);
+            }
+            "--seed" => args.seed = Some(number(value(&mut argv, &flag)?, &flag)?),
+            "--style" => args.style = Some(value(&mut argv, &flag)?),
+            "--model" => args.model = Some(value(&mut argv, &flag)?),
+            "--judge-model" => args.judge_model = Some(value(&mut argv, &flag)?),
+            "--catalog" => args.catalog = Some(value(&mut argv, &flag)?.into()),
+            "--write-summary" => args.write_summary = true,
+            "--prune" => args.prune = true,
             "--readme" => args.readme = Some(value(&mut argv, &flag)?.into()),
             "--header-variant" => {
                 let text = value(&mut argv, &flag)?;
@@ -367,6 +412,124 @@ async fn grid_command(args: &Args, evals: &Path) -> Result<ExitCode, Error> {
     Ok(ExitCode::SUCCESS)
 }
 
+async fn answers_command(args: &Args, evals: &Path) -> Result<ExitCode, Error> {
+    if args.dev_cache {
+        return Err(Error::Run(
+            "the answer evaluation needs the live cache: do not use --dev-cache".into(),
+        ));
+    }
+    let selection = answers::Selection {
+        kinds: args.kinds.clone(),
+        sample_covered: args.sample_covered,
+        seed: args.seed,
+    };
+    if args.write_summary && (!selection.is_full() || args.corpus.is_some()) {
+        return Err(Error::Run(
+            "--write-summary needs every question of every corpus: do not combine it with --kind, --sample-covered, or --corpus".into(),
+        ));
+    }
+    let corpora = corpus::select(evals, args.corpus.as_deref())?;
+    let catalog_path = args
+        .catalog
+        .clone()
+        .unwrap_or_else(|| answers::default_catalog_path(evals));
+    let catalog = answers::load_catalog(&catalog_path)?;
+    let choice =
+        answers::choose_models(&catalog, args.model.as_deref(), args.judge_model.as_deref())?;
+    let style = match &args.style {
+        Some(text) => answers::parse_style(text)?,
+        None => TutoringStyle::default(),
+    };
+    let mut pool = Vec::new();
+    for corpus in &corpora {
+        let sections = data::load_sections(&corpus.sections_path())?;
+        let golden = data::load_golden(&corpus.golden_path(), data::page_total(&sections))?;
+        pool.extend(golden.into_iter().map(|q| (corpus.id.clone(), q)));
+    }
+    let picked = selection.pick(pool);
+    let mut runs = Vec::new();
+    for corpus in &corpora {
+        let questions: Vec<_> = picked
+            .iter()
+            .filter(|(id, _)| *id == corpus.id)
+            .map(|(_, q)| q.clone())
+            .collect();
+        if questions.is_empty() {
+            continue;
+        }
+        let prepared = answers::prepare_corpus(corpus, &questions, style, &choice.chat).await?;
+        let (answer_store, judgment_store) =
+            answers::open_stores(corpus, &choice.chat, &choice.judge)?;
+        runs.push(answers::CorpusRun {
+            corpus: corpus.clone(),
+            prepared,
+            answers: answer_store,
+            judgments: judgment_store,
+        });
+    }
+    if runs.is_empty() {
+        return Err(Error::Run("the selection holds no question".into()));
+    }
+    let region = std::env::var("AWS_REGION")
+        .or_else(|_| std::env::var("AWS_DEFAULT_REGION"))
+        .unwrap_or_else(|_| format!("{} (default)", refresh::DEFAULT_REGION));
+    let profile = std::env::var("AWS_PROFILE")
+        .unwrap_or_else(|_| "(none: the default credential chain)".into());
+    let plan = answers::make_plan(&runs, &choice, style, &selection, region, profile)?;
+    println!("{}", plan.describe());
+    if !plan.is_empty() {
+        if !args.yes {
+            eprintln!("Nothing was called. Run again with --yes to start.");
+            return Ok(ExitCode::FAILURE);
+        }
+        let sdk = aws_config::defaults(aws_config::BehaviorVersion::latest())
+            .region(
+                aws_config::meta::region::RegionProviderChain::default_provider()
+                    .or_else(refresh::DEFAULT_REGION),
+            )
+            .load()
+            .await;
+        let client = aws_sdk_bedrockruntime::Client::new(&sdk);
+        let models = answers::Models {
+            chat: std::sync::Arc::new(BedrockChat::new(client.clone(), &choice.chat)),
+            judge: std::sync::Arc::new(BedrockChat::new(client, &choice.judge)),
+        };
+        answers::run_calls(&mut runs, &models, &choice, style).await?;
+    }
+    if args.prune {
+        let removed = answers::prune(&mut runs, style)?;
+        eprintln!("Removed {removed} cache entries that this run does not use.");
+    }
+    let scored = answers::score_all(&runs, &choice.judge.model_id)?;
+    let settings = Settings {
+        chat_model: choice.chat.model_id.clone(),
+        judge_model: choice.judge.model_id.clone(),
+        style: style.id().to_owned(),
+        rubric_version: RUBRIC_VERSION,
+        prompt_fingerprint: answers::prompt_fingerprint(&runs),
+        selection: selection.describe(),
+    };
+    let report = AnswerReport::build(settings, &scored);
+    let markdown = report.to_markdown();
+    println!("{markdown}");
+    let out = evals.parent().map_or_else(
+        || PathBuf::from("target/eval"),
+        |root| root.join("target/eval"),
+    );
+    write_file(&out.join("answers.md"), &markdown)?;
+    write_file(&out.join("answers.json"), &report.to_json()?)?;
+    eprintln!(
+        "Wrote {} and answers.json",
+        out.join("answers.md").display()
+    );
+    if args.write_summary {
+        let path = evals.join("answers-summary.json");
+        write_file(&path, &report.summary().to_json()?)?;
+        eprintln!("Wrote {}", path.display());
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     let args = match parse(std::env::args().skip(1)) {
@@ -381,6 +544,7 @@ async fn main() -> ExitCode {
         "offline" => offline_command(&args, &evals).await,
         "grid" => grid_command(&args, &evals).await,
         "refresh" => refresh_command(&args, &evals).await,
+        "answers" => answers_command(&args, &evals).await,
         "readme" => readme_command(&args, &evals),
         "help" | "--help" | "-h" => {
             println!("{USAGE}");

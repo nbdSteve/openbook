@@ -14,6 +14,8 @@ The evaluation runs the same retrieval code as the API (`openbook_search::retrie
 | `corpora/<id>/ATTRIBUTION.md` | The source, the licence, and the changes (page selection only). |
 | `corpora/<id>/sections.json` | The sections of the excerpt. Each section is one document for the evaluation, so the per-document cap works as it does in a course with several PDFs. |
 | `corpora/<id>/golden.jsonl` | The golden questions. Page numbers are pages of the excerpt. |
+| `corpora/<id>/answers/` | The answer cache of the answer evaluation: answers and judgments (JSON lines), committed. |
+| `answers-summary.json` | The pooled answer metrics of the committed prompt (schema 1). Written with `--write-summary`. |
 | `corpora/<id>/cache/` | The live cache (made by `refresh`, reviewed and committed like code). |
 | `corpora/<id>/cache-dev/` | The development cache. It proves that the harness works. It is never a baseline. |
 | `corpora/<id>/corpus.json` | The title, the licence, and the source URL of the book, for `benchmarks.json`. |
@@ -114,6 +116,28 @@ OPENBOOK_PDFIUM_PATH=$(scripts/fetch-pdfium.sh | tail -1)/lib cargo run -p openb
 
 The pages are the PDF text layer, the embeddings are fake (hashed words), and a follow-up question is joined to its earlier question. The numbers are not meaningful as retrieval quality. They show that the harness works.
 
+### Answer evaluation (real AWS)
+
+```
+AWS_PROFILE=<profile> AWS_REGION=ap-southeast-2 cargo run -p openbook-eval --release -- answers
+AWS_PROFILE=<profile> AWS_REGION=ap-southeast-2 cargo run -p openbook-eval --release -- answers --yes
+```
+
+The first command prints the plan: the number of answer calls and judge calls, and an upper bound of the cost from the catalog prices. The second one starts. `make eval-answers` is the short form (`ARGS="..."` for options, `YES=1` to start). The design is in `docs/evaluation.md`, "Answer evaluation".
+
+| Flag | What it does |
+|---|---|
+| `--kind LIST` | Only these kinds (a comma list of `covered`, `lookup`, `paraphrase`, `notation`, `followup`, `not_covered`, `off_topic`) |
+| `--sample-covered N`, `--seed S` | A seeded sample of N covered questions across the selected corpora. The other kinds stay whole. A larger N keeps the smaller sample |
+| `--style ID` | The tutoring style (`socratic`, `hints`, `step_by_step`, `concepts`, `direct`). The default is the product default |
+| `--model ID`, `--judge-model ID` | Catalog IDs. The defaults are the default chat model and the fast model |
+| `--catalog FILE` | The `cdk.json` with the model catalog (default `infra/cdk.json`) |
+| `--corpus ID` | One corpus |
+| `--write-summary` | Write `evals/answers-summary.json` (needs all questions and all corpora) |
+| `--prune` | Remove the cached answers of the same style and the same questions that this prompt does not use |
+
+The answers and judgments are committed in `corpora/<id>/answers/`. A run with a cache that holds everything calls nothing and needs no `--yes`. The report is `target/eval/answers.md` and `answers.json`.
+
 ## How a question is scored
 
 - The search query of a question is the question, cleaned and cut like the API does. A `followup` question uses the cached rewrite of its `context`.
@@ -125,6 +149,6 @@ The pages are the PDF text layer, the embeddings are fake (hashed words), and a 
 
 ## The golden set
 
-Each line of `golden.jsonl` is `{ "id", "question", "relevantPages", "kind" }`, and a `followup` also has `context` (the earlier question). The kinds are `lookup`, `paraphrase`, `notation`, `followup`, `not_covered`, and `off_topic`. A set needs at least 60 questions and at least 10 of each kind, except `notation`, which only a math corpus has. The tests check this.
+Each line of `golden.jsonl` is `{ "id", "question", "relevantPages", "kind" }`, and a `followup` also has `context` (the earlier question). The kinds are `lookup`, `paraphrase`, `notation`, `followup`, `not_covered`, and `off_topic`. An `off_topic` question can have `"smallTalk": true` (a greeting or thanks): the answer evaluation judges it by another rule. A set needs at least 60 questions and at least 10 of each kind, except `notation`, which only a math corpus has. The tests check this.
 
 Every question was written from the text of the pages and checked against the page. `not_covered` questions are plausible student questions about nearby math that the excerpt does not teach (hard negatives for the gate). A question is `not_covered` only when no page teaches the answer: a mention in a chapter outline or a list of learning objectives does not count. `off_topic` questions have no relation to the course: general knowledge, other school subjects, and small talk such as "hi" and "thanks, that makes sense". To add a question, find the page in the PDF, write the question and its page numbers, and run `offline --dev-cache` to see that the file still loads.

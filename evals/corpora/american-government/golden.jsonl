@@ -59,9 +59,9 @@
 {"id": "not-covered-12", "question": "What is an executive order and how do presidents use it?", "relevantPages": [], "kind": "not_covered"}
 {"id": "not-covered-13", "question": "Why does California set its own vehicle emissions standards?", "relevantPages": [], "kind": "not_covered"}
 {"id": "not-covered-14", "question": "How did the Supreme Court decide Roe v. Wade?", "relevantPages": [], "kind": "not_covered"}
-{"id": "off-topic-01", "question": "hi", "relevantPages": [], "kind": "off_topic"}
-{"id": "off-topic-02", "question": "thanks, that makes sense", "relevantPages": [], "kind": "off_topic"}
-{"id": "off-topic-03", "question": "ok cool", "relevantPages": [], "kind": "off_topic"}
+{"id": "off-topic-01", "question": "hi", "relevantPages": [], "kind": "off_topic", "smallTalk": true}
+{"id": "off-topic-02", "question": "thanks, that makes sense", "relevantPages": [], "kind": "off_topic", "smallTalk": true}
+{"id": "off-topic-03", "question": "ok cool", "relevantPages": [], "kind": "off_topic", "smallTalk": true}
 {"id": "off-topic-04", "question": "What is the capital of France?", "relevantPages": [], "kind": "off_topic"}
 {"id": "off-topic-05", "question": "Write a haiku about autumn.", "relevantPages": [], "kind": "off_topic"}
 {"id": "off-topic-06", "question": "How do I bake sourdough bread?", "relevantPages": [], "kind": "off_topic"}

@@ -28,6 +28,7 @@ fn question(id: &str, kind: Kind, text: &str, pages: &[u32], context: Option<&st
         relevant_pages: pages.to_vec(),
         kind,
         context: context.map(str::to_owned),
+        small_talk: false,
     }
 }
 

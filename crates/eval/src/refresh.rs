@@ -332,7 +332,7 @@ pub async fn plan_live(
     Ok((plan, pages))
 }
 
-async fn retry<T, E, F, Fut>(
+pub(crate) async fn retry<T, E, F, Fut>(
     what: &str,
     mut call: F,
     transient: impl Fn(&E) -> bool,

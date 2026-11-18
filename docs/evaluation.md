@@ -50,3 +50,28 @@ The gate decides whether a question has sources at all. A gate rule is data that
 The distance limit belongs to one embedding model. Titan v2 has its own rule. The fake embedder (hashed bag of words, local runs and tests) and any model that has not been measured keep the first rule (any BM25 hit passes), because their distances have a different scale. `GateRule::for_embedding_model` picks the rule from the model ID of the embedder, so a Titan limit never gates the fake model.
 
 The retrieval code that the API uses (query cleaning, fusion, the per-document cap, the gate) lives in `openbook-search`, so the evaluation runs exactly the production code.
+
+## Answer evaluation
+
+Retrieval metrics say whether the right passages reach the prompt. They do not say what the tutor writes. The answer evaluation (`openbook-eval answers`, `make eval-answers`) calls the real chat model with the real prompt for the golden questions, and measures the answers.
+
+For each selected question the command takes the production retrieval decision from the offline cache: the fused sources, or the gate. It builds the system prompt with the production code (`build_system_prompt_for`, with the sources block from `source_lists` of the API, or the not-covered notice when the gate cuts off). It sends it to the default chat model of the catalog (`infra/cdk.json`) through Bedrock, with a tutoring style that the command line sets (the product default is Socratic). A follow-up question goes with its earlier question as one user turn.
+
+The answers are stored in `evals/corpora/<id>/answers/<model>.answers.jsonl`. The key holds the model, a hash of the whole request (system prompt, turns, output limit, temperature), and the question, so an unchanged prompt never calls again. Judgments are stored next to them, keyed by the judge model, the rubric version, the answer text, and the question. Like the refresh, the command prints its plan with an upper bound of the cost from the catalog prices and starts only with `--yes`. It follows `AWS_REGION`: set it to `ap-southeast-2`. When everything is cached it calls nothing.
+
+### Checks
+
+- Deterministic checks read the `[n]` markers like the web app does (code and math are skipped). For covered questions: the **grounded citation rate** (at least one cited source is relevant, by the same page rule as retrieval), the **citation precision** (the share of cited sources that are relevant, averaged over the answers that cite), the **uncited rate**, and the share of answers that cite a **number that does not exist**.
+- The LLM judge is the fast model of the catalog. A strict rubric in `crates/eval/src/judge.rs` makes it return JSON with three booleans: the answer clearly says that the course materials do not cover the question, the answer talks about the course materials, and the answer is a natural reply. A test pins the text of the rubric to `RUBRIC_VERSION`, so a changed rubric needs a new version and new judgments.
+
+### Metrics
+
+- Covered kinds (`lookup`, `paraphrase`, `notation`, `followup`): grounded citation rate, citation precision, uncited rate, nonexistent citations, the false "not covered" rate (the answer says the course does not cover a question that it covers), and how often a relevant source was in the prompt at all.
+- `not_covered`: the share of answers that say "not covered", and the uncited rate, for all questions, for the gated ones (no sources), and for the ones that got sources that do not answer the question.
+- `off_topic`: correct handling. A small-talk message (`smallTalk` in `golden.jsonl`) is right when the reply is natural and does not talk about the course materials. A subject question is right when the answer says that the course does not cover it.
+
+The report goes to `target/eval/answers.md` and `answers.json`. `--write-summary` writes the pooled numbers to `evals/answers-summary.json` (all questions, all corpora). `--kind` and `--sample-covered N --seed S` select a subset for a prompt iteration. `--prune` removes the stale answers of the same style and the same questions.
+
+### The rule that the prompt follows
+
+When no source answers the question, the answer opens with one short sentence that says the course materials do not cover it, and then helps from general knowledge without citations. This holds when the gate cut off all sources and when sources were given but none is relevant. It holds for every tutoring style: a Socratic answer says it first. A greeting or thanks gets a normal short reply that does not talk about the course materials.

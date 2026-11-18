@@ -686,6 +686,60 @@ pub async fn search_all(
     Ok(all)
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct RetrievedChunk {
+    pub fused: Fused,
+    pub span: Span,
+    pub document_title: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Retrieved {
+    pub outcome: Outcome,
+    pub chunks: Vec<RetrievedChunk>,
+}
+
+impl Retrieved {
+    pub fn fused(&self) -> Vec<Fused> {
+        self.chunks.iter().map(|c| c.fused.clone()).collect()
+    }
+}
+
+pub async fn retrieve(
+    index: &Index,
+    sections: &[Section],
+    question: &Question,
+    cache: &Cache,
+    params: &Params,
+) -> Result<Retrieved, Error> {
+    let query = query_for(question, cache)?;
+    let found = candidates(index, question, &query).await?;
+    let decision = decide_with(params, Some(found.dense), Some(found.lexical), found.terms);
+    let mut chunks = Vec::with_capacity(decision.fused.len());
+    for mut fused in decision.fused {
+        let span = index.span(&fused.passage.key)?;
+        let section = sections
+            .iter()
+            .find(|s| s.id == fused.passage.document_id)
+            .ok_or_else(|| {
+                Error::Run(format!(
+                    "a result has an unknown document {:?}",
+                    fused.passage.document_id
+                ))
+            })?;
+        fused.passage.page = span.0.saturating_sub(section.first_page - 1);
+        chunks.push(RetrievedChunk {
+            fused,
+            span,
+            document_title: section.title.clone(),
+        });
+    }
+    Ok(Retrieved {
+        outcome: decision.outcome,
+        chunks,
+    })
+}
+
 /// Fuses and judges every question from its candidates.
 pub fn judge_all(
     index: &Index,

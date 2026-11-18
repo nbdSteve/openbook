@@ -77,6 +77,8 @@ pub struct Question {
     /// For `followup`: the earlier question of the conversation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub small_talk: bool,
 }
 
 impl Question {
@@ -183,6 +185,12 @@ pub fn validate_golden(questions: &[Question], pages: u32) -> Result<(), Error> 
             (_, Some(_)) => problems.push(format!("{}: only a followup has a context", q.id)),
             (_, None) => {}
         }
+        if q.small_talk && q.kind != Kind::OffTopic {
+            problems.push(format!(
+                "{}: only an off_topic question can be small talk",
+                q.id
+            ));
+        }
     }
     if questions.len() < MIN_QUESTIONS {
         problems.push(format!(
@@ -221,7 +229,20 @@ mod tests {
             },
             kind,
             context: (kind == Kind::Followup).then(|| "Before.".to_owned()),
+            small_talk: false,
         }
+    }
+
+    #[test]
+    fn only_an_off_topic_question_can_be_small_talk() {
+        let mut set = full_set();
+        let first_off_topic = set.iter().position(|q| q.kind == Kind::OffTopic).unwrap();
+        set[first_off_topic].small_talk = true;
+        assert!(validate_golden(&set, 10).is_ok());
+        let first_lookup = set.iter().position(|q| q.kind == Kind::Lookup).unwrap();
+        set[first_lookup].small_talk = true;
+        let problem = validate_golden(&set, 10).unwrap_err().to_string();
+        assert!(problem.contains("only an off_topic question can be small talk"));
     }
 
     fn full_set() -> Vec<Question> {
