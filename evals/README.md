@@ -138,17 +138,17 @@ The first command prints the plan: the number of answer calls and judge calls, a
 | `--no-turn-note` | Build the prompt without the server note before the student message (an ablation, cached under its own label) |
 | `--check` | Offline: fail when the current prompt lacks a cached answer or judgment for a golden question, or when `answers-summary.json` is stale (`make eval` runs it) |
 
-Numbers of the committed prompt (Socratic, 180 questions, pooled), before the prompt change and after it:
+Numbers of the committed prompt (Socratic, the 180 in-sample questions, pooled), before the prompt change and after it:
 
 | Metric | Before | After |
 |---|---|---|
-| Not covered: says "not covered" | 12.1% | 90.9% |
-| Covered: grounded citation rate | 27.6% | 87.0% |
-| Covered: citation precision | 90.5% | 89.3% |
+| Not covered: says "not covered" | 12.1% | 97.0% |
+| Covered: grounded citation rate | 27.6% | 91.9% |
+| Covered: citation precision | 90.5% | 90.4% |
 | Covered: false "not covered" rate | 0.0% | 0.0% |
-| Off topic: correct handling | 91.7% | 100.0% |
+| Off topic: correct handling | 91.7% | 95.8% |
 
-The Direct style on the `not_covered` questions went from 27.3% to 93.9%. `answers-summary.json` has the numbers of the committed prompt, and `results/2026-11-18.md` has the history.
+The Direct style on the in-sample `not_covered` questions went from 27.3% to 93.9%. The 20 held-out questions (out-of-sample) give 95% in both styles. `answers-summary.json` has the numbers of the committed prompt, and `results/2026-11-18.md` has the history, the ablation of the server note, and the held-out tables.
 
 The answers and judgments are committed in `corpora/<id>/answers/`. A run with a cache that holds everything calls nothing and needs no `--yes`. The report is `target/eval/answers.md` and `answers.json`.
 

@@ -5,7 +5,7 @@
     "judgeModel": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
     "style": "socratic",
     "rubricVersion": 3,
-    "promptFingerprint": "ea9aaaa85dc0cabb0e5b617130051aefb62a2eedd54b1ba6369b05666e7d4ad8",
+    "promptFingerprint": "2fc417f0b68030e4dbd3d98428e31be5c253a894c25a5204503024b16121a842",
     "selection": "all questions",
     "turnNote": true
   },
@@ -23,14 +23,14 @@
     "notCovered": {
       "all": {
         "questions": 33,
-        "saysNotCoveredRate": 0.9394,
-        "opensWithStatementRate": 0.9394,
+        "saysNotCoveredRate": 0.9697,
+        "opensWithStatementRate": 0.9697,
         "uncitedRate": 1.0
       },
       "gated": {
         "questions": 14,
-        "saysNotCoveredRate": 0.9286,
-        "opensWithStatementRate": 0.9286,
+        "saysNotCoveredRate": 1.0,
+        "opensWithStatementRate": 1.0,
         "uncitedRate": 1.0
       },
       "notGated": {
@@ -43,7 +43,7 @@
     "offTopic": {
       "all": {
         "questions": 24,
-        "correctRate": 0.8333,
+        "correctRate": 0.9583,
         "opensWithStatementRate": null
       },
       "smallTalk": {
@@ -53,8 +53,8 @@
       },
       "subject": {
         "questions": 17,
-        "correctRate": 0.7647,
-        "opensWithStatementRate": 0.7059
+        "correctRate": 0.9412,
+        "opensWithStatementRate": 0.9412
       },
       "gatedRate": 1.0
     },
@@ -96,7 +96,7 @@
         "questions": 33,
         "uncitedRate": 1.0,
         "nonexistentCitationRate": 0.0,
-        "saysNotCoveredRate": 0.9394,
+        "saysNotCoveredRate": 0.9697,
         "groundedCitationRate": 0.0
       },
       {
@@ -104,7 +104,7 @@
         "questions": 24,
         "uncitedRate": 1.0,
         "nonexistentCitationRate": 0.0,
-        "saysNotCoveredRate": 0.5417,
+        "saysNotCoveredRate": 0.6667,
         "groundedCitationRate": 0.0
       }
     ]
