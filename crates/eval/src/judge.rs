@@ -7,15 +7,16 @@ use serde::Deserialize;
 
 use crate::Error;
 
-pub const RUBRIC_VERSION: u32 = 1;
+pub const RUBRIC_VERSION: u32 = 2;
 pub const JUDGE_MAX_TOKENS: i32 = 300;
 
 pub const RUBRIC: &str = "You grade one answer from a course tutor. You get the student's message and the tutor's answer. \
 Reply with one JSON object and nothing else. The object has these keys:\n\
-- \"says_not_covered\" (boolean): true only when the answer clearly tells the student, in plain words, that the course materials do not cover the question or its topic. \
-Examples that count: \"The course materials do not cover derivatives\", \"This does not seem to be in your course materials\", \"Your course does not teach this\". \
-Examples that do not count: a general warning that the tutor may be wrong, a refusal that says nothing about the course materials, an answer that only helps, and a note that one small detail is missing.\n\
-- \"mentions_course_materials\" (boolean): true when the answer talks about the course materials, the sources, or what the course does or does not contain, in any way.\n\
+- \"says_not_covered\" (boolean): true only when the answer tells the student in plain words that the question or its topic is not covered by the course or its materials, or is outside the course or its subject. \
+Examples that count: \"The course materials do not cover derivatives\", \"This does not seem to be in your course materials\", \"That is outside the scope of American Government\", \"That is a history question, not a College Algebra topic\", \"Derivatives are a calculus topic, beyond this course\". \
+Examples that do not count: a general warning that the tutor may be wrong, a polite redirect that never says the question is outside the course (\"What would you like to study today?\"), an answer that only helps, a note that one small detail is missing, and a remark that the topic connects to what the student is studying.\n\
+- \"mentions_course_materials\" (boolean): true only when the answer talks about what the course materials, the sources, or the course content contain or do not contain. \
+A greeting that only names the subject (\"Ready to help you with College Algebra\") is false.\n\
 - \"natural_reply\" (boolean): true when the answer is a natural, friendly, short reply to the student's message, as a person would write it. \
 It is false when the answer refuses, lectures, pushes the student back to the course without a reason, or ignores the message.\n\
 - \"reason\" (string): one short sentence.\n\
@@ -182,7 +183,7 @@ mod tests {
         let fingerprint = crate::answer_cache::sha256_parts(&[RUBRIC]);
         assert_eq!(
             (RUBRIC_VERSION, &fingerprint[..12]),
-            (1, "8d4d7150ebd8"),
+            (2, "afff63e77624"),
             "the rubric text changed: raise RUBRIC_VERSION and pin the new fingerprint"
         );
     }
