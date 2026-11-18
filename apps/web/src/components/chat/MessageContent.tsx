@@ -11,8 +11,6 @@ import { SourceButton } from './SourceBadge';
 
 const CodeBlock = lazy(() => import('./CodeBlock'));
 
-// Images never load: a model (or text inside a PDF) must not be able to make the browser fetch a
-// URL, because the URL could carry a student's question.
 const DISALLOWED = ['img'];
 
 interface MessageContentProps {
@@ -27,7 +25,6 @@ export function MessageContent({ content, sources, className = '' }: MessageCont
 
   const components = useMemo<Components>(
     () => ({
-      // The block <pre> is drawn by the `code` renderer below.
       pre: ({ children }) => <>{children}</>,
       code({ children, className: cn }) {
         const code = String(children).replace(/\n$/, '');
@@ -53,7 +50,6 @@ export function MessageContent({ content, sources, className = '' }: MessageCont
         if (n !== null) {
           const source = sources?.find((s) => s.n === n);
           if (source) return <SourceButton source={source} variant="badge" />;
-          // A number with no matching source is plain text, never a broken badge.
           return <>[{n}]</>;
         }
         return (
@@ -84,7 +80,6 @@ export function MessageContent({ content, sources, className = '' }: MessageCont
       h5: ({ children }) => <h6 className="mb-1 mt-3 text-sm font-semibold text-text-primary">{children}</h6>,
       h6: ({ children }) => <h6 className="mb-1 mt-3 text-sm font-semibold text-text-secondary">{children}</h6>,
       p: ({ children }) => <p className="my-4 first:mt-0 last:mb-0">{children}</p>,
-      // Wide equations scroll sideways, so keyboard users must be able to focus them.
       span({ node, className, children, ...props }) {
         void node;
         const scrolls = typeof className === 'string' && className.split(' ').includes('katex-display');

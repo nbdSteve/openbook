@@ -17,7 +17,6 @@ interface ComposerProps {
   styleLocked?: boolean;
   styleLockedReason?: string;
   disabledReason?: string;
-  /** A calm, always-visible note under the box (students are told their teacher sees their questions). */
   note?: string;
   onSend: (text: string) => Promise<boolean>;
   onStop: () => void;
@@ -56,7 +55,6 @@ export function Composer({
     if (!canSend) return;
     const text = value;
     setValue('');
-    // Keep focus in the box: the Send button turns into Stop while the answer streams.
     textarea.current?.focus();
     const accepted = await onSend(text);
     if (!accepted) setValue((current) => (current === '' ? text : current));

@@ -11,7 +11,6 @@ function isInlineMath(node: ElementContent | undefined): node is Element {
 
 const isText = (node: ElementContent | undefined): node is Text => node?.type === 'text';
 
-/** Wrap one inline formula and the punctuation that touches it, so a line break cannot split them. */
 function keepTogether(parent: Element | Root): void {
   const children = parent.children as ElementContent[];
   for (let i = 0; i < children.length; i++) {
@@ -42,7 +41,6 @@ function keepTogether(parent: Element | Root): void {
   }
 }
 
-/** A rehype plugin: keep an inline formula together with directly adjacent opening and closing punctuation. */
 export function rehypeKeepMathTogether() {
   return (tree: Root) => keepTogether(tree);
 }

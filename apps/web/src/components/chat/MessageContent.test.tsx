@@ -44,7 +44,6 @@ describe('MessageContent safety', () => {
     const { container } = render(
       <MessageContent content="Zero is special [1]. Next [1] word." sources={[{ n: 1, documentId: 'D', documentName: 'a.pdf', snippet: 's' }]} />,
     );
-    // No space before the marker. The space after it stays.
     expect(container.textContent).toBe('Zero is special1. Next1 word.');
   });
 });

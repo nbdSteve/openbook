@@ -3,15 +3,12 @@ import { ChevronDown, Globe } from 'lucide-react';
 import { useModels } from '@/services/models/ModelsContext';
 
 interface ModelPickerProps {
-  /** The model that the next message uses. */
   value: string;
   onChange: (id: string) => void;
   disabled?: boolean;
-  /** ID of the element that explains the selected model (the global-model note). */
   describedBy?: string;
 }
 
-/** A compact model picker. Global models carry a label, and a note shows under the input. */
 export function ModelPicker({ value, onChange, disabled, describedBy }: ModelPickerProps) {
   const { models, find } = useModels();
   const id = useId();

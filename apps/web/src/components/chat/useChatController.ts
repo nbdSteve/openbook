@@ -5,26 +5,20 @@ import { readChatEvents } from '@/services/api/sse';
 import type { Limits, Message, Source, TutoringStyle } from '@/services/api/types';
 
 export interface ChatMessage extends Message {
-  /** Set only on assistant messages that are not complete. */
   state?: 'streaming' | 'stopped' | 'failed';
   error?: string;
 }
 
 export interface ChatController {
   messages: ChatMessage[];
-  /** `loading` while an existing conversation loads, `streaming` while an answer arrives. */
   status: 'idle' | 'loading' | 'streaming';
-  /** Failure to load the conversation. */
   loadError: string | null;
-  /** Failure that happened before the stream began (quota, capacity, and so on). */
   sendError: string | null;
-  /** The catalog ID the next message uses: the picked model, else the conversation's, else the course default. */
   model: string;
   setModel: (id: string) => void;
   style: TutoringStyle;
   setStyle: (style: TutoringStyle) => void;
   styleLocked: boolean;
-  /** Returns false when the server refused the message before the stream began. */
   send: (text: string) => Promise<boolean>;
   stop: () => void;
   dismissSendError: () => void;
@@ -32,9 +26,7 @@ export interface ChatController {
 
 interface Options {
   courseId: string;
-  /** The conversation in the URL, or undefined for a new chat. */
   conversationId: string | undefined;
-  /** The course default model. */
   courseModel: string;
   courseStyle: TutoringStyle;
   allowStyleChoice: boolean;
@@ -46,10 +38,6 @@ interface Options {
 let localCounter = 0;
 const localId = (prefix: string) => `${prefix}-${Date.now()}-${localCounter++}`;
 
-/**
- * Owns the messages of the open conversation and the streaming answer. It lives above the routes,
- * so a stream survives the switch from "new chat" to the new conversation's URL.
- */
 export function useChatController({
   courseId,
   conversationId,
@@ -69,22 +57,17 @@ export function useChatController({
   const [pickedStyle, setPickedStyle] = useState<TutoringStyle | null>(null);
   const [conversationStyle, setConversationStyle] = useState<TutoringStyle | undefined>(undefined);
 
-  // The conversation that `messages` shows. A new chat has none until the `meta` event.
   const shownId = useRef<string | undefined>(undefined);
-  // The conversation that a live stream created. Its URL changes to it, but there is nothing to load.
   const createdId = useRef<string | undefined>(undefined);
   const streamAbort = useRef<AbortController | null>(null);
 
   useEffect(() => {
     if (conversationId && conversationId === createdId.current) return;
     createdId.current = undefined;
-    // Leaving a conversation stops its answer. The server still saves it.
     streamAbort.current?.abort();
     streamAbort.current = null;
     shownId.current = conversationId;
-    // This load has its own controller, so React StrictMode (effect, cleanup, effect) loads again.
     const controller = new AbortController();
-    // A route change resets the chat.
     setMessages([]);
     setLoadError(null);
     setSendError(null);
@@ -120,8 +103,6 @@ export function useChatController({
     async (text: string): Promise<boolean> => {
       const message = text.trim();
       if (!message) return false;
-      // Always send the model that the picker shows. After a failed answer the server may still hold the
-      // conversation's old model, so leaving it out could use a different model than the one on screen.
       const currentModel = picked ?? conversationModel ?? courseModel;
       const currentStyle = allowStyleChoice ? (pickedStyle ?? conversationStyle ?? courseStyle) : undefined;
 
@@ -192,7 +173,6 @@ export function useChatController({
           return true;
         }
         if (!began) {
-          // The server refused before it streamed anything: take the pending messages back.
           setMessages((all) => all.filter((m) => m.id !== userId && m.id !== assistantId));
           setSendError(describeApiError(error, limits));
           return false;

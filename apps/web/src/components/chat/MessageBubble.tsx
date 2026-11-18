@@ -18,9 +18,7 @@ export function MessageBubble({ message, captions = COURSE_CAPTIONS }: { message
   const [activeSource, setActiveSource] = useState<number | null>(null);
   const streaming = message.state === 'streaming';
   const waiting = streaming && message.content === '';
-  // While the answer streams, the list can lag one frame behind the text. It never blocks the text.
   const deferredContent = useDeferredValue(message.content);
-  // Only the sources that the answer cites are the list. The renderer links the same markers.
   const { cited, other } = useMemo(() => {
     const all = message.sources ?? [];
     const numbers = citedNumbers(deferredContent, all);
@@ -32,7 +30,6 @@ export function MessageBubble({ message, captions = COURSE_CAPTIONS }: { message
 
   const hasSources = !isUser && message.state !== 'failed' && message.content.trim() !== '' && (cited.length > 0 || other.length > 0);
   const mood: MascotMood = waiting || streaming ? 'thinking' : message.state === 'failed' || cited.length === 0 ? 'puzzled' : 'happy';
-  // Happy means the answer cites a page. Passages that were found but not cited do not count.
 
   if (isUser) {
     return (

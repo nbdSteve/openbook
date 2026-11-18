@@ -15,22 +15,13 @@ interface Position {
 }
 
 const POPOVER_WIDTH = 360;
-/** The popover body scrolls past this height (in pixels), also when there is more room. */
 const POPOVER_MAX_HEIGHT = 320;
 
 interface SourceButtonProps {
   source: Source;
-  /** `badge` is the inline [n] mark. `entry` is a cited source in the list. `other` is a passage that was found but not cited. */
   variant: 'badge' | 'entry' | 'other';
 }
 
-/**
- * A button that shows the source passage on hover or focus. A click, tap, or Enter pins the
- * popover open and moves focus into it, so a long passage can be scrolled with a pointer, a
- * finger, or the keyboard. Escape closes it and returns focus to the button. The passage is plain
- * text, never HTML or Markdown. The popover is fixed and clamped to the viewport. A badge and its
- * list entry share the highlight (through context), so hovering or focusing one lights the other.
- */
 export function SourceButton({ source, variant }: SourceButtonProps) {
   const { active, onActive } = useSourceHighlight();
   const [position, setPosition] = useState<Position | null>(null);
@@ -43,7 +34,6 @@ export function SourceButton({ source, variant }: SourceButtonProps) {
   const open = position !== null;
   const highlighted = active === source.n;
 
-  // True while this button is the one that set the highlight. Only then does it clear the highlight.
   const setsHighlight = useRef(false);
 
   const setPinned = (value: boolean) => {
@@ -59,7 +49,6 @@ export function SourceButton({ source, variant }: SourceButtonProps) {
     if (!rect) return;
     const width = Math.min(POPOVER_WIDTH, window.innerWidth - 16);
     const left = Math.min(Math.max(8, rect.left + rect.width / 2 - width / 2), window.innerWidth - width - 8);
-    // Open on the side with more room, and never taller than that room.
     const roomAbove = rect.top - 16;
     const roomBelow = window.innerHeight - rect.bottom - 16;
     setPosition(
@@ -75,8 +64,6 @@ export function SourceButton({ source, variant }: SourceButtonProps) {
     onActive(null);
     setPosition(null);
   };
-  // Leaving the button hides a hover popover after a short wait, so the pointer can cross the gap
-  // into the popover (to scroll a long passage) without closing it.
   const hideSoon = () => {
     window.clearTimeout(hideTimer.current);
     hideTimer.current = window.setTimeout(() => {
@@ -98,9 +85,7 @@ export function SourceButton({ source, variant }: SourceButtonProps) {
       close();
       if (focusInside) button.current?.focus();
     };
-    // Follow the button when the page scrolls or the layout shifts. Close if it leaves the screen.
     const follow = (event: Event) => {
-      // Scrolling inside the popover is not a page scroll.
       if (event.target instanceof Node && popover.current?.contains(event.target)) return;
       const rect = button.current?.getBoundingClientRect();
       if (!rect || rect.bottom < 0 || rect.top > window.innerHeight) close();
@@ -114,18 +99,14 @@ export function SourceButton({ source, variant }: SourceButtonProps) {
       window.removeEventListener('resize', follow);
       window.removeEventListener('keydown', onKey);
     };
-    // `show` and `onActive` change on every render. The listeners only need to follow `open`.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  // A pinned popover takes focus, so the keyboard can scroll it.
   useEffect(() => {
     if (isPinned && open) popover.current?.focus();
   }, [isPinned, open]);
 
   useEffect(() => () => window.clearTimeout(hideTimer.current), []);
 
-  // A button that unmounts after it set the highlight must clear it, or the ring stays.
   const latest = useRef(onActive);
   useEffect(() => {
     latest.current = onActive;
@@ -172,7 +153,6 @@ export function SourceButton({ source, variant }: SourceButtonProps) {
           if (!pinned.current) show();
         }}
         onBlur={() => {
-          // Focus moving into a pinned popover is not a blur to act on.
           if (!pinned.current) hide();
         }}
         onClick={() => {
@@ -184,16 +164,13 @@ export function SourceButton({ source, variant }: SourceButtonProps) {
         }}
         aria-expanded={open}
         aria-controls={open ? popoverId : undefined}
-        // The list entry's visible text (number and document) is its name. The badge says more than its number.
         aria-label={variant === 'badge' ? `Source ${source.n}: ${sourceLabel(source)}` : undefined}
         className={cn(
           variant === 'badge'
             ? 'ml-[0.12em] inline-flex h-[1.45em] min-w-[1.45em] -translate-y-[0.4em] items-center justify-center rounded-full bg-accent-subtle px-[0.3em] align-baseline font-sans text-[0.68em] font-semibold text-accent transition-colors hover:bg-accent-light'
             : variant === 'entry'
-              ? // A margin note: a rule on the left, the book in italics, and the page.
-                'flex min-h-8 w-full items-start gap-2 rounded-r-lg border-l-2 border-accent/40 py-1.5 pl-3 pr-2 text-left text-[0.875rem] leading-snug text-text-secondary transition-colors hover:bg-accent-subtle'
-              : // A passage that was found but not cited: no accent rule and muted text, so it does not look like evidence.
-                'flex min-h-8 w-full items-start gap-2 rounded-r-lg border-l-2 border-border py-1.5 pl-3 pr-2 text-left text-[0.8125rem] leading-snug text-text-muted transition-colors hover:bg-surface-hover',
+              ? 'flex min-h-8 w-full items-start gap-2 rounded-r-lg border-l-2 border-accent/40 py-1.5 pl-3 pr-2 text-left text-[0.875rem] leading-snug text-text-secondary transition-colors hover:bg-accent-subtle'
+              : 'flex min-h-8 w-full items-start gap-2 rounded-r-lg border-l-2 border-border py-1.5 pl-3 pr-2 text-left text-[0.8125rem] leading-snug text-text-muted transition-colors hover:bg-surface-hover',
           highlighted && (variant === 'badge' ? 'bg-accent-light ring-2 ring-accent' : 'bg-accent-subtle text-text-primary ring-1 ring-accent'),
         )}
       >
@@ -201,8 +178,6 @@ export function SourceButton({ source, variant }: SourceButtonProps) {
       </button>
       {open &&
         createPortal(
-          // Hover: a tooltip. Pinned (click, tap, Enter): a labelled region that holds focus. Either way the body
-          // scrolls and can take focus, so a long passage is reachable without a mouse.
           <div
             ref={popover}
             id={popoverId}
@@ -214,7 +189,6 @@ export function SourceButton({ source, variant }: SourceButtonProps) {
               if (!pinned.current) hideSoon();
             }}
             onBlur={(event) => {
-              // Focus left both the popover and its button: close.
               const next = event.relatedTarget as Node | null;
               if (isPinned && !popover.current?.contains(next) && next !== button.current) hide();
             }}
@@ -225,7 +199,6 @@ export function SourceButton({ source, variant }: SourceButtonProps) {
               {source.documentName}
               {source.page !== undefined && <span className="font-normal text-text-muted"> · Page {source.page}</span>}
             </p>
-            {/* Plain text: React escapes it, and `whitespace-pre-wrap` keeps the line breaks. */}
             <p data-testid="snippet" className="whitespace-pre-wrap break-words font-serif text-[0.9375rem] leading-relaxed text-text-secondary">
               {source.snippet}
             </p>
@@ -239,24 +212,16 @@ export function SourceButton({ source, variant }: SourceButtonProps) {
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
 interface SourcesListProps {
-  /** The sources that the answer cites, in the order of the first citation. */
   cited: Source[];
-  /** The other retrieved sources. They stay hidden until the student opens them. */
   other: Source[];
-  /** While the answer streams, the set of cited sources is not final, so the other sources stay hidden. */
   streaming?: boolean;
 }
 
-/**
- * The compact sources list under an answer. It lists only the sources that the answer cites.
- * The other retrieved passages sit behind a disclosure, in a quieter style, so they do not look like evidence.
- */
 export function SourcesList({ cited, other, streaming = false }: SourcesListProps) {
   const [expanded, setExpanded] = useState(false);
   const otherId = useId();
   const showOther = other.length > 0 && !streaming;
   if (cited.length === 0 && !showOther) return null;
-  // The name stays the same in both states. The chevron and aria-expanded show the state.
   const label =
     cited.length === 0
       ? `${plural(other.length, 'passage', 'passages')} found, none cited`

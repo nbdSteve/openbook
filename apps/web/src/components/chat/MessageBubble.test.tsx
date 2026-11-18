@@ -21,7 +21,6 @@ describe('answer sources', () => {
   it('lists each source with its document and page, also while the answer streams', () => {
     renderAnswer('Claim [1] and another [2].', 'streaming');
     const list = screen.getByRole('list', { name: 'Sources for this answer' });
-    // A chip shows the name without ".pdf", and the page as its own part.
     expect(list).toHaveTextContent('Algebra notes');
     expect(list).not.toHaveTextContent('.pdf');
     expect(list).toHaveTextContent('p. 12');
@@ -94,7 +93,6 @@ describe('answer sources', () => {
       expect(toggle).toHaveAttribute('aria-expanded', 'false');
       expect(screen.queryByRole('list', { name: 'Passages found' })).toBeNull();
       fireEvent.click(toggle);
-      // The name does not change. The state is in aria-expanded.
       expect(toggle).toHaveAttribute('aria-expanded', 'true');
       expect(toggle).toHaveAccessibleName('6 more passages found');
       const other = screen.getByRole('list', { name: 'Passages found' });
@@ -167,7 +165,6 @@ describe('answer sources', () => {
     });
   });
 
-  // The badges in the text and the entries in the list must agree for any text that the model can write.
   describe('badges and the sources list agree', () => {
     const six: Source[] = Array.from({ length: 6 }, (_, i) => ({ n: i + 1, documentId: `D${i}`, documentName: `Doc ${i + 1}.pdf`, snippet: 'p' }));
     const cases: Record<string, string> = {
@@ -211,7 +208,6 @@ describe('answer sources', () => {
       it(`${name}: finished and streamed`, () => {
         const view = renderAnswer(text, undefined, six);
         expect(listed(view.container)).toEqual(numbers(view.container));
-        // The same text, one prefix at a time, as it arrives while streaming.
         for (let end = 1; end < text.length; end += 3) {
           view.rerender(
             <ModelsContext.Provider value={{ models: [], find: () => undefined, defaultModel: undefined }}>

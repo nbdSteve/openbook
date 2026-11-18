@@ -22,7 +22,6 @@ const LANGUAGES: Record<string, unknown> = {
 };
 for (const [name, grammar] of Object.entries(LANGUAGES)) SyntaxHighlighter.registerLanguage(name, grammar);
 
-/** Loaded on demand so the highlighter stays out of the main bundle. The header matches the code theme. */
 export default function CodeBlock({ language, code }: { language: string; code: string }) {
   const { theme } = useTheme();
   const dark = theme === 'dark';

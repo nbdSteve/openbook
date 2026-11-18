@@ -124,7 +124,6 @@ describe('useChatController', () => {
       await result.current.send('first');
     });
     expect(result.current.messages[1].state).toBe('failed');
-    // The picker shows the model of the failed answer. The next send must name it.
     expect(result.current.model).toBe('claude-haiku');
     await act(async () => {
       await result.current.send('second');
