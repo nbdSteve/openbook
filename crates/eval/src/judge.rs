@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 use futures::StreamExt;
 use openbook_core::domain::MessageRole;
 use openbook_core::model::{ChatModel, ChatRequest, ChatTurn, ModelEvent, TokenUsage};
@@ -35,11 +37,65 @@ pub struct Completion {
     pub stop_reason: String,
 }
 
-pub async fn complete(model: &dyn ChatModel, request: ChatRequest) -> Result<Completion, String> {
-    let mut stream = model.stream(request).await.map_err(|e| e.to_string())?;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CallLimits {
+    pub first_byte: Duration,
+    pub idle: Duration,
+    pub total: Duration,
+}
+
+pub const ANSWER_LIMITS: CallLimits = CallLimits {
+    first_byte: Duration::from_secs(60),
+    idle: Duration::from_secs(30),
+    total: Duration::from_secs(240),
+};
+
+pub const JUDGE_LIMITS: CallLimits = CallLimits {
+    first_byte: Duration::from_secs(30),
+    idle: Duration::from_secs(20),
+    total: Duration::from_secs(90),
+};
+
+pub async fn complete(
+    model: &dyn ChatModel,
+    request: ChatRequest,
+    limits: CallLimits,
+) -> Result<Completion, String> {
+    tokio::time::timeout(limits.total, read_stream(model, request, limits))
+        .await
+        .map_err(|_| format!("no finished answer within {:?}", limits.total))?
+}
+
+async fn read_stream(
+    model: &dyn ChatModel,
+    request: ChatRequest,
+    limits: CallLimits,
+) -> Result<Completion, String> {
+    let started = Instant::now();
+    let mut stream = tokio::time::timeout(limits.first_byte, model.stream(request))
+        .await
+        .map_err(|_| format!("the call did not start within {:?}", limits.first_byte))?
+        .map_err(|e| e.to_string())?;
     let mut text = String::new();
     let mut finish = None;
-    while let Some(event) = stream.next().await {
+    let mut first = true;
+    loop {
+        let wait = if first {
+            limits.first_byte.saturating_sub(started.elapsed())
+        } else {
+            limits.idle
+        };
+        let next = tokio::time::timeout(wait, stream.next())
+            .await
+            .map_err(|_| {
+                if first {
+                    format!("no first byte within {:?}", limits.first_byte)
+                } else {
+                    format!("the stream was idle for {:?}", limits.idle)
+                }
+            })?;
+        let Some(event) = next else { break };
+        first = false;
         match event.map_err(|e| e.to_string())? {
             ModelEvent::Delta(delta) => text.push_str(&delta),
             ModelEvent::Finish { usage, stop_reason } => finish = Some((usage, stop_reason)),
@@ -78,8 +134,13 @@ pub fn parse_verdict(text: &str) -> Result<Verdict, Error> {
         .map_err(|e| Error::Run(format!("the judge gave a bad verdict ({e}): {text:?}")))
 }
 
-pub async fn judge(model: &dyn ChatModel, question: &str, answer: &str) -> Result<Verdict, Error> {
-    let completion = complete(model, judge_request(question, answer))
+pub async fn judge(
+    model: &dyn ChatModel,
+    question: &str,
+    answer: &str,
+    limits: CallLimits,
+) -> Result<Verdict, Error> {
+    let completion = complete(model, judge_request(question, answer), limits)
         .await
         .map_err(Error::Aws)?;
     parse_verdict(&completion.text)
@@ -124,5 +185,70 @@ mod tests {
             (1, "8d4d7150ebd8"),
             "the rubric text changed: raise RUBRIC_VERSION and pin the new fingerprint"
         );
+    }
+
+    struct Stalled;
+
+    #[async_trait::async_trait]
+    impl ChatModel for Stalled {
+        async fn stream(
+            &self,
+            _request: ChatRequest,
+        ) -> Result<openbook_core::model::ModelStream, openbook_core::model::ModelError> {
+            futures::future::pending().await
+        }
+    }
+
+    struct StallsAfterOneDelta;
+
+    #[async_trait::async_trait]
+    impl ChatModel for StallsAfterOneDelta {
+        async fn stream(
+            &self,
+            _request: ChatRequest,
+        ) -> Result<openbook_core::model::ModelStream, openbook_core::model::ModelError> {
+            let first = futures::stream::iter(vec![Ok(ModelEvent::Delta("a".into()))]);
+            Ok(first.chain(futures::stream::pending()).boxed())
+        }
+    }
+
+    fn limits(first_byte: u64, idle: u64, total: u64) -> CallLimits {
+        CallLimits {
+            first_byte: Duration::from_millis(first_byte),
+            idle: Duration::from_millis(idle),
+            total: Duration::from_millis(total),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_call_that_never_starts_times_out() {
+        let error = complete(&Stalled, judge_request("q", "a"), limits(30, 30, 500))
+            .await
+            .unwrap_err();
+        assert!(error.contains("did not start"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_stream_that_goes_quiet_times_out_as_idle() {
+        let error = complete(
+            &StallsAfterOneDelta,
+            judge_request("q", "a"),
+            limits(500, 30, 5000),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("idle"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn the_total_time_is_a_hard_limit() {
+        let error = complete(
+            &StallsAfterOneDelta,
+            judge_request("q", "a"),
+            limits(500, 5000, 60),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("no finished answer"), "{error}");
     }
 }

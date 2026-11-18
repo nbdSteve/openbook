@@ -65,6 +65,22 @@ pub fn slug(model_id: &str) -> String {
         .collect()
 }
 
+pub fn ascii_json<T: Serialize>(value: &T) -> Result<String, Error> {
+    let text = serde_json::to_string(value).map_err(|e| Error::Run(format!("answers: {e}")))?;
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c.is_ascii() {
+            out.push(c);
+        } else {
+            let mut units = [0u16; 2];
+            for unit in c.encode_utf16(&mut units) {
+                out.push_str(&format!("\\u{unit:04x}"));
+            }
+        }
+    }
+    Ok(out)
+}
+
 pub fn sha256_parts(parts: &[&str]) -> String {
     let mut hasher = Sha256::new();
     for part in parts {
@@ -179,9 +195,7 @@ impl<T: Keyed + Serialize + DeserializeOwned> Store<T> {
         }
         let mut text = String::new();
         for entry in self.entries.values() {
-            text.push_str(
-                &serde_json::to_string(entry).map_err(|e| Error::Run(format!("answers: {e}")))?,
-            );
+            text.push_str(&ascii_json(entry)?);
             text.push('\n');
         }
         let temporary = self.path.with_extension("jsonl.tmp");
@@ -295,5 +309,46 @@ mod tests {
         store.retain(|_| false);
         store.save().unwrap();
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn the_writer_gives_ascii_that_decodes_to_the_same_text() {
+        let text = "a \u{2014} b, \u{e9}, \u{2211}, \u{65e5}\u{672c}, \u{1f600}, \"quote\", tab\t";
+        let entry = AnswerEntry {
+            key: "k".into(),
+            question_id: "q".into(),
+            style: "direct".into(),
+            prompt_sha256: "p".into(),
+            text: text.into(),
+            input_tokens: 1,
+            output_tokens: 2,
+            stop_reason: "end_turn".into(),
+        };
+        let line = ascii_json(&entry).unwrap();
+        assert!(line.is_ascii());
+        assert!(line.contains("\\u2014") && line.contains("\\ud83d\\ude00"));
+        let back: AnswerEntry = serde_json::from_str(&line).unwrap();
+        assert_eq!(back, entry);
+    }
+
+    #[test]
+    fn a_saved_store_file_is_ascii() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = answers_path(dir.path(), "m");
+        let mut store: Store<AnswerEntry> = Store::load(path.clone()).unwrap();
+        store.insert(AnswerEntry {
+            key: "k".into(),
+            question_id: "q".into(),
+            style: "direct".into(),
+            prompt_sha256: "p".into(),
+            text: "dash \u{2014} here".into(),
+            input_tokens: 1,
+            output_tokens: 2,
+            stop_reason: "end_turn".into(),
+        });
+        store.save().unwrap();
+        assert!(std::fs::read(&path).unwrap().is_ascii());
+        let back: Store<AnswerEntry> = Store::load(path).unwrap();
+        assert_eq!(back.get("k").unwrap().text, "dash \u{2014} here");
     }
 }

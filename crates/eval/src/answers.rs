@@ -22,10 +22,9 @@ use crate::cache::{Cache, CacheKind, sha256_hex};
 use crate::citations;
 use crate::corpus::Corpus;
 use crate::data::{self, Kind, Question};
-use crate::judge::{self, JUDGE_MAX_TOKENS, RUBRIC, RUBRIC_VERSION};
+use crate::judge::{self, ANSWER_LIMITS, JUDGE_LIMITS, JUDGE_MAX_TOKENS, RUBRIC, RUBRIC_VERSION};
 use crate::metrics::is_relevant;
 use crate::offline::{self, Index, Options};
-use crate::refresh::retry;
 
 pub const UPPER_BOUND_CHARS_PER_TOKEN: u64 = 2;
 pub const CONCURRENCY: usize = 4;
@@ -534,6 +533,36 @@ pub struct Models {
     pub judge: Arc<dyn ChatModel>,
 }
 
+pub const MAX_ATTEMPTS: u32 = 5;
+pub const RETRY_BASE: std::time::Duration = std::time::Duration::from_secs(1);
+
+pub fn backoff(label: &str, attempt: u32) -> std::time::Duration {
+    let base = RETRY_BASE * 2u32.pow(attempt.saturating_sub(1));
+    let digest = sha256_parts(&[label, &attempt.to_string()]);
+    let jitter_per_mille = u64::from_str_radix(&digest[..4], 16).unwrap_or(0) % 500;
+    base + base * jitter_per_mille as u32 / 1000
+}
+
+pub async fn retry_bounded<T, F, Fut>(label: &str, mut call: F) -> Result<T, String>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, String>>,
+{
+    let mut attempt = 1;
+    loop {
+        match call().await {
+            Ok(value) => return Ok(value),
+            Err(error) if attempt < MAX_ATTEMPTS => {
+                let wait = backoff(label, attempt);
+                eprintln!("  {label}: attempt {attempt} failed ({error}); retrying in {wait:?}");
+                tokio::time::sleep(wait).await;
+                attempt += 1;
+            }
+            Err(error) => return Err(format!("{error} (after {attempt} attempts)")),
+        }
+    }
+}
+
 pub async fn run_calls(
     runs: &mut [CorpusRun],
     models: &Models,
@@ -565,16 +594,14 @@ pub async fn run_calls(
             let model = models.chat.clone();
             async move {
                 let label = format!("{}/{}", item.corpus, item.question.id);
-                let done = retry(
-                    &label,
-                    || judge::complete(model.as_ref(), item.request.clone()),
-                    |_| true,
-                )
+                let done = retry_bounded(&label, || {
+                    judge::complete(model.as_ref(), item.request.clone(), ANSWER_LIMITS)
+                })
                 .await;
                 (r, item, done)
             }
         })
-        .buffer_unordered(CONCURRENCY);
+        .buffered(CONCURRENCY);
     while let Some((r, item, done)) = stream.next().await {
         let completion = done.map_err(|e| {
             Error::Aws(format!(
@@ -622,16 +649,16 @@ pub async fn run_calls(
             let model = models.judge.clone();
             async move {
                 let label = format!("{corpus}/{} judge", question.id);
-                let verdict = retry(
-                    &label,
-                    || judge::judge(model.as_ref(), &question.question, &answer),
-                    |_| true,
-                )
+                let verdict = retry_bounded(&label, || async {
+                    judge::judge(model.as_ref(), &question.question, &answer, JUDGE_LIMITS)
+                        .await
+                        .map_err(|e| e.to_string())
+                })
                 .await;
                 (r, corpus, question, key, answer, verdict)
             }
         })
-        .buffer_unordered(CONCURRENCY);
+        .buffered(CONCURRENCY);
     while let Some((r, corpus, question, key, answer, verdict)) = stream.next().await {
         let verdict = verdict.map_err(|e| {
             Error::Aws(format!(
@@ -874,5 +901,32 @@ mod tests {
         };
         assert_eq!(price(&priced, 1000, 100).unwrap(), 3000);
         assert_eq!(bound_tokens(5), 3);
+    }
+
+    #[test]
+    fn the_backoff_grows_and_has_a_stable_jitter() {
+        let first = backoff("c/q", 1);
+        let third = backoff("c/q", 3);
+        assert!(first >= RETRY_BASE && first < RETRY_BASE * 2);
+        assert!(third >= RETRY_BASE * 4 && third < RETRY_BASE * 6);
+        assert_eq!(first, backoff("c/q", 1));
+        assert_ne!(backoff("c/q", 1), backoff("c/other", 1));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_failing_call_is_retried_a_bounded_number_of_times() {
+        let calls = std::sync::atomic::AtomicU32::new(0);
+        let result: Result<(), String> = retry_bounded("c/q", || {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            async { Err("stalled".to_owned()) }
+        })
+        .await;
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            MAX_ATTEMPTS
+        );
+        assert!(result.unwrap_err().contains("after 5 attempts"));
+        let ok = retry_bounded("c/q", || async { Ok::<_, String>(7) }).await;
+        assert_eq!(ok, Ok(7));
     }
 }
