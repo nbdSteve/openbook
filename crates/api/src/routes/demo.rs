@@ -22,15 +22,16 @@ use chrono::Utc;
 use openbook_core::catalog::ModelEntry;
 use openbook_core::demo::{
     self, BudgetHit, BudgetReservation, DemoConversations, DemoCourse, LimitHit,
-    VisitorReservation, parse_viewer_address, source_token_bound, token_bound,
+    VisitorReservation, parse_viewer_address, source_token_bound, student_message_bound,
+    token_bound,
 };
 use openbook_core::domain::{
     CourseRecord, Document, DocumentStatus, MessageRole, TutoringStyle, effective_style,
 };
 use openbook_core::model::{ChatModel, ChatRequest, ModelEvent, TokenUsage};
 use openbook_core::prompt::{
-    REWRITE_SYSTEM_PROMPT, STUDENT_MESSAGE_TAG, SourceContext, SourceMode, build_system_prompt_for,
-    escape_source, rewrite_user_text, turn_note, turns_for,
+    REWRITE_SYSTEM_PROMPT, SourceContext, SourceMode, TAG_NONCE_CHARS, build_system_prompt_for,
+    new_tag_nonce, rewrite_user_text, turn_note, turns_for,
 };
 use openbook_core::store::Store;
 use serde::Deserialize;
@@ -59,6 +60,8 @@ const DEMO_PROMPT_NOTE: &str =
 
 /// The extra characters around each source in the prompt (the tag and its attributes).
 const SOURCE_WRAPPER_CHARS: usize = 200;
+
+const SOURCE_ESCAPE_FACTOR: usize = 2;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -96,7 +99,6 @@ pub fn system_prompt_tokens(course: &CourseRecord, style: TutoringStyle) -> u64 
         SourceMode::NotCovered,
         SourceMode::Found(&one_source),
     ];
-    let wrapper = format!("\n\n<{STUDENT_MESSAGE_TAG}>\n\n</{STUDENT_MESSAGE_TAG}>");
     modes
         .into_iter()
         .map(|mode| {
@@ -105,7 +107,8 @@ pub fn system_prompt_tokens(course: &CourseRecord, style: TutoringStyle) -> u64 
                 &course.description,
                 style,
                 mode,
-            )) + turn_note(mode).map_or(0, |note| token_bound(note) + token_bound(&wrapper))
+                &"0".repeat(TAG_NONCE_CHARS),
+            )) + turn_note(mode).map_or(0, |note| token_bound(note) + token_bound("\n\n"))
         })
         .max()
         .unwrap_or(0)
@@ -113,8 +116,10 @@ pub fn system_prompt_tokens(course: &CourseRecord, style: TutoringStyle) -> u64 
 }
 
 pub fn answer_input_tokens(system_tokens: u64, history_tokens: u64, message: &str) -> u64 {
-    let sources_tokens = source_token_bound(FINAL_SOURCES * (SNIPPET_CHARS + SOURCE_WRAPPER_CHARS));
-    system_tokens + sources_tokens + history_tokens + token_bound(&escape_source(message))
+    let sources_tokens = source_token_bound(
+        FINAL_SOURCES * (SNIPPET_CHARS * SOURCE_ESCAPE_FACTOR + SOURCE_WRAPPER_CHARS),
+    );
+    system_tokens + sources_tokens + history_tokens + student_message_bound(message)
 }
 
 /// The most that one turn can cost, in millionths of a US dollar. It is an upper bound:
@@ -418,11 +423,18 @@ async fn run_demo(run: DemoRun, tx: mpsc::Sender<ChatEvent>) {
     }
     let mut history = earlier;
     history.push((MessageRole::User, message.clone()));
-    let mut system = build_system_prompt_for(&course.name, &course.description, style, turn.mode());
+    let nonce = new_tag_nonce();
+    let mut system = build_system_prompt_for(
+        &course.name,
+        &course.description,
+        style,
+        turn.mode(),
+        &nonce,
+    );
     system.push_str(DEMO_PROMPT_NOTE);
     let request = ChatRequest {
         system,
-        turns: turns_for(&history, turn.mode()),
+        turns: turns_for(&history, turn.mode(), &nonce),
         // The demo limit, which is at most the catalog limit of the model.
         max_tokens: Some(i32::try_from(max_output).unwrap_or(i32::MAX)),
         temperature: None,
@@ -647,14 +659,16 @@ mod tests {
         let haiku = entry(1.1, 5.5, 2000);
         let first =
             worst_case_cost(&sonnet, &haiku, 800, &[], 0, "What is a function?", 1000).unwrap();
-        // The sources: 8 passages of 2,600 characters at 2 characters per token.
-        let input = 800 + 8 * 2600_u64.div_ceil(2) + token_bound("What is a function?");
+        let sources = (FINAL_SOURCES
+            * (SNIPPET_CHARS * SOURCE_ESCAPE_FACTOR + SOURCE_WRAPPER_CHARS))
+            .div_ceil(2) as u64;
+        let input = 800 + sources + student_message_bound("What is a function?");
         let embedding = (1.1 * 500.0_f64).ceil() as u64;
         assert_eq!(
             first,
             (3.3 * input as f64).ceil() as u64 + 16_500 * 1000 / 1000 + embedding
         );
-        assert!(first < 60_000, "about 5 US cents: {first}");
+        assert!(first < 90_000, "about 8 US cents: {first}");
         // The output limit counts in full: a bigger limit costs more.
         let longer =
             worst_case_cost(&sonnet, &haiku, 800, &[], 0, "What is a function?", 2000).unwrap();
@@ -682,30 +696,76 @@ mod tests {
     fn the_reservation_is_not_smaller_than_the_real_request_in_every_mode() {
         use openbook_core::prompt::SourceContext;
         let c = course(true);
-        let message = "'".repeat(openbook_core::demo::MAX_MESSAGE_CHARS);
+        let message = "<&".repeat(openbook_core::demo::MAX_MESSAGE_CHARS / 2);
+        let earlier = vec![
+            (MessageRole::User, "&".repeat(120)),
+            (MessageRole::Assistant, "An answer with $x < 5$.".to_owned()),
+            (MessageRole::User, "Is 'a' < \"b\" and c > d?".to_owned()),
+            (MessageRole::Assistant, "Yes.".to_owned()),
+        ];
+        let history_tokens: u64 = earlier
+            .iter()
+            .map(|(role, text)| match role {
+                MessageRole::User => student_message_bound(text),
+                MessageRole::Assistant => token_bound(text),
+            })
+            .sum();
+        let math = "Let $x < 5$ and 'y' & z > 2, so \"w\" holds. ";
         let sources: Vec<SourceContext> = (1..=FINAL_SOURCES as u32)
             .map(|n| SourceContext {
                 n,
                 document_name: "d".repeat(validate::MAX_FILENAME_CHARS),
                 page: Some(u32::MAX),
-                text: "a".repeat(SNIPPET_CHARS),
+                text: math.repeat(SNIPPET_CHARS / math.len() + 1)[..SNIPPET_CHARS].to_owned(),
             })
             .collect();
+        let mut messages = earlier.clone();
+        messages.push((MessageRole::User, message.clone()));
         for style in TutoringStyle::ALL {
             for mode in [
                 SourceMode::NotUsed,
                 SourceMode::NotCovered,
                 SourceMode::Found(&sources),
             ] {
-                let mut system = build_system_prompt_for(&c.name, &c.description, style, mode);
+                let nonce = openbook_core::prompt::new_tag_nonce();
+                let mut system =
+                    build_system_prompt_for(&c.name, &c.description, style, mode, &nonce);
+                let sources_tokens = match mode {
+                    SourceMode::Found(_) => {
+                        let bare: Vec<SourceContext> = sources
+                            .iter()
+                            .map(|s| SourceContext {
+                                text: String::new(),
+                                ..s.clone()
+                            })
+                            .collect();
+                        let without = build_system_prompt_for(
+                            &c.name,
+                            &c.description,
+                            style,
+                            SourceMode::Found(&bare),
+                            &nonce,
+                        );
+                        system = without.clone();
+                        source_token_bound(
+                            build_system_prompt_for(&c.name, &c.description, style, mode, &nonce)
+                                .chars()
+                                .count()
+                                - without.chars().count(),
+                        )
+                    }
+                    _ => 0,
+                };
                 system.push_str(DEMO_PROMPT_NOTE);
-                let turns = turns_for(&[(MessageRole::User, message.clone())], mode);
-                let real =
-                    token_bound(&system) + turns.iter().map(|t| token_bound(&t.text)).sum::<u64>();
-                let reserved = answer_input_tokens(system_prompt_tokens(&c, style), 0, &message);
+                let turns = turns_for(&messages, mode, &nonce);
+                let real = token_bound(&system)
+                    + sources_tokens
+                    + turns.iter().map(|t| token_bound(&t.text)).sum::<u64>();
+                let reserved =
+                    answer_input_tokens(system_prompt_tokens(&c, style), history_tokens, &message);
                 assert!(
                     reserved >= real,
-                    "{style:?} {mode:?}: reserved {reserved}, real {real}"
+                    "{style:?}: reserved {reserved}, real {real}"
                 );
             }
         }

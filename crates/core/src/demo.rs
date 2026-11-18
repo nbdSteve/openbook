@@ -497,6 +497,11 @@ fn new_turn_id() -> Result<String, StoreError> {
 /// are at most one token per 3 characters. Digits, punctuation, and symbols (LaTeX) are one token per
 /// character. Any other character is counted by its UTF-8 bytes (up to 4), because a byte-level
 /// tokenizer can spend one token on each byte of a rare character or an emoji.
+pub fn student_message_bound(text: &str) -> u64 {
+    let tag = crate::prompt::student_tag(&"0".repeat(crate::prompt::TAG_NONCE_CHARS));
+    token_bound(&crate::prompt::wrap_student_message(&tag, text)) + token_bound("\n\n")
+}
+
 pub fn token_bound(text: &str) -> u64 {
     let (mut plain, mut dense) = (0u64, 0u64);
     for c in text.chars() {
@@ -608,6 +613,7 @@ pub async fn resume(
             .iter()
             .map(|m| match (m.role, m.output_tokens) {
                 (MessageRole::Assistant, Some(tokens)) => tokens,
+                (MessageRole::User, _) => student_message_bound(&m.text),
                 _ => token_bound(&m.text),
             })
             .sum();
@@ -1328,7 +1334,7 @@ mod tests {
         assert_eq!(again.id, first.id);
         assert_eq!(again.history.len(), 2);
         assert_eq!(again.history[0], (MessageRole::User, "q1".to_owned()));
-        assert_eq!(again.history_tokens, token_bound("q1") + 37);
+        assert_eq!(again.history_tokens, student_message_bound("q1") + 37);
         let unknown = new_conversation_id().unwrap();
         let fresh = resume(&store, Some(&unknown), now).await.unwrap();
         assert_ne!(fresh.id, unknown);

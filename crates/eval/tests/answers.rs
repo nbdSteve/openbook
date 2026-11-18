@@ -20,6 +20,18 @@ use openbook_eval::corpus;
 use openbook_eval::data::{self, Question};
 use openbook_eval::judge::RUBRIC;
 
+fn tag_in(system: &str) -> String {
+    let at = system
+        .find("student_message_")
+        .expect("the system prompt names the tag");
+    system[at..at + "student_message_".len() + 8].to_owned()
+}
+
+fn tagged_in(system: &str, text: &str) -> String {
+    let tag = tag_in(system);
+    format!("<{tag}>\n{text}\n</{tag}>")
+}
+
 fn evals_dir() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../evals")
 }
@@ -130,8 +142,8 @@ async fn the_derivative_question_gets_sources_that_do_not_answer_it() {
     assert_eq!(
         item.request.turns[0].text,
         format!(
-            "{SOURCES_TURN_NOTE}\n\n<student_message>\n{}\n</student_message>",
-            item.question.question
+            "{SOURCES_TURN_NOTE}\n\n{}",
+            tagged_in(&item.request.system, &item.question.question)
         )
     );
 }
@@ -165,8 +177,29 @@ async fn a_follow_up_goes_with_its_earlier_question() {
     )
     .await;
     let text = &run.prepared[0].request.turns[0].text;
-    assert!(text.contains("What is the product rule of exponents?"));
-    assert!(text.contains("And what about dividing instead?"));
+    let system = &run.prepared[0].request.system;
+    let first = tagged_in(system, "What is the product rule of exponents?");
+    let second = tagged_in(system, "And what about dividing instead?");
+    assert!(
+        text.starts_with(&first),
+        "the earlier question has its own tag and no note"
+    );
+    assert!(text.ends_with(&second));
+    assert_eq!(
+        text.matches(SOURCES_TURN_NOTE).count() + text.matches(GATED_TURN_NOTE).count(),
+        1
+    );
+    let again = prepared(
+        "college-algebra",
+        &["followup-01"],
+        PromptVariant::new(TutoringStyle::Direct),
+        dir.path(),
+    )
+    .await;
+    assert_eq!(
+        again.prepared[0].key, run.prepared[0].key,
+        "the nonce is stable in the evaluation"
+    );
 }
 
 #[tokio::test]
@@ -345,7 +378,10 @@ async fn the_ablation_has_no_note_and_its_own_cache_keys_and_the_check_needs_a_f
     .await;
     assert_eq!(
         ablation.prepared[0].request.turns[0].text,
-        ablation.prepared[0].question.question
+        tagged_in(
+            &ablation.prepared[0].request.system,
+            &ablation.prepared[0].question.question
+        )
     );
     assert_eq!(
         ablation.prepared[0].request.system,

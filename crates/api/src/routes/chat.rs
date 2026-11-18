@@ -19,7 +19,7 @@ use openbook_core::domain::{
 use openbook_core::ids;
 use openbook_core::model::{ChatModel, ChatRequest, ModelEvent, TokenUsage, estimate_tokens};
 use openbook_core::prompt::{
-    HISTORY_WINDOW, build_system_prompt_for, title_from_message, turns_for,
+    HISTORY_WINDOW, build_system_prompt_for, new_tag_nonce, title_from_message, turns_for,
 };
 use openbook_core::quota::{
     Reservation, ReserveLimits, release_message, reserve_message, usage_date,
@@ -403,14 +403,16 @@ async fn run_chat(run: ChatRun, tx: mpsc::Sender<ChatEvent>) {
         )
         .await;
     }
+    let nonce = new_tag_nonce();
     let request = ChatRequest {
         system: build_system_prompt_for(
             &run.course.name,
             &run.course.description,
             run.style,
             turn.mode(),
+            &nonce,
         ),
-        turns: turns_for(&run.history, turn.mode()),
+        turns: turns_for(&run.history, turn.mode(), &nonce),
         ..ChatRequest::default()
     };
     // Tokens that retrieval spent (the rewrite and the query embedding) are counted on every way out.

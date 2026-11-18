@@ -347,6 +347,18 @@ fn text_of(reply: &support::Reply) -> String {
         .collect()
 }
 
+fn tag_in(system: &str) -> String {
+    let at = system
+        .find("student_message_")
+        .expect("the system prompt names the tag");
+    system[at..at + "student_message_".len() + 8].to_owned()
+}
+
+fn tagged_in(system: &str, text: &str) -> String {
+    let tag = tag_in(system);
+    format!("<{tag}>\n{text}\n</{tag}>")
+}
+
 /// The requests that the chat model got, without the rewrites.
 fn answer_requests(env: &Demo) -> Vec<ChatRequest> {
     env.recorder
@@ -585,7 +597,11 @@ async fn a_demo_question_streams_an_answer_with_sources_and_credits() {
     assert_eq!(
         requests[0].turns[0].text,
         format!(
-            "{SOURCES_TURN_NOTE}\n\n<student_message>\nWhat does the Pythagorean theorem say?\n</student_message>"
+            "{SOURCES_TURN_NOTE}\n\n{}",
+            tagged_in(
+                &requests[0].system,
+                "What does the Pythagorean theorem say?"
+            )
         )
     );
     assert_eq!(requests[0].max_tokens, Some(1000), "the demo output limit");
@@ -835,9 +851,8 @@ async fn the_visitor_limits_return_demo_limit() {
 async fn the_daily_budget_refunds_what_a_turn_did_not_spend_and_then_returns_demo_busy() {
     let env = demo_env().await;
     env.provision().await;
-    // Room for a few turns: one worst-case reservation is about 0.05 US dollars, a real turn about 0.004.
     let router = env.router(&[
-        ("OPENBOOK_DEMO_BUDGET_USD_PER_DAY", "0.06"),
+        ("OPENBOOK_DEMO_BUDGET_USD_PER_DAY", "0.10"),
         ("OPENBOOK_DEMO_LIMIT_VISITOR_PER_10_MIN", "50"),
         ("OPENBOOK_DEMO_LIMIT_VISITOR_PER_DAY", "50"),
     ]);
@@ -851,7 +866,6 @@ async fn the_daily_budget_refunds_what_a_turn_did_not_spend_and_then_returns_dem
     );
     let reserved_worst_case = 40_000;
     assert!(spent < reserved_worst_case);
-    // Without the refund, the second turn would not fit in 0.06 US dollars.
     let second = ask(
         &router,
         "What does the Pythagorean theorem say?",
@@ -1117,7 +1131,11 @@ async fn a_follow_up_uses_the_conversation_that_the_server_kept() {
     assert_eq!(answers.len(), 2);
     let turns = &answers[1].turns;
     assert_eq!(turns.len(), 3);
-    assert_eq!(turns[0].text, "What does the Pythagorean theorem say?");
+    assert_eq!(
+        turns[0].text,
+        tagged_in(&answers[1].system, "What does the Pythagorean theorem say?"),
+        "an earlier question keeps its own tag and gets no note"
+    );
     assert!(turns[1].text.contains("Pythagorean"));
     assert_eq!(student_text(&turns[2].text), "And how do builders use it?");
 
@@ -1622,9 +1640,8 @@ async fn nothing_else_became_anonymous() {
 async fn one_visitor_cannot_spend_the_day_and_gets_demo_rate_limited() {
     let env = demo_env().await;
     env.provision().await;
-    // The cap of one visitor is 0.06 USD: about one worst-case reservation and a few real turns.
     let router = env.router(&[
-        ("OPENBOOK_DEMO_VISITOR_BUDGET_USD_PER_DAY", "0.06"),
+        ("OPENBOOK_DEMO_VISITOR_BUDGET_USD_PER_DAY", "0.10"),
         ("OPENBOOK_DEMO_LIMIT_VISITOR_PER_10_MIN", "50"),
         ("OPENBOOK_DEMO_LIMIT_VISITOR_PER_DAY", "50"),
     ]);

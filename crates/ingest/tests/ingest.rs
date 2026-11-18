@@ -1268,6 +1268,18 @@ const THREE_MODELS: &str = r#"[
   {"id":"fake-fast","label":"Fake fast","vendor":"openbook","provider":"fake","modelId":"fake-fast","residency":"au","vision":true}
 ]"#;
 
+fn tag_in(system: &str) -> String {
+    let at = system
+        .find("student_message_")
+        .expect("the system prompt names the tag");
+    system[at..at + "student_message_".len() + 8].to_owned()
+}
+
+fn tagged_in(system: &str, text: &str) -> String {
+    let tag = tag_in(system);
+    format!("<{tag}>\n{text}\n</{tag}>")
+}
+
 /// A fast model with a fixed reply that records what it was asked.
 struct ScriptedRewriter {
     usage: openbook_core::model::TokenUsage,
@@ -1516,9 +1528,7 @@ async fn the_model_gets_the_server_note_and_everything_else_keeps_the_raw_studen
     assert_eq!(first.len(), 1, "no rewrite for the first question");
     let turn = &first[0].turns[0].text;
     assert!(turn.starts_with(SOURCES_TURN_NOTE), "{turn}");
-    assert!(turn.contains(&format!(
-        "<student_message>\n{question}\n</student_message>"
-    )));
+    assert!(turn.contains(&tagged_in(&first[0].system, question)));
     assert_eq!(student_text(turn), question);
 
     let answer = answer_of(&events);
@@ -1546,8 +1556,9 @@ async fn the_model_gets_the_server_note_and_everything_else_keeps_the_raw_studen
     let chat_call = calls.last().unwrap();
     assert_eq!(chat_call.turns.len(), 3);
     assert_eq!(
-        chat_call.turns[0].text, question,
-        "the history keeps the raw text"
+        chat_call.turns[0].text,
+        tagged_in(&chat_call.system, question),
+        "an earlier question keeps its own tag and gets no note"
     );
     assert_eq!(chat_call.turns[1].text, "Pythagorean theorem");
     let last = &chat_call.turns[2].text;

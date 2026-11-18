@@ -8,7 +8,9 @@ use openbook_api::retrieval::source_lists;
 use openbook_core::catalog::{Catalog, ModelEntry, Residency};
 use openbook_core::domain::{MessageRole, TutoringStyle};
 use openbook_core::model::{ChatModel, ChatRequest};
-use openbook_core::prompt::{SourceMode, build_system_prompt_for, normalize_turns, turns_for};
+use openbook_core::prompt::{
+    SourceMode, TAG_NONCE_CHARS, build_system_prompt_for, turn_note, turns_for_with,
+};
 use openbook_search::retrieval::Outcome;
 
 use crate::Error;
@@ -270,20 +272,25 @@ pub fn history_for(question: &Question) -> Vec<(MessageRole, String)> {
     history
 }
 
+pub fn tag_nonce_for(question: &Question) -> String {
+    sha256_parts(&["nonce", &question.id, &question.question])[..TAG_NONCE_CHARS].to_owned()
+}
+
 pub fn build_request(
     course_name: &str,
     variant: PromptVariant,
     mode: SourceMode<'_>,
     question: &Question,
 ) -> ChatRequest {
-    let history = history_for(question);
+    let nonce = tag_nonce_for(question);
+    let note = if variant.turn_note {
+        turn_note(mode)
+    } else {
+        None
+    };
     ChatRequest {
-        system: build_system_prompt_for(course_name, "", variant.style, mode),
-        turns: if variant.turn_note {
-            turns_for(&history, mode)
-        } else {
-            normalize_turns(&history)
-        },
+        system: build_system_prompt_for(course_name, "", variant.style, mode, &nonce),
+        turns: turns_for_with(&history_for(question), note, &nonce),
         ..ChatRequest::default()
     }
 }
