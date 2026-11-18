@@ -1,6 +1,6 @@
 # Openbook HTTP API (v1)
 
-This is the contract between the Ask web app (`apps/web`), the Rust API (`crates/api`), the end-to-end tests, and the infrastructure.
+This is the contract between the Openbook web app (`apps/web`), the Rust API (`crates/api`), the end-to-end tests, and the infrastructure.
 Change this file in the same commit as any change to the API.
 
 ## Transport

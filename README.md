@@ -4,7 +4,7 @@ Openbook is an open-source platform for AI tutoring that is grounded in your cou
 A teacher uploads course PDFs. Students ask questions and get tutoring answers that cite the exact pages they came from.
 The model takes an open-book exam: it answers from the materials you give it, not from memory.
 
-**Ask** is the Openbook web app for teachers and students, at [openbook.steve.gg](https://openbook.steve.gg).
+The Openbook web app has the landing page, **Ask** for students and teachers, and **Portal** for course management, at [openbook.steve.gg](https://openbook.steve.gg).
 
 ## Status
 

@@ -1,7 +1,7 @@
 # Openbook architecture
 
 Openbook is an open-source platform for tutoring that is grounded in course materials.
-Ask (`apps/web`, served at openbook.steve.gg) is its web app for teachers and students.
+The Openbook web app (`apps/web`, served at openbook.steve.gg) has the landing page, Ask for students and teachers, and Portal for course management.
 A teacher uploads course PDFs, and students get tutoring answers that cite those PDFs.
 Think of it as an open-book exam for the model: it answers from the course materials, not from memory.
 
