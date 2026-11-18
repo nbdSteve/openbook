@@ -29,6 +29,7 @@ fn question(id: &str, kind: Kind, text: &str, pages: &[u32], context: Option<&st
         kind,
         context: context.map(str::to_owned),
         small_talk: false,
+        held_out: false,
     }
 }
 

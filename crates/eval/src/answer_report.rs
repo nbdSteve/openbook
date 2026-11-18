@@ -15,6 +15,8 @@ pub struct Scored {
     pub id: String,
     pub kind: Kind,
     pub small_talk: bool,
+    pub held_out: bool,
+    pub opens_with_statement: bool,
     pub gated: bool,
     pub sources: usize,
     pub valid_cited: usize,
@@ -69,6 +71,7 @@ pub struct CoveredMetrics {
 pub struct NotCoveredSplit {
     pub questions: usize,
     pub says_not_covered_rate: Option<f64>,
+    pub opens_with_statement_rate: Option<f64>,
     pub uncited_rate: Option<f64>,
 }
 
@@ -85,6 +88,7 @@ pub struct NotCoveredMetrics {
 pub struct OffTopicSplit {
     pub questions: usize,
     pub correct_rate: Option<f64>,
+    pub opens_with_statement_rate: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -145,6 +149,7 @@ fn not_covered_split(rows: &[&Scored]) -> NotCoveredSplit {
     NotCoveredSplit {
         questions: rows.len(),
         says_not_covered_rate: rate(count(rows, |r| r.says_not_covered), rows.len()),
+        opens_with_statement_rate: rate(count(rows, |r| r.opens_with_statement), rows.len()),
         uncited_rate: rate(count(rows, Scored::is_uncited), rows.len()),
     }
 }
@@ -172,9 +177,15 @@ fn off_topic_split(rows: &[&Scored]) -> OffTopicSplit {
             r.says_not_covered
         }
     });
+    let subject = rows.iter().all(|r| !r.small_talk);
     OffTopicSplit {
         questions: rows.len(),
         correct_rate: rate(correct, rows.len()),
+        opens_with_statement_rate: if subject {
+            rate(count(rows, |r| r.opens_with_statement), rows.len())
+        } else {
+            None
+        },
     }
 }
 
@@ -230,6 +241,7 @@ pub struct Settings {
     pub rubric_version: u32,
     pub prompt_fingerprint: String,
     pub selection: String,
+    pub turn_note: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -238,21 +250,28 @@ pub struct AnswerReport {
     pub schema: u32,
     pub settings: Settings,
     pub pooled: Scope,
+    pub held_out: Option<Scope>,
     pub corpora: BTreeMap<String, Scope>,
 }
 
 impl AnswerReport {
     pub fn build(settings: Settings, scored: &[Scored]) -> AnswerReport {
-        let all: Vec<&Scored> = scored.iter().collect();
+        let in_sample: Vec<&Scored> = scored.iter().filter(|s| !s.held_out).collect();
+        let held_out: Vec<&Scored> = scored.iter().filter(|s| s.held_out).collect();
         let mut corpora = BTreeMap::new();
-        for corpus in scored.iter().map(|s| s.corpus.clone()) {
-            let rows: Vec<&Scored> = scored.iter().filter(|s| s.corpus == corpus).collect();
-            corpora.insert(corpus, scope(&rows));
+        for row in &in_sample {
+            let rows: Vec<&Scored> = in_sample
+                .iter()
+                .copied()
+                .filter(|s| s.corpus == row.corpus)
+                .collect();
+            corpora.insert(row.corpus.clone(), scope(&rows));
         }
         AnswerReport {
             schema: SUMMARY_SCHEMA,
             settings,
-            pooled: scope(&all),
+            pooled: scope(&in_sample),
+            held_out: (!held_out.is_empty()).then(|| scope(&held_out)),
             corpora,
         }
     }
@@ -268,6 +287,7 @@ impl AnswerReport {
             schema: self.schema,
             settings: self.settings.clone(),
             pooled: self.pooled.clone(),
+            held_out: self.held_out.clone(),
             corpora: BTreeMap::new(),
         }
     }
@@ -286,9 +306,24 @@ impl AnswerReport {
             s.selection,
             s.prompt_fingerprint
         );
-        scope_markdown(&mut out, "All corpora pooled", &self.pooled);
+        let _ = writeln!(
+            out,
+            "Follow-up questions are approximate: the earlier question goes in the same user turn, with no stored tutor reply.\n"
+        );
+        scope_markdown(
+            &mut out,
+            "All corpora pooled, in-sample (the questions that the prompt was tuned on)",
+            &self.pooled,
+        );
+        if let Some(held_out) = &self.held_out {
+            scope_markdown(
+                &mut out,
+                "Held-out, out-of-sample (questions that tuning never saw)",
+                held_out,
+            );
+        }
         for (id, scope) in &self.corpora {
-            scope_markdown(&mut out, id, scope);
+            scope_markdown(&mut out, &format!("{id}, in-sample"), scope);
         }
         out
     }
@@ -323,7 +358,7 @@ fn scope_markdown(out: &mut String, title: &str, scope: &Scope) {
     let _ = writeln!(out, "\n### not_covered ({})\n", n.all.questions);
     let _ = writeln!(
         out,
-        "| Group | Questions | Says \"not covered\" | Uncited |\n|---|---|---|---|"
+        "| Group | Questions | Says \"not covered\" (judge) | Opens with the statement (check) | Uncited |\n|---|---|---|---|---|"
     );
     for (name, split) in [
         ("all", &n.all),
@@ -332,9 +367,10 @@ fn scope_markdown(out: &mut String, title: &str, scope: &Scope) {
     ] {
         let _ = writeln!(
             out,
-            "| {name} | {} | {} | {} |",
+            "| {name} | {} | {} | {} | {} |",
             split.questions,
             pct(split.says_not_covered_rate),
+            pct(split.opens_with_statement_rate),
             pct(split.uncited_rate)
         );
     }
@@ -342,7 +378,7 @@ fn scope_markdown(out: &mut String, title: &str, scope: &Scope) {
     let _ = writeln!(out, "\n### off_topic ({})\n", o.all.questions);
     let _ = writeln!(
         out,
-        "| Group | Questions | Correct handling |\n|---|---|---|"
+        "| Group | Questions | Correct handling | Opens with the statement (check) |\n|---|---|---|---|"
     );
     for (name, split) in [
         ("all", &o.all),
@@ -354,9 +390,10 @@ fn scope_markdown(out: &mut String, title: &str, scope: &Scope) {
     ] {
         let _ = writeln!(
             out,
-            "| {name} | {} | {} |",
+            "| {name} | {} | {} | {} |",
             split.questions,
-            pct(split.correct_rate)
+            pct(split.correct_rate),
+            pct(split.opens_with_statement_rate)
         );
     }
     let _ = writeln!(
@@ -394,6 +431,8 @@ mod tests {
             id: "q".into(),
             kind,
             small_talk: false,
+            held_out: false,
+            opens_with_statement: false,
             gated: false,
             sources: 3,
             valid_cited: 0,
@@ -484,15 +523,56 @@ mod tests {
             rubric_version: 1,
             prompt_fingerprint: "f".into(),
             selection: "all".into(),
+            turn_note: true,
         };
         let report = AnswerReport::build(settings, &[a, b]);
         assert_eq!(report.pooled.questions, 2);
         assert_eq!(report.corpora.len(), 2);
         assert!(report.summary().corpora.is_empty());
         let text = report.to_markdown();
-        assert!(text.contains("## All corpora pooled (2 questions)"));
+        assert!(text.contains("in-sample"));
+        assert!(text.contains("approximate"));
         assert!(text.contains("### not_covered (1)"));
         let json = report.to_json().unwrap();
         assert!(json.contains("\"groundedCitationRate\""));
+    }
+
+    #[test]
+    fn held_out_questions_are_reported_apart_from_the_in_sample_numbers() {
+        let mut tuned = row(Kind::NotCovered);
+        tuned.says_not_covered = true;
+        let mut held = row(Kind::NotCovered);
+        held.held_out = true;
+        let settings = Settings {
+            chat_model: "m".into(),
+            judge_model: "j".into(),
+            style: "direct".into(),
+            rubric_version: 3,
+            prompt_fingerprint: "f".into(),
+            selection: "all".into(),
+            turn_note: true,
+        };
+        let report = AnswerReport::build(settings, &[tuned, held]);
+        assert_eq!(report.pooled.questions, 1);
+        assert_eq!(
+            report.pooled.not_covered.all.says_not_covered_rate,
+            Some(1.0)
+        );
+        let held_out = report.held_out.as_ref().unwrap();
+        assert_eq!(held_out.questions, 1);
+        assert_eq!(held_out.not_covered.all.says_not_covered_rate, Some(0.0));
+        assert!(report.to_markdown().contains("out-of-sample"));
+    }
+
+    #[test]
+    fn the_statement_check_is_reported_next_to_the_judge() {
+        let mut said = row(Kind::NotCovered);
+        said.says_not_covered = true;
+        said.opens_with_statement = true;
+        let mut buried = row(Kind::NotCovered);
+        buried.says_not_covered = true;
+        let m = not_covered_metrics(&[&said, &buried]);
+        assert_eq!(m.all.says_not_covered_rate, Some(1.0));
+        assert_eq!(m.all.opens_with_statement_rate, Some(0.5));
     }
 }

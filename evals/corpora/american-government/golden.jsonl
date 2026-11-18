@@ -71,3 +71,13 @@
 {"id": "off-topic-10", "question": "Can you recommend a laptop for programming?", "relevantPages": [], "kind": "off_topic"}
 {"id": "off-topic-11", "question": "How do you say good morning in Spanish?", "relevantPages": [], "kind": "off_topic"}
 {"id": "off-topic-12", "question": "What is the derivative of x squared?", "relevantPages": [], "kind": "off_topic"}
+{"id": "held-out-01", "question": "How does the Supreme Court choose which cases to hear?", "relevantPages": [], "kind": "not_covered", "heldOut": true}
+{"id": "held-out-02", "question": "What does the president's Cabinet do?", "relevantPages": [], "kind": "not_covered", "heldOut": true}
+{"id": "held-out-03", "question": "What does the Second Amendment protect?", "relevantPages": [], "kind": "not_covered", "heldOut": true}
+{"id": "held-out-04", "question": "What does the Fifth Amendment guarantee to people accused of crimes?", "relevantPages": [], "kind": "not_covered", "heldOut": true}
+{"id": "held-out-05", "question": "What is lobbying and how do lobbyists influence Congress?", "relevantPages": [], "kind": "not_covered", "heldOut": true}
+{"id": "held-out-06", "question": "What is the War Powers Resolution?", "relevantPages": [], "kind": "not_covered", "heldOut": true}
+{"id": "held-out-07", "question": "What does the Federal Reserve do?", "relevantPages": [], "kind": "not_covered", "heldOut": true}
+{"id": "held-out-08", "question": "What does the Eighth Amendment prohibit?", "relevantPages": [], "kind": "not_covered", "heldOut": true}
+{"id": "held-out-09", "question": "What is the Patriot Act?", "relevantPages": [], "kind": "not_covered", "heldOut": true}
+{"id": "held-out-10", "question": "What is the difference between a closed primary and an open primary?", "relevantPages": [], "kind": "not_covered", "heldOut": true}

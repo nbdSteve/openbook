@@ -134,7 +134,9 @@ The first command prints the plan: the number of answer calls and judge calls, a
 | `--catalog FILE` | The `cdk.json` with the model catalog (default `infra/cdk.json`) |
 | `--corpus ID` | One corpus |
 | `--write-summary` | Write `evals/answers-summary.json` (needs all questions and all corpora) |
-| `--prune` | Remove the cached answers of the same style and the same questions that this prompt does not use |
+| `--prune` | Remove the cached answers of the same style label and the same questions that this prompt does not use, and the judgments that no answer needs |
+| `--no-turn-note` | Build the prompt without the server note before the student message (an ablation, cached under its own label) |
+| `--check` | Offline: fail when the current prompt lacks a cached answer or judgment for a golden question, or when `answers-summary.json` is stale (`make eval` runs it) |
 
 Numbers of the committed prompt (Socratic, 180 questions, pooled), before the prompt change and after it:
 
@@ -161,6 +163,6 @@ The answers and judgments are committed in `corpora/<id>/answers/`. A run with a
 
 ## The golden set
 
-Each line of `golden.jsonl` is `{ "id", "question", "relevantPages", "kind" }`, and a `followup` also has `context` (the earlier question). The kinds are `lookup`, `paraphrase`, `notation`, `followup`, `not_covered`, and `off_topic`. An `off_topic` question can have `"smallTalk": true` (a greeting or thanks): the answer evaluation judges it by another rule. A set needs at least 60 questions and at least 10 of each kind, except `notation`, which only a math corpus has. The tests check this.
+Each line of `golden.jsonl` is `{ "id", "question", "relevantPages", "kind" }`, and a `followup` also has `context` (the earlier question). The kinds are `lookup`, `paraphrase`, `notation`, `followup`, `not_covered`, and `off_topic`. An `off_topic` question can have `"smallTalk": true` (a greeting or thanks): the answer evaluation judges it by another rule. A question can have `"heldOut": true`: it was written after the prompt tuning, the answer evaluation reports it as out-of-sample, and the offline retrieval evaluation does not count it. A set needs at least 60 questions and at least 10 of each kind, except `notation`, which only a math corpus has. The tests check this.
 
 Every question was written from the text of the pages and checked against the page. `not_covered` questions are plausible student questions about nearby math that the excerpt does not teach (hard negatives for the gate). A question is `not_covered` only when no page teaches the answer: a mention in a chapter outline or a list of learning objectives does not count. `off_topic` questions have no relation to the course: general knowledge, other school subjects, and small talk such as "hi" and "thanks, that makes sense". To add a question, find the page in the PDF, write the question and its page numbers, and run `offline --dev-cache` to see that the file still loads.

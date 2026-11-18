@@ -24,7 +24,7 @@ Usage:
   openbook-eval readme  [--check] [--evals DIR] [--readme FILE]
   openbook-eval answers [--kind KINDS] [--sample-covered N] [--seed N] [--style ID] [--model ID]
                         [--judge-model ID] [--catalog FILE] [--corpus ID] [--evals DIR] [--yes]
-                        [--write-summary] [--prune]
+                        [--write-summary] [--prune] [--no-turn-note] [--check]
 
 The corpora are the directories of evals/corpora. Without --corpus every command works on all of
 them, and the report shows each corpus and all of them pooled. --cache needs --corpus.
@@ -59,6 +59,10 @@ answers   LIVE: answers every selected golden question with the real prompt and 
           --judge-model ID   catalog ID of the judge (default: the catalog fast model)
           --catalog FILE     the cdk.json with the model catalog (default: infra/cdk.json)
           --write-summary    writes evals/answers-summary.json (all questions, all corpora only)
+          --no-turn-note     builds the prompt without the server note before the student message
+                             (an ablation; its answers are cached under their own style label)
+          --check            offline: fails when the current prompt has no cached answers or
+                             judgments for all questions, or when answers-summary.json is stale
           --prune            removes the cached answers of the same style and the same questions that
                              this run does not use (stale prompts), and their judgments
 refresh   Builds the caches.
@@ -99,6 +103,7 @@ struct Args {
     catalog: Option<PathBuf>,
     write_summary: bool,
     prune: bool,
+    no_turn_note: bool,
 }
 
 fn parse(argv: impl Iterator<Item = String>) -> Result<Args, String> {
@@ -153,6 +158,7 @@ fn parse(argv: impl Iterator<Item = String>) -> Result<Args, String> {
             "--catalog" => args.catalog = Some(value(&mut argv, &flag)?.into()),
             "--write-summary" => args.write_summary = true,
             "--prune" => args.prune = true,
+            "--no-turn-note" => args.no_turn_note = true,
             "--readme" => args.readme = Some(value(&mut argv, &flag)?.into()),
             "--header-variant" => {
                 let text = value(&mut argv, &flag)?;
@@ -440,6 +446,20 @@ async fn answers_command(args: &Args, evals: &Path) -> Result<ExitCode, Error> {
         Some(text) => answers::parse_style(text)?,
         None => TutoringStyle::default(),
     };
+    let variant = answers::PromptVariant {
+        style,
+        turn_note: !args.no_turn_note,
+    };
+    if args.check
+        && (!selection.is_full()
+            || args.corpus.is_some()
+            || args.style.is_some()
+            || args.no_turn_note)
+    {
+        return Err(Error::Run(
+            "--check covers all questions of all corpora in the default style with the server note: do not combine it with --kind, --sample-covered, --corpus, --style, or --no-turn-note".into(),
+        ));
+    }
     let mut pool = Vec::new();
     for corpus in &corpora {
         let sections = data::load_sections(&corpus.sections_path())?;
@@ -457,7 +477,7 @@ async fn answers_command(args: &Args, evals: &Path) -> Result<ExitCode, Error> {
         if questions.is_empty() {
             continue;
         }
-        let prepared = answers::prepare_corpus(corpus, &questions, style, &choice.chat).await?;
+        let prepared = answers::prepare_corpus(corpus, &questions, variant, &choice.chat).await?;
         let (answer_store, judgment_store) =
             answers::open_stores(corpus, &choice.chat, &choice.judge)?;
         runs.push(answers::CorpusRun {
@@ -475,9 +495,17 @@ async fn answers_command(args: &Args, evals: &Path) -> Result<ExitCode, Error> {
         .unwrap_or_else(|_| format!("{} (default)", refresh::DEFAULT_REGION));
     let profile = std::env::var("AWS_PROFILE")
         .unwrap_or_else(|_| "(none: the default credential chain)".into());
-    let plan = answers::make_plan(&runs, &choice, style, &selection, region, profile)?;
+    let region_name = std::env::var("AWS_REGION")
+        .or_else(|_| std::env::var("AWS_DEFAULT_REGION"))
+        .unwrap_or_else(|_| refresh::DEFAULT_REGION.to_owned());
+    let plan = answers::make_plan(&runs, &choice, variant, &selection, region, profile)?;
     println!("{}", plan.describe());
+    if args.check {
+        answers::check_complete(&plan)?;
+    }
     if !plan.is_empty() {
+        answers::check_region(&choice.chat, &region_name)?;
+        answers::check_region(&choice.judge, &region_name)?;
         if !args.yes {
             eprintln!("Nothing was called. Run again with --yes to start.");
             return Ok(ExitCode::FAILURE);
@@ -494,10 +522,10 @@ async fn answers_command(args: &Args, evals: &Path) -> Result<ExitCode, Error> {
             chat: std::sync::Arc::new(BedrockChat::new(client.clone(), &choice.chat)),
             judge: std::sync::Arc::new(BedrockChat::new(client, &choice.judge)),
         };
-        answers::run_calls(&mut runs, &models, &choice, style).await?;
+        answers::run_calls(&mut runs, &models, &choice, variant).await?;
     }
     if args.prune {
-        let removed = answers::prune(&mut runs, style)?;
+        let removed = answers::prune(&mut runs, variant, &choice.judge.model_id)?;
         eprintln!("Removed {removed} cache entries that this run does not use.");
     }
     let scored = answers::score_all(&runs, &choice.judge.model_id)?;
@@ -508,8 +536,26 @@ async fn answers_command(args: &Args, evals: &Path) -> Result<ExitCode, Error> {
         rubric_version: RUBRIC_VERSION,
         prompt_fingerprint: answers::prompt_fingerprint(&runs),
         selection: selection.describe(),
+        turn_note: variant.turn_note,
     };
     let report = AnswerReport::build(settings, &scored);
+    if args.check {
+        let path = evals.join("answers-summary.json");
+        let text = std::fs::read_to_string(&path).map_err(|e| Error::io(&path, &e))?;
+        let committed: AnswerReport = serde_json::from_str(&text)
+            .map_err(|e| Error::Data(format!("{}: {e}", path.display())))?;
+        if committed != report.summary() {
+            eprintln!(
+                "CHECK FAILED: {} is stale. Run `openbook-eval answers --write-summary --yes` and commit it.",
+                path.display()
+            );
+            return Ok(ExitCode::FAILURE);
+        }
+        eprintln!(
+            "Check passed: the cache holds every answer and judgment of the current prompt, and the summary matches."
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
     let markdown = report.to_markdown();
     println!("{markdown}");
     let out = evals.parent().map_or_else(

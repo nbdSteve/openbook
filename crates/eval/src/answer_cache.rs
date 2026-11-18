@@ -110,19 +110,8 @@ pub fn answer_key(model_id: &str, prompt_sha256: &str, question: &str) -> String
     sha256_parts(&["answer", model_id, prompt_sha256, question])
 }
 
-pub fn judgment_key(
-    judge_model_id: &str,
-    rubric_version: u32,
-    answer_sha256: &str,
-    question: &str,
-) -> String {
-    sha256_parts(&[
-        "judgment",
-        judge_model_id,
-        &rubric_version.to_string(),
-        answer_sha256,
-        question,
-    ])
+pub fn judgment_key(judge_model_id: &str, request_sha256: &str) -> String {
+    sha256_parts(&["judgment", judge_model_id, request_sha256])
 }
 
 #[derive(Debug, Clone)]
@@ -254,10 +243,9 @@ mod tests {
         assert_ne!(key, answer_key("m2", "p", "q"));
         assert_ne!(key, answer_key("m", "p2", "q"));
         assert_ne!(key, answer_key("m", "p", "q2"));
-        let judged = judgment_key("j", 1, "a", "q");
-        assert_ne!(judged, judgment_key("j", 2, "a", "q"));
-        assert_ne!(judged, judgment_key("j2", 1, "a", "q"));
-        assert_ne!(judged, judgment_key("j", 1, "a2", "q"));
+        let judged = judgment_key("j", "r");
+        assert_ne!(judged, judgment_key("j2", "r"));
+        assert_ne!(judged, judgment_key("j", "r2"));
     }
 
     #[test]

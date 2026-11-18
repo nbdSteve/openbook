@@ -79,6 +79,12 @@ pub struct Question {
     pub context: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub small_talk: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub held_out: bool,
+}
+
+pub fn tuned(questions: Vec<Question>) -> Vec<Question> {
+    questions.into_iter().filter(|q| !q.held_out).collect()
 }
 
 impl Question {
@@ -230,6 +236,7 @@ mod tests {
             kind,
             context: (kind == Kind::Followup).then(|| "Before.".to_owned()),
             small_talk: false,
+            held_out: false,
         }
     }
 

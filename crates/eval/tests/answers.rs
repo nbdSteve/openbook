@@ -13,8 +13,8 @@ use openbook_core::prompt::{GATED_TURN_NOTE, NOT_COVERED_NOTICE, SOURCES_TURN_NO
 use openbook_eval::answer_cache::Store;
 use openbook_eval::answer_report::{AnswerReport, Settings};
 use openbook_eval::answers::{
-    CorpusRun, Models, Selection, choose_models, load_catalog, make_plan, prepare_corpus,
-    prompt_fingerprint, run_calls, score_all,
+    CorpusRun, Models, PromptVariant, Selection, choose_models, load_catalog, make_plan,
+    prepare_corpus, prompt_fingerprint, run_calls, score_all,
 };
 use openbook_eval::corpus;
 use openbook_eval::data::{self, Question};
@@ -82,7 +82,7 @@ fn question(corpus_id: &str, id: &str) -> Question {
         .unwrap()
 }
 
-async fn prepared(corpus_id: &str, ids: &[&str], style: TutoringStyle, dir: &Path) -> CorpusRun {
+async fn prepared(corpus_id: &str, ids: &[&str], style: PromptVariant, dir: &Path) -> CorpusRun {
     let evals = evals_dir();
     let corpus = corpus::select(&evals, Some(corpus_id)).unwrap().remove(0);
     let choice = choose_models(&catalog(), None, None).unwrap();
@@ -98,7 +98,7 @@ async fn prepared(corpus_id: &str, ids: &[&str], style: TutoringStyle, dir: &Pat
     }
 }
 
-fn plan_for(run: &CorpusRun, style: TutoringStyle) -> openbook_eval::answers::Plan {
+fn plan_for(run: &CorpusRun, style: PromptVariant) -> openbook_eval::answers::Plan {
     let choice = choose_models(&catalog(), None, None).unwrap();
     make_plan(
         std::slice::from_ref(run),
@@ -117,7 +117,7 @@ async fn the_derivative_question_gets_sources_that_do_not_answer_it() {
     let run = prepared(
         "college-algebra",
         &["not-covered-03"],
-        TutoringStyle::Direct,
+        PromptVariant::new(TutoringStyle::Direct),
         dir.path(),
     )
     .await;
@@ -129,7 +129,10 @@ async fn the_derivative_question_gets_sources_that_do_not_answer_it() {
     assert_eq!(item.request.turns.len(), 1);
     assert_eq!(
         item.request.turns[0].text,
-        format!("{SOURCES_TURN_NOTE}\n\n{}", item.question.question)
+        format!(
+            "{SOURCES_TURN_NOTE}\n\n<student_message>\n{}\n</student_message>",
+            item.question.question
+        )
     );
 }
 
@@ -139,7 +142,7 @@ async fn small_talk_is_gated_and_gets_the_notice() {
     let run = prepared(
         "college-algebra",
         &["off-topic-01"],
-        TutoringStyle::Socratic,
+        PromptVariant::new(TutoringStyle::Socratic),
         dir.path(),
     )
     .await;
@@ -157,7 +160,7 @@ async fn a_follow_up_goes_with_its_earlier_question() {
     let run = prepared(
         "college-algebra",
         &["followup-01"],
-        TutoringStyle::Direct,
+        PromptVariant::new(TutoringStyle::Direct),
         dir.path(),
     )
     .await;
@@ -178,30 +181,42 @@ async fn an_unchanged_prompt_never_calls_again_and_a_changed_one_does() {
         judge: judge.clone(),
     };
 
-    let mut run = prepared("college-algebra", &ids, TutoringStyle::Direct, dir.path()).await;
-    let plan = plan_for(&run, TutoringStyle::Direct);
+    let mut run = prepared(
+        "college-algebra",
+        &ids,
+        PromptVariant::new(TutoringStyle::Direct),
+        dir.path(),
+    )
+    .await;
+    let plan = plan_for(&run, PromptVariant::new(TutoringStyle::Direct));
     assert_eq!((plan.answer_calls, plan.judge_calls), (3, 3));
     assert!(plan.cost_upper_bound_usd > 0.0);
     run_calls(
         std::slice::from_mut(&mut run),
         &models,
         &choice,
-        TutoringStyle::Direct,
+        PromptVariant::new(TutoringStyle::Direct),
     )
     .await
     .unwrap();
     assert_eq!(chat.answers.load(Ordering::SeqCst), 3);
     assert_eq!(judge.judgments.load(Ordering::SeqCst), 3);
 
-    let mut again = prepared("college-algebra", &ids, TutoringStyle::Direct, dir.path()).await;
-    let plan = plan_for(&again, TutoringStyle::Direct);
+    let mut again = prepared(
+        "college-algebra",
+        &ids,
+        PromptVariant::new(TutoringStyle::Direct),
+        dir.path(),
+    )
+    .await;
+    let plan = plan_for(&again, PromptVariant::new(TutoringStyle::Direct));
     assert!(plan.is_empty(), "{}", plan.describe());
     assert_eq!(plan.cached_answers, 3);
     run_calls(
         std::slice::from_mut(&mut again),
         &models,
         &choice,
-        TutoringStyle::Direct,
+        PromptVariant::new(TutoringStyle::Direct),
     )
     .await
     .unwrap();
@@ -218,6 +233,7 @@ async fn an_unchanged_prompt_never_calls_again_and_a_changed_one_does() {
             rubric_version: 1,
             prompt_fingerprint: prompt_fingerprint(std::slice::from_ref(&again)),
             selection: "test".into(),
+            turn_note: true,
         },
         &scored,
     );
@@ -227,8 +243,14 @@ async fn an_unchanged_prompt_never_calls_again_and_a_changed_one_does() {
     );
     assert_eq!(report.pooled.off_topic.small_talk.correct_rate, Some(0.0));
 
-    let socratic = prepared("college-algebra", &ids, TutoringStyle::Socratic, dir.path()).await;
-    let plan = plan_for(&socratic, TutoringStyle::Socratic);
+    let socratic = prepared(
+        "college-algebra",
+        &ids,
+        PromptVariant::new(TutoringStyle::Socratic),
+        dir.path(),
+    )
+    .await;
+    let plan = plan_for(&socratic, PromptVariant::new(TutoringStyle::Socratic));
     assert_eq!(plan.answer_calls, 3, "another style is another prompt");
 }
 
@@ -244,23 +266,35 @@ async fn prune_removes_stale_answers_of_the_same_style_only() {
         chat: Scripted::new(false),
         judge: Scripted::new(false),
     };
-    let mut direct = prepared("college-algebra", &ids, TutoringStyle::Direct, dir.path()).await;
+    let mut direct = prepared(
+        "college-algebra",
+        &ids,
+        PromptVariant::new(TutoringStyle::Direct),
+        dir.path(),
+    )
+    .await;
     run_calls(
         std::slice::from_mut(&mut direct),
         &models,
         &choice,
-        TutoringStyle::Direct,
+        PromptVariant::new(TutoringStyle::Direct),
     )
     .await
     .unwrap();
-    let mut socratic = prepared("college-algebra", &ids, TutoringStyle::Socratic, dir.path()).await;
+    let mut socratic = prepared(
+        "college-algebra",
+        &ids,
+        PromptVariant::new(TutoringStyle::Socratic),
+        dir.path(),
+    )
+    .await;
     socratic.answers = direct.answers.clone();
     socratic.judgments = direct.judgments.clone();
     run_calls(
         std::slice::from_mut(&mut socratic),
         &models,
         &choice,
-        TutoringStyle::Socratic,
+        PromptVariant::new(TutoringStyle::Socratic),
     )
     .await
     .unwrap();
@@ -275,8 +309,53 @@ async fn prune_removes_stale_answers_of_the_same_style_only() {
         output_tokens: 1,
         stop_reason: "end_turn".into(),
     });
-    let removed = prune(std::slice::from_mut(&mut socratic), TutoringStyle::Socratic).unwrap();
+    let removed = prune(
+        std::slice::from_mut(&mut socratic),
+        PromptVariant::new(TutoringStyle::Socratic),
+        &choice.judge.model_id,
+    )
+    .unwrap();
     assert_eq!(removed, 1);
     assert_eq!(socratic.answers.len(), 4);
     assert!(!socratic.answers.contains("stale"));
+}
+
+#[tokio::test]
+async fn the_ablation_has_no_note_and_its_own_cache_keys_and_the_check_needs_a_full_cache() {
+    use openbook_eval::answers::check_complete;
+
+    let dir = tempfile::tempdir().unwrap();
+    let ids = ["not-covered-03"];
+    let normal = prepared(
+        "college-algebra",
+        &ids,
+        PromptVariant::new(TutoringStyle::Socratic),
+        dir.path(),
+    )
+    .await;
+    let ablation = prepared(
+        "college-algebra",
+        &ids,
+        PromptVariant {
+            turn_note: false,
+            ..PromptVariant::new(TutoringStyle::Socratic)
+        },
+        dir.path(),
+    )
+    .await;
+    assert_eq!(
+        ablation.prepared[0].request.turns[0].text,
+        ablation.prepared[0].question.question
+    );
+    assert_eq!(
+        ablation.prepared[0].request.system,
+        normal.prepared[0].request.system
+    );
+    assert_ne!(ablation.prepared[0].key, normal.prepared[0].key);
+    let plan = plan_for(&normal, PromptVariant::new(TutoringStyle::Socratic));
+    let error = check_complete(&plan).unwrap_err().to_string();
+    assert!(
+        error.contains("1 answers and 1 judgments are missing"),
+        "{error}"
+    );
 }

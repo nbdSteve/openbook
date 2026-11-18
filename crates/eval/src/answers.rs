@@ -5,10 +5,10 @@ use std::sync::Arc;
 
 use futures::StreamExt;
 use openbook_api::retrieval::source_lists;
-use openbook_core::catalog::{Catalog, ModelEntry};
+use openbook_core::catalog::{Catalog, ModelEntry, Residency};
 use openbook_core::domain::{MessageRole, TutoringStyle};
 use openbook_core::model::{ChatModel, ChatRequest};
-use openbook_core::prompt::{SourceMode, build_system_prompt_for, turns_for};
+use openbook_core::prompt::{SourceMode, build_system_prompt_for, normalize_turns, turns_for};
 use openbook_search::retrieval::Outcome;
 
 use crate::Error;
@@ -22,11 +22,79 @@ use crate::cache::{Cache, CacheKind, sha256_hex};
 use crate::citations;
 use crate::corpus::Corpus;
 use crate::data::{self, Kind, Question};
-use crate::judge::{self, ANSWER_LIMITS, JUDGE_LIMITS, JUDGE_MAX_TOKENS, RUBRIC, RUBRIC_VERSION};
+use crate::judge::{
+    self, ANSWER_LIMITS, JUDGE_LIMITS, JUDGE_MAX_TOKENS, RUBRIC, RUBRIC_VERSION,
+    judge_request_sha256,
+};
 use crate::metrics::is_relevant;
 use crate::offline::{self, Index, Options};
 
 pub const UPPER_BOUND_CHARS_PER_TOKEN: u64 = 2;
+pub const AU_REGIONS: [&str; 2] = ["ap-southeast-2", "ap-southeast-4"];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PromptVariant {
+    pub style: TutoringStyle,
+    pub turn_note: bool,
+}
+
+impl PromptVariant {
+    pub fn new(style: TutoringStyle) -> Self {
+        Self {
+            style,
+            turn_note: true,
+        }
+    }
+
+    pub fn label(self) -> String {
+        if self.turn_note {
+            self.style.id().to_owned()
+        } else {
+            format!("{}+no-turn-note", self.style.id())
+        }
+    }
+}
+
+pub fn check_region(entry: &ModelEntry, region: &str) -> Result<(), Error> {
+    if entry.residency == Residency::Au && !AU_REGIONS.contains(&region) {
+        return Err(Error::Run(format!(
+            "model {:?} has residency au, so the calls must go to {}: set AWS_REGION to one of them (it is {region:?})",
+            entry.id,
+            AU_REGIONS.join(" or ")
+        )));
+    }
+    Ok(())
+}
+
+const OPENING_PHRASES: [&str; 12] = [
+    "could not find",
+    "couldn't find",
+    "do not cover",
+    "does not cover",
+    "don't cover",
+    "doesn't cover",
+    "do not answer",
+    "does not answer",
+    "not covered",
+    "outside",
+    "not part of",
+    "not in your course",
+];
+const OPENING_WINDOW_CHARS: usize = 200;
+
+pub fn opens_with_statement(answer: &str) -> bool {
+    let head: String = answer
+        .chars()
+        .take(OPENING_WINDOW_CHARS)
+        .collect::<String>()
+        .to_lowercase();
+    let question_at = head.find('?').unwrap_or(usize::MAX);
+    OPENING_PHRASES
+        .iter()
+        .filter_map(|phrase| head.find(phrase))
+        .min()
+        .is_some_and(|at| at < question_at)
+}
 pub const CONCURRENCY: usize = 4;
 pub const DEFAULT_SEED: u64 = 1;
 
@@ -204,13 +272,18 @@ pub fn history_for(question: &Question) -> Vec<(MessageRole, String)> {
 
 pub fn build_request(
     course_name: &str,
-    style: TutoringStyle,
+    variant: PromptVariant,
     mode: SourceMode<'_>,
     question: &Question,
 ) -> ChatRequest {
+    let history = history_for(question);
     ChatRequest {
-        system: build_system_prompt_for(course_name, "", style, mode),
-        turns: turns_for(&history_for(question), mode),
+        system: build_system_prompt_for(course_name, "", variant.style, mode),
+        turns: if variant.turn_note {
+            turns_for(&history, mode)
+        } else {
+            normalize_turns(&history)
+        },
         ..ChatRequest::default()
     }
 }
@@ -218,7 +291,7 @@ pub fn build_request(
 pub async fn prepare_corpus(
     corpus: &Corpus,
     questions: &[Question],
-    style: TutoringStyle,
+    variant: PromptVariant,
     chat: &ModelEntry,
 ) -> Result<Vec<Prepared>, Error> {
     let sections = data::load_sections(&corpus.sections_path())?;
@@ -261,7 +334,7 @@ pub async fn prepare_corpus(
             Outcome::NotCovered => SourceMode::NotCovered,
             Outcome::NotUsed => SourceMode::NotUsed,
         };
-        let request = build_request(&course_name, style, mode, question);
+        let request = build_request(&course_name, variant, mode, question);
         let relevant_sources: Vec<bool> = retrieved
             .chunks
             .iter()
@@ -296,9 +369,7 @@ impl CorpusRun {
         let answer = self.answers.get(&item.key)?;
         Some(judgment_key(
             judge_model_id,
-            RUBRIC_VERSION,
-            &sha256_hex(answer.text.as_bytes()),
-            &item.question.question,
+            &judge_request_sha256(&item.question.question, &answer.text),
         ))
     }
 }
@@ -326,7 +397,7 @@ pub fn prompt_fingerprint(runs: &[CorpusRun]) -> String {
 pub struct Plan {
     pub region: String,
     pub profile: String,
-    pub style: TutoringStyle,
+    pub variant: PromptVariant,
     pub chat: ModelEntry,
     pub judge: ModelEntry,
     pub selection: String,
@@ -356,7 +427,7 @@ fn bound_tokens(chars: usize) -> u64 {
 pub fn make_plan(
     runs: &[CorpusRun],
     choice: &ModelChoice,
-    style: TutoringStyle,
+    variant: PromptVariant,
     selection: &Selection,
     region: String,
     profile: String,
@@ -410,7 +481,7 @@ pub fn make_plan(
     Ok(Plan {
         region,
         profile,
-        style,
+        variant,
         chat: choice.chat.clone(),
         judge: choice.judge.clone(),
         selection: selection.describe(),
@@ -424,6 +495,10 @@ pub fn make_plan(
 }
 
 impl Plan {
+    pub fn cost_worst_case_with_retries_usd(&self) -> f64 {
+        self.cost_upper_bound_usd * f64::from(MAX_ATTEMPTS)
+    }
+
     pub fn is_empty(&self) -> bool {
         self.answer_calls == 0 && self.judge_calls == 0
     }
@@ -433,7 +508,12 @@ impl Plan {
         let _ = writeln!(out, "Answer evaluation plan");
         let _ = writeln!(out, "  AWS profile: {}", self.profile);
         let _ = writeln!(out, "  AWS Region: {}", self.region);
-        let _ = writeln!(out, "  Tutoring style: {}", self.style.id());
+        let _ = writeln!(out, "  Tutoring style: {}", self.variant.style.id());
+        let _ = writeln!(
+            out,
+            "  Server note before the student message: {}",
+            if self.variant.turn_note { "on" } else { "off" }
+        );
         let _ = writeln!(out, "  Selection: {}", self.selection);
         let _ = writeln!(out, "  Questions: {}", self.questions);
         let _ = writeln!(
@@ -459,8 +539,9 @@ impl Plan {
         );
         let _ = writeln!(
             out,
-            "  Cost: at most ${:.2} (list prices of the catalog, {UPPER_BOUND_CHARS_PER_TOKEN} characters per input token, the full output limit on every call)",
-            self.cost_upper_bound_usd
+            "  Cost: at most ${:.2} if no call is retried, and at most ${:.2} if every call uses all {MAX_ATTEMPTS} attempts (list prices of the catalog, {UPPER_BOUND_CHARS_PER_TOKEN} characters per input token, the full output limit on every call)",
+            self.cost_upper_bound_usd,
+            self.cost_worst_case_with_retries_usd()
         );
         out
     }
@@ -491,6 +572,8 @@ pub fn score(item: &Prepared, answer: &str, judgment: &Judgment) -> Scored {
         id: item.question.id.clone(),
         kind: item.question.kind,
         small_talk: item.question.small_talk,
+        held_out: item.question.held_out,
+        opens_with_statement: opens_with_statement(answer),
         gated: item.gated,
         sources: item.sources,
         valid_cited: valid.len(),
@@ -540,6 +623,8 @@ pub fn details(runs: &[CorpusRun], judge_model_id: &str) -> Result<String, Error
                 "corpus": item.corpus,
                 "id": item.question.id,
                 "kind": item.question.kind.name(),
+                "heldOut": item.question.held_out,
+                "opensWithStatement": answer.map(|a| opens_with_statement(&a.text)),
                 "question": item.question.question,
                 "gated": item.gated,
                 "sources": item.sources,
@@ -573,6 +658,10 @@ pub fn backoff(label: &str, attempt: u32) -> std::time::Duration {
     base + base * jitter_per_mille as u32 / 1000
 }
 
+pub fn is_transient(error: &str) -> bool {
+    !error.contains("the judge gave")
+}
+
 pub async fn retry_bounded<T, F, Fut>(label: &str, mut call: F) -> Result<T, String>
 where
     F: FnMut() -> Fut,
@@ -582,7 +671,7 @@ where
     loop {
         match call().await {
             Ok(value) => return Ok(value),
-            Err(error) if attempt < MAX_ATTEMPTS => {
+            Err(error) if attempt < MAX_ATTEMPTS && is_transient(&error) => {
                 let wait = backoff(label, attempt);
                 eprintln!("  {label}: attempt {attempt} failed ({error}); retrying in {wait:?}");
                 tokio::time::sleep(wait).await;
@@ -597,7 +686,7 @@ pub async fn run_calls(
     runs: &mut [CorpusRun],
     models: &Models,
     choice: &ModelChoice,
-    style: TutoringStyle,
+    variant: PromptVariant,
 ) -> Result<(), Error> {
     let missing: Vec<(usize, usize)> = runs
         .iter()
@@ -643,7 +732,7 @@ pub async fn run_calls(
         run.answers.insert(AnswerEntry {
             key: item.key.clone(),
             question_id: item.question.id.clone(),
-            style: style.id().to_owned(),
+            style: variant.label(),
             prompt_sha256: item.prompt_sha256.clone(),
             text: completion.text,
             input_tokens: completion.usage.input_tokens,
@@ -711,29 +800,51 @@ pub async fn run_calls(
     Ok(())
 }
 
-pub fn prune(runs: &mut [CorpusRun], style: TutoringStyle) -> Result<usize, Error> {
+pub fn prune(
+    runs: &mut [CorpusRun],
+    variant: PromptVariant,
+    judge_model_id: &str,
+) -> Result<usize, Error> {
+    let label = variant.label();
     let mut removed = 0;
     for run in runs {
         let wanted: HashSet<String> = run.prepared.iter().map(|p| p.key.clone()).collect();
-        let selected: HashSet<String> =
-            run.prepared.iter().map(|p| p.question.id.clone()).collect();
+        let texts: std::collections::HashMap<String, String> = run
+            .prepared
+            .iter()
+            .map(|p| (p.question.id.clone(), p.question.question.clone()))
+            .collect();
         removed += run.answers.retain(|entry| {
-            entry.style != style.id()
-                || !selected.contains(&entry.question_id)
+            entry.style != label
+                || !texts.contains_key(&entry.question_id)
                 || wanted.contains(&entry.key)
         });
-        let judged_answers: HashSet<String> = run
+        let needed: HashSet<String> = run
             .answers
             .values()
-            .map(|a| sha256_hex(a.text.as_bytes()))
+            .filter_map(|a| {
+                texts.get(&a.question_id).map(|question| {
+                    judgment_key(judge_model_id, &judge_request_sha256(question, &a.text))
+                })
+            })
             .collect();
-        removed += run.judgments.retain(|j| {
-            judged_answers.contains(&j.answer_sha256) || !selected.contains(&j.question_id)
-        });
+        removed += run
+            .judgments
+            .retain(|j| needed.contains(&j.key) || !texts.contains_key(&j.question_id));
         run.answers.save()?;
         run.judgments.save()?;
     }
     Ok(removed)
+}
+
+pub fn check_complete(plan: &Plan) -> Result<(), Error> {
+    if plan.is_empty() {
+        return Ok(());
+    }
+    Err(Error::Run(format!(
+        "the cache is stale for the current prompt: {} answers and {} judgments are missing. Run `openbook-eval answers --yes` with AWS credentials, then commit the cache and the summary",
+        plan.answer_calls, plan.judge_calls
+    )))
 }
 
 #[cfg(test)]
@@ -753,6 +864,7 @@ mod tests {
             kind,
             context: (kind == Kind::Followup).then(|| "earlier".to_owned()),
             small_talk: false,
+            held_out: false,
         }
     }
 
@@ -846,7 +958,12 @@ mod tests {
     #[test]
     fn the_request_is_the_production_prompt_for_the_course_and_the_turns() {
         let q = question("f1", Kind::Followup);
-        let request = build_request("Algebra", TutoringStyle::Direct, SourceMode::NotCovered, &q);
+        let request = build_request(
+            "Algebra",
+            PromptVariant::new(TutoringStyle::Direct),
+            SourceMode::NotCovered,
+            &q,
+        );
         assert!(request.system.contains("\"Algebra\""));
         assert!(
             request
@@ -958,5 +1075,69 @@ mod tests {
         assert!(result.unwrap_err().contains("after 5 attempts"));
         let ok = retry_bounded("c/q", || async { Ok::<_, String>(7) }).await;
         assert_eq!(ok, Ok(7));
+    }
+
+    #[test]
+    fn an_au_model_refuses_a_region_outside_australia() {
+        let entry = |residency| ModelEntry {
+            id: "m".into(),
+            label: "m".into(),
+            vendor: "anthropic".into(),
+            provider: openbook_core::catalog::ProviderKind::Bedrock,
+            model_id: "au.anthropic.x".into(),
+            residency,
+            max_output_tokens: None,
+            temperature: None,
+            vision: false,
+            input_usd_per_million: None,
+            output_usd_per_million: None,
+        };
+        assert!(check_region(&entry(Residency::Au), "ap-southeast-2").is_ok());
+        assert!(check_region(&entry(Residency::Au), "ap-southeast-4").is_ok());
+        let error = check_region(&entry(Residency::Au), "us-west-2").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("ap-southeast-2 or ap-southeast-4")
+        );
+        assert!(check_region(&entry(Residency::Global), "us-west-2").is_ok());
+    }
+
+    #[test]
+    fn the_opening_check_wants_the_statement_before_any_question() {
+        assert!(opens_with_statement(
+            "I could not find this in your course materials. Let us look."
+        ));
+        assert!(opens_with_statement(
+            "The course materials I found do not answer this.\n\nWhat do you know?"
+        ));
+        assert!(opens_with_statement(
+            "That is outside the scope of American Government."
+        ));
+        assert!(!opens_with_statement(
+            "Great question! What do you think a logarithm is? The course materials do not cover it."
+        ));
+        assert!(!opens_with_statement(
+            "Let us explore it together. First, what do you know?"
+        ));
+        assert!(!opens_with_statement(""));
+    }
+
+    #[test]
+    fn a_label_tells_the_ablation_from_the_normal_variant() {
+        let normal = PromptVariant::new(TutoringStyle::Socratic);
+        let ablation = PromptVariant {
+            turn_note: false,
+            ..normal
+        };
+        assert_eq!(normal.label(), "socratic");
+        assert_eq!(ablation.label(), "socratic+no-turn-note");
+    }
+
+    #[test]
+    fn a_bad_judge_verdict_is_not_retried_and_a_call_failure_is() {
+        assert!(!is_transient("the judge gave a bad verdict (x): \"y\""));
+        assert!(is_transient("no first byte within 30s"));
+        assert!(is_transient("bedrock converse_stream failed"));
     }
 }

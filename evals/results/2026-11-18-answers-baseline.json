@@ -1,0 +1,174 @@
+{
+  "schema": 1,
+  "promptCommit": "5340bec",
+  "rubricVersion": 2,
+  "description": "Answer metrics of the prompt of main before the change, with the old cache pruned. Pooled over both corpora, all 180 tuned questions for Socratic and the 33 not_covered questions for Direct.",
+  "socratic": {
+    "settings": {
+      "chatModel": "au.anthropic.claude-sonnet-4-6",
+      "judgeModel": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+      "style": "socratic",
+      "rubricVersion": 2,
+      "promptFingerprint": "b0d9e8863630a7ba8c97612a53c0233f63fa9045cf6e1e6a62671e2d2a42fc9f",
+      "selection": "all questions"
+    },
+    "pooled": {
+      "questions": 180,
+      "covered": {
+        "questions": 123,
+        "groundedCitationRate": 0.2764,
+        "citationPrecision": 0.9048,
+        "uncitedRate": 0.7154,
+        "nonexistentCitationRate": 0.0,
+        "falseNotCoveredRate": 0.0,
+        "relevantSourceAvailableRate": 0.9919
+      },
+      "notCovered": {
+        "all": {
+          "questions": 33,
+          "saysNotCoveredRate": 0.1212,
+          "uncitedRate": 1.0
+        },
+        "gated": {
+          "questions": 14,
+          "saysNotCoveredRate": 0.1429,
+          "uncitedRate": 1.0
+        },
+        "notGated": {
+          "questions": 19,
+          "saysNotCoveredRate": 0.1053,
+          "uncitedRate": 1.0
+        }
+      },
+      "offTopic": {
+        "all": {
+          "questions": 24,
+          "correctRate": 0.9167
+        },
+        "smallTalk": {
+          "questions": 7,
+          "correctRate": 1.0
+        },
+        "subject": {
+          "questions": 17,
+          "correctRate": 0.8824
+        },
+        "gatedRate": 1.0
+      },
+      "byKind": [
+        {
+          "kind": "lookup",
+          "questions": 36,
+          "uncitedRate": 0.8056,
+          "nonexistentCitationRate": 0.0,
+          "saysNotCoveredRate": 0.0,
+          "groundedCitationRate": 0.1944
+        },
+        {
+          "kind": "paraphrase",
+          "questions": 37,
+          "uncitedRate": 0.8649,
+          "nonexistentCitationRate": 0.0,
+          "saysNotCoveredRate": 0.0,
+          "groundedCitationRate": 0.1351
+        },
+        {
+          "kind": "notation",
+          "questions": 21,
+          "uncitedRate": 0.7143,
+          "nonexistentCitationRate": 0.0,
+          "saysNotCoveredRate": 0.0,
+          "groundedCitationRate": 0.2857
+        },
+        {
+          "kind": "followup",
+          "questions": 29,
+          "uncitedRate": 0.4138,
+          "nonexistentCitationRate": 0.0,
+          "saysNotCoveredRate": 0.0,
+          "groundedCitationRate": 0.5517
+        },
+        {
+          "kind": "not_covered",
+          "questions": 33,
+          "uncitedRate": 1.0,
+          "nonexistentCitationRate": 0.0,
+          "saysNotCoveredRate": 0.1212,
+          "groundedCitationRate": 0.0
+        },
+        {
+          "kind": "off_topic",
+          "questions": 24,
+          "uncitedRate": 1.0,
+          "nonexistentCitationRate": 0.0,
+          "saysNotCoveredRate": 0.625,
+          "groundedCitationRate": 0.0
+        }
+      ]
+    }
+  },
+  "direct": {
+    "settings": {
+      "chatModel": "au.anthropic.claude-sonnet-4-6",
+      "judgeModel": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+      "style": "direct",
+      "rubricVersion": 2,
+      "promptFingerprint": "9f96f02ca0795f08a1931fcc0e403927c59cec5d65a780cc26375c6d129f67ae",
+      "selection": "not_covered"
+    },
+    "pooled": {
+      "questions": 33,
+      "covered": {
+        "questions": 0,
+        "groundedCitationRate": null,
+        "citationPrecision": null,
+        "uncitedRate": null,
+        "nonexistentCitationRate": null,
+        "falseNotCoveredRate": null,
+        "relevantSourceAvailableRate": null
+      },
+      "notCovered": {
+        "all": {
+          "questions": 33,
+          "saysNotCoveredRate": 0.2727,
+          "uncitedRate": 0.8788
+        },
+        "gated": {
+          "questions": 14,
+          "saysNotCoveredRate": 0.2143,
+          "uncitedRate": 1.0
+        },
+        "notGated": {
+          "questions": 19,
+          "saysNotCoveredRate": 0.3158,
+          "uncitedRate": 0.7895
+        }
+      },
+      "offTopic": {
+        "all": {
+          "questions": 0,
+          "correctRate": null
+        },
+        "smallTalk": {
+          "questions": 0,
+          "correctRate": null
+        },
+        "subject": {
+          "questions": 0,
+          "correctRate": null
+        },
+        "gatedRate": null
+      },
+      "byKind": [
+        {
+          "kind": "not_covered",
+          "questions": 33,
+          "uncitedRate": 0.8788,
+          "nonexistentCitationRate": 0.0,
+          "saysNotCoveredRate": 0.2727,
+          "groundedCitationRate": 0.0
+        }
+      ]
+    }
+  }
+}

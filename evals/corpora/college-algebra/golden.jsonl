@@ -105,3 +105,13 @@
 {"id": "off-topic-10", "question": "How do I write a for loop in Python?", "relevantPages": [], "kind": "off_topic"}
 {"id": "off-topic-11", "question": "How do I balance the chemical equation for burning methane?", "relevantPages": [], "kind": "off_topic"}
 {"id": "off-topic-12", "question": "Can you help me write a cover letter for a job?", "relevantPages": [], "kind": "off_topic"}
+{"id": "held-out-01", "question": "What is the midpoint formula?", "relevantPages": [], "kind": "not_covered", "heldOut": true}
+{"id": "held-out-02", "question": "What is the remainder theorem?", "relevantPages": [], "kind": "not_covered", "heldOut": true}
+{"id": "held-out-03", "question": "How do I find the partial fraction decomposition of a rational expression?", "relevantPages": [], "kind": "not_covered", "heldOut": true}
+{"id": "held-out-04", "question": "What is the equation of a circle with a given center and radius?", "relevantPages": [], "kind": "not_covered", "heldOut": true}
+{"id": "held-out-05", "question": "What is the difference between permutations and combinations?", "relevantPages": [], "kind": "not_covered", "heldOut": true}
+{"id": "held-out-06", "question": "What is the distance formula between two points?", "relevantPages": [], "kind": "not_covered", "heldOut": true}
+{"id": "held-out-07", "question": "How do I find the nth term of a geometric sequence?", "relevantPages": [], "kind": "not_covered", "heldOut": true}
+{"id": "held-out-08", "question": "How do I solve a system of equations using Cramer's rule?", "relevantPages": [], "kind": "not_covered", "heldOut": true}
+{"id": "held-out-09", "question": "How do I use synthetic division to divide a polynomial?", "relevantPages": [], "kind": "not_covered", "heldOut": true}
+{"id": "held-out-10", "question": "What is the change of base formula for logarithms?", "relevantPages": [], "kind": "not_covered", "heldOut": true}

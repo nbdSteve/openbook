@@ -1033,8 +1033,10 @@ pub struct Loaded {
 /// Reads the data and the cache of a corpus, and checks that they belong together.
 pub fn load(corpus: &Corpus, cache_dir: &Path) -> Result<Loaded, Error> {
     let sections = crate::data::load_sections(&corpus.sections_path())?;
-    let questions =
-        crate::data::load_golden(&corpus.golden_path(), crate::data::page_total(&sections))?;
+    let questions = crate::data::tuned(crate::data::load_golden(
+        &corpus.golden_path(),
+        crate::data::page_total(&sections),
+    )?);
     let cache = Cache::load(cache_dir).map_err(|e| match e {
         Error::Cache(text) => Error::Cache(format!("corpus {}: {text}", corpus.id)),
         other => other,
