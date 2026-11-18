@@ -364,6 +364,33 @@ pub fn turn_params(embedding_model: &str, rewrite_failed: bool) -> Params {
     params
 }
 
+pub fn source_lists<'a>(
+    fused: &[Fused],
+    document_name: impl Fn(&str) -> &'a str,
+) -> (Vec<Source>, Vec<SourceContext>) {
+    let mut sources = Vec::with_capacity(fused.len());
+    let mut contexts = Vec::with_capacity(fused.len());
+    for (i, f) in fused.iter().enumerate() {
+        let n = u32::try_from(i + 1).unwrap_or(u32::MAX);
+        let name = document_name(f.passage.document_id.as_str());
+        let page = (f.passage.page > 0).then_some(f.passage.page);
+        sources.push(Source {
+            n,
+            document_id: f.passage.document_id.clone(),
+            document_name: name.to_owned(),
+            page,
+            snippet: clip(&f.passage.text, SNIPPET_CHARS),
+        });
+        contexts.push(SourceContext {
+            n,
+            document_name: name.to_owned(),
+            page,
+            text: clip(&f.passage.text, SNIPPET_CHARS),
+        });
+    }
+    (sources, contexts)
+}
+
 /// Runs retrieval for one turn. It never fails: a problem gives `NotUsed` or a smaller result.
 ///
 /// `earlier` is the conversation before this message. `documents` is every document of the course.
@@ -481,30 +508,8 @@ pub async fn run_turn(
             usage,
         };
     }
-    let mut sources = Vec::with_capacity(fused.len());
-    let mut contexts = Vec::with_capacity(fused.len());
-    for (i, f) in fused.iter().enumerate() {
-        let n = u32::try_from(i + 1).unwrap_or(u32::MAX);
-        let name = ready
-            .get(f.passage.document_id.as_str())
-            .copied()
-            .unwrap_or("document");
-        let page = (f.passage.page > 0).then_some(f.passage.page);
-        sources.push(Source {
-            n,
-            document_id: f.passage.document_id.clone(),
-            document_name: name.to_owned(),
-            page,
-            snippet: clip(&f.passage.text, SNIPPET_CHARS),
-        });
-        contexts.push(SourceContext {
-            n,
-            document_name: name.to_owned(),
-            page,
-            // The same text as the snippet: the model sees what the student can read.
-            text: clip(&f.passage.text, SNIPPET_CHARS),
-        });
-    }
+    let (sources, contexts) =
+        source_lists(&fused, |id| ready.get(id).copied().unwrap_or("document"));
     TurnResult {
         outcome: Outcome::Found,
         sources,
@@ -672,5 +677,32 @@ mod tests {
     fn a_snippet_holds_the_whole_chunk() {
         // The chunker never makes a chunk longer than this (except one atomic table or formula).
         const { assert!(SNIPPET_CHARS >= openbook_search::chunker::MAX_CHARS) };
+    }
+    #[test]
+    fn the_prompt_passages_and_the_sources_event_come_from_one_list() {
+        let fused: Vec<Fused> = [(1, "A"), (0, "B")]
+            .iter()
+            .map(|(page, document)| Fused {
+                passage: Passage {
+                    key: format!("{document}:0"),
+                    document_id: (*document).to_owned(),
+                    page: *page,
+                    heading: String::new(),
+                    text: "x".repeat(SNIPPET_CHARS + 10),
+                },
+                score: 1.0,
+                dense_rank: Some(1),
+                lexical_rank: None,
+            })
+            .collect();
+        let (sources, contexts) =
+            source_lists(&fused, |id| if id == "A" { "a.pdf" } else { "b.pdf" });
+        assert_eq!(sources.len(), 2);
+        assert_eq!(contexts.len(), 2);
+        assert_eq!((sources[1].n, contexts[1].n), (2, 2));
+        assert_eq!((sources[0].page, sources[1].page), (Some(1), None));
+        assert_eq!(contexts[0].document_name, "a.pdf");
+        assert_eq!(sources[0].snippet, contexts[0].text);
+        assert_eq!(contexts[0].text.chars().count(), SNIPPET_CHARS);
     }
 }
